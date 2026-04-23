@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Signals - TSIGMA{% endblock %}
+
+{% block content %}
+<div x-data="{
+  signals: [],
+  filtered: [],
+  jurisdictions: [],
+  regions: [],
+  corridors: [],
+  search: '',
+  jurisdictionFilter: '',
+  regionFilter: '',
+  corridorFilter: '',
+  loading: true,
+  page: 1,
+  perPage: 30,
+
+  async init() {
+    await Promise.all([
+      this.fetchSignals(),
+      this.fetchJurisdictions(),
+      this.fetchRegions(),
+      this.fetchCorridors()
+    ]);
+    this.applyFilters();
+    this.loading = false;
+  },
+
+  async fetchSignals() {
+    try {
+      const res = await fetch('/api/v1/signals', { credentials: 'same-origin' });
+      if (res.ok) this.signals = await res.json();
+    } catch (e) { console.error('Failed to fetch signals:', e); }
+  },
+
+  async fetchJurisdictions() {
+    try {
+      const res = await fetch('/api/v1/jurisdictions', { credentials: 'same-origin' });
+      if (res.ok) this.jurisdictions = await res.json();
+    } catch (e) {}
+  },
+
+  async fetchRegions() {
+    try {
+      const res = await fetch('/api/v1/regions', { credentials: 'same-origin' });
+      if (res.ok) this.regions = await res.json();
+    } catch (e) {}
+  },
+
+  async fetchCorridors() {
+    try {
+      const res = await fetch('/api/v1/corridors', { credentials: 'same-origin' });
+      if (res.ok) this.corridors = await res.json();
+    } catch (e) {}
+  },
+
+  applyFilters() {
+    this.page = 1;
+    let result = this.signals;
+    const q = this.search.toLowerCase().trim();
+
+    if (q) {
+      result = result.filter(s =>
+        (s.signal_id && s.signal_id.toLowerCase().includes(q)) ||
+        (s.primary_street && s.primary_street.toLowerCase().includes(q)) ||
+        (s.secondary_street && s.secondary_street.toLowerCase().includes(q))
+      );
+    }
+    if (this.jurisdictionFilter) {
+      result = result.filter(s => s.jurisdiction_id === this.jurisdictionFilter);
+    }
+    if (this.regionFilter) {
+      result = result.filter(s => s.region_id === this.regionFilter);
+    }
+    if (this.corridorFilter) {
+      result = result.filter(s => s.corridor_id === this.corridorFilter);
+    }
+
+    this.filtered = result;
+  },
+
+  get paged() {
+    return this.filtered.slice(0, this.page * this.perPage);
+  },
+
+  get hasMore() {
+    return this.page * this.perPage < this.filtered.length;
+  },
+
+  loadMore() {
+    this.page++;
+  }
+}">
+
+  <!-- Page header -->
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-bold text-white">Signals</h1>
+    <span class="text-sm text-gray-400" x-text="filtered.length + ' signal' + (filtered.length !== 1 ? 's' : '')"></span>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="bg-gray-800 border border-gray-700 rounded-lg p-4 mb-6">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <!-- Search -->
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Search</label>
+        <input type="text" x-model="search" @input.debounce.300ms="applyFilters()" placeholder="ID, street name..."
+               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+      </div>
+
+      <!-- Jurisdiction -->
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Jurisdiction</label>
+        <select x-model="jurisdictionFilter" @change="applyFilters()"
+                class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+          <option value="">All Jurisdictions</option>
+          <template x-for="j in jurisdictions" :key="j.jurisdiction_id">
+            <option :value="j.jurisdiction_id" x-text="j.name"></option>
+          </template>
+        </select>
+      </div>
+
+      <!-- Region -->
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Region</label>
+        <select x-model="regionFilter" @change="applyFilters()"
+                class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+          <option value="">All Regions</option>
+          <template x-for="r in regions" :key="r.region_id">
+            <option :value="r.region_id" x-text="r.name"></option>
+          </template>
+        </select>
+      </div>
+
+      <!-- Corridor -->
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Corridor</label>
+        <select x-model="corridorFilter" @change="applyFilters()"
+                class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+          <option value="">All Corridors</option>
+          <template x-for="c in corridors" :key="c.corridor_id">
+            <option :value="c.corridor_id" x-text="c.name"></option>
+          </template>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading skeleton -->
+  <template x-if="loading">
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      <template x-for="i in 6">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg p-4 animate-pulse">
+          <div class="h-4 bg-gray-700 rounded w-1/3 mb-3"></div>
+          <div class="h-3 bg-gray-700 rounded w-2/3 mb-2"></div>
+          <div class="h-3 bg-gray-700 rounded w-1/2"></div>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <!-- Signal cards -->
+  <template x-if="!loading">
+    <div>
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <template x-for="signal in paged" :key="signal.signal_id">
+          <a :href="'/signals/' + signal.signal_id"
+             class="block bg-gray-800 border border-gray-700 rounded-lg p-4 hover:border-blue-500 transition-colors">
+            <div class="flex items-start justify-between mb-2">
+              <h3 class="text-sm font-semibold text-white truncate" x-text="signal.signal_id"></h3>
+              <span x-show="signal.enabled"
+                    class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-900 text-green-300">
+                Enabled
+              </span>
+              <span x-show="!signal.enabled"
+                    class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-900 text-red-300">
+                Disabled
+              </span>
+            </div>
+            <p class="text-sm text-gray-300 truncate" x-text="signal.primary_street"></p>
+            <p x-show="signal.secondary_street" class="text-xs text-gray-500 truncate" x-text="'& ' + signal.secondary_street"></p>
+            <p x-show="signal.latitude && signal.longitude" class="text-xs text-gray-600 mt-2"
+               x-text="signal.latitude + ', ' + signal.longitude"></p>
+          </a>
+        </template>
+      </div>
+
+      <!-- Empty state -->
+      <div x-show="filtered.length === 0 && !loading" class="text-center py-12">
+        <p class="text-gray-500">No signals found matching your filters.</p>
+      </div>
+
+      <!-- Load more -->
+      <div x-show="hasMore" class="text-center mt-6">
+        <button @click="loadMore()"
+                class="px-6 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 text-sm text-gray-300 rounded-md transition-colors">
+          Load More
+        </button>
+      </div>
+    </div>
+  </template>
+
+</div>
+{% endblock %}

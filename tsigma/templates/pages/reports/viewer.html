@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}{{ report_name }} - Reports - TSIGMA{% endblock %}
+
+{% block content %}
+<div x-data="{
+  reportName: '{{ report_name }}',
+  signalId: new URLSearchParams(window.location.search).get('signal_id') || '',
+  startDate: '',
+  endDate: '',
+  phaseNumber: '',
+  running: false,
+  hasResults: false,
+  results: [],
+  columns: [],
+  error: '',
+  chart: null,
+
+  init() {
+    // Default date range: last 24 hours
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 86400000);
+    this.endDate = now.toISOString().slice(0, 16);
+    this.startDate = yesterday.toISOString().slice(0, 16);
+  },
+
+  async runReport() {
+    this.error = '';
+    this.running = true;
+    this.hasResults = false;
+
+    const body = {
+      signal_id: this.signalId || undefined,
+      start_date: this.startDate || undefined,
+      end_date: this.endDate || undefined
+    };
+    if (this.phaseNumber) body.phase_number = parseInt(this.phaseNumber);
+
+    try {
+      const res = await fetch('/api/v1/reports/' + this.reportName, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        this.error = err.detail || 'Report execution failed.';
+        this.running = false;
+        return;
+      }
+
+      const data = await res.json();
+      this.results = data.data || data.results || data || [];
+      this.columns = this.results.length > 0 ? Object.keys(this.results[0]) : [];
+      this.hasResults = true;
+
+      this.$nextTick(() => this.renderChart(data));
+    } catch (e) {
+      this.error = 'Failed to connect to the server.';
+    } finally {
+      this.running = false;
+    }
+  },
+
+  renderChart(data) {
+    const el = document.getElementById('report-chart');
+    if (!el) return;
+
+    if (this.chart) this.chart.dispose();
+    this.chart = echarts.init(el);
+
+    // Delegate to per-report chart module if loaded
+    if (window.__tsigma_chart_render) {
+      window.__tsigma_chart_render(this.chart, data, this.reportName);
+      window.addEventListener('resize', () => this.chart.resize());
+      return;
+    }
+
+    // Default: bar chart with first two columns
+    if (this.results.length === 0 || this.columns.length < 2) return;
+
+    const xKey = this.columns[0];
+    const yKey = this.columns[1];
+
+    this.chart.setOption({
+      backgroundColor: 'transparent',
+      textStyle: { color: '#9ca3af' },
+      tooltip: { trigger: 'axis' },
+      grid: { left: 60, right: 20, top: 20, bottom: 50 },
+      xAxis: {
+        type: 'category',
+        data: this.results.map(r => r[xKey]),
+        axisLine: { lineStyle: { color: '#374151' } },
+        axisLabel: { rotate: 45 }
+      },
+      yAxis: {
+        type: 'value',
+        axisLine: { lineStyle: { color: '#374151' } },
+        splitLine: { lineStyle: { color: '#1f2937' } }
+      },
+      series: [{ data: this.results.map(r => r[yKey]), type: 'bar', itemStyle: { color: '#3b82f6' } }]
+    });
+
+    window.addEventListener('resize', () => this.chart.resize());
+  },
+
+  async exportReport(format) {
+    const body = {
+      signal_id: this.signalId || undefined,
+      start_date: this.startDate || undefined,
+      end_date: this.endDate || undefined,
+      format: format
+    };
+    if (this.phaseNumber) body.phase_number = parseInt(this.phaseNumber);
+
+    try {
+      const res = await fetch('/api/v1/reports/' + this.reportName + '/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok) {
+        this.error = 'Export failed.';
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = this.reportName + '.' + format;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      this.error = 'Export failed.';
+    }
+  }
+}">
+
+  <!-- Header -->
+  <div class="flex items-center gap-3 mb-6">
+    <a href="/reports" class="text-gray-400 hover:text-white">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    <h1 class="text-xl font-bold text-white" x-text="reportName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())"></h1>
+  </div>
+
+  <!-- Parameter form -->
+  <div class="bg-gray-800 border border-gray-700 rounded-lg p-5 mb-6">
+    <h2 class="text-sm font-semibold text-gray-300 mb-4">Report Parameters</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Signal ID</label>
+        <input type="text" x-model="signalId" placeholder="e.g. 1001"
+               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Start Date/Time</label>
+        <input type="datetime-local" x-model="startDate"
+               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">End Date/Time</label>
+        <input type="datetime-local" x-model="endDate"
+               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Phase Number</label>
+        <input type="number" x-model="phaseNumber" placeholder="Optional" min="1" max="16"
+               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+      </div>
+    </div>
+
+    <div class="flex items-center gap-3 mt-4">
+      <button @click="runReport()" :disabled="running"
+              class="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-sm font-medium rounded-md transition-colors">
+        <span x-show="!running">Run Report</span>
+        <span x-show="running" class="flex items-center gap-2">
+          <span class="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+          Running...
+        </span>
+      </button>
+
+      <template x-if="hasResults">
+        <div class="flex items-center gap-2">
+          <button @click="exportReport('csv')"
+                  class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors">
+            Export CSV
+          </button>
+          <button @click="exportReport('json')"
+                  class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors">
+            Export JSON
+          </button>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- Error -->
+  <div x-show="error" x-transition class="mb-6 p-3 bg-red-900/50 border border-red-800 rounded-md text-sm text-red-300">
+    <span x-text="error"></span>
+  </div>
+
+  <!-- Loading indicator -->
+  <div x-show="running" class="text-center py-12">
+    <div class="inline-block w-8 h-8 border-3 border-gray-600 border-t-blue-500 rounded-full animate-spin"></div>
+    <p class="text-sm text-gray-400 mt-3">Executing report...</p>
+  </div>
+
+  <!-- Results -->
+  <template x-if="hasResults && !running">
+    <div class="space-y-6">
+      <!-- Chart -->
+      <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
+        <div id="report-chart" class="w-full h-80"></div>
+      </div>
+
+      <!-- Data table -->
+      <div class="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-700">
+          <h2 class="text-sm font-semibold text-gray-300">
+            Results
+            <span class="text-gray-500 font-normal" x-text="'(' + results.length + ' rows)'"></span>
+          </h2>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-gray-700">
+                <template x-for="col in columns" :key="col">
+                  <th class="text-left px-4 py-2 text-xs text-gray-500 uppercase tracking-wider font-medium" x-text="col"></th>
+                </template>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700/50">
+              <template x-for="(row, idx) in results" :key="idx">
+                <tr class="hover:bg-gray-750">
+                  <template x-for="col in columns" :key="col">
+                    <td class="px-4 py-2 text-gray-300 whitespace-nowrap" x-text="row[col] ?? '---'"></td>
+                  </template>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </template>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<!-- Per-report chart module: override window.__tsigma_chart_render for custom visualization -->
+<script>
+  window.__tsigma_report_name = '{{ report_name }}';
+</script>
+{% endblock %}

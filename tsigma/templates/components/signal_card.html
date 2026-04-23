@@ -1,0 +1,22 @@
+<a href="/signals/{{ signal.signal_id }}"
+   class="block bg-gray-800 border border-gray-700 rounded-lg p-4 hover:border-blue-500 hover:bg-gray-750 transition-colors">
+  <div class="flex items-start justify-between mb-2">
+    <h3 class="text-sm font-semibold text-white truncate">{{ signal.signal_id }}</h3>
+    {% if signal.enabled %}
+      <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-900 text-green-300">
+        Enabled
+      </span>
+    {% else %}
+      <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-900 text-red-300">
+        Disabled
+      </span>
+    {% endif %}
+  </div>
+  <p class="text-sm text-gray-300 truncate">{{ signal.primary_street }}</p>
+  {% if signal.secondary_street %}
+    <p class="text-xs text-gray-500 truncate">&amp; {{ signal.secondary_street }}</p>
+  {% endif %}
+  {% if signal.latitude and signal.longitude %}
+    <p class="text-xs text-gray-600 mt-2">{{ signal.latitude }}, {{ signal.longitude }}</p>
+  {% endif %}
+</a>

@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Settings - Admin - TSIGMA{% endblock %}
+
+{% block content %}
+<div>
+  <div class="mb-6">
+    <h1 class="text-xl font-bold text-white">System Settings</h1>
+    <p class="text-sm text-gray-400 mt-1">View current system configuration (read-only).</p>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+    <!-- Database -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+      <h2 class="text-sm font-semibold text-gray-300 mb-4 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+        </svg>
+        Database
+      </h2>
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Type</dt>
+          <dd class="text-white">{{ config.database_type | default('PostgreSQL') }}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Host</dt>
+          <dd class="text-white">{{ config.database_host | default('---') }}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Port</dt>
+          <dd class="text-white">{{ config.database_port | default('---') }}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Database</dt>
+          <dd class="text-white">{{ config.database_name | default('---') }}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <!-- Storage -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+      <h2 class="text-sm font-semibold text-gray-300 mb-4 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/>
+        </svg>
+        Storage
+      </h2>
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Backend</dt>
+          <dd class="text-white">{{ config.storage_backend | default('filesystem') }}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Path</dt>
+          <dd class="text-white truncate max-w-xs" title="{{ config.storage_path | default('---') }}">{{ config.storage_path | default('---') }}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <!-- Authentication -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+      <h2 class="text-sm font-semibold text-gray-300 mb-4 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+        </svg>
+        Authentication
+      </h2>
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Mode</dt>
+          <dd class="text-white">{{ config.auth_mode | default('local') }}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <!-- Collector -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+      <h2 class="text-sm font-semibold text-gray-300 mb-4 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Collector
+      </h2>
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Poll Interval</dt>
+          <dd class="text-white">{{ config.poll_interval | default('---') }}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Max Concurrent</dt>
+          <dd class="text-white">{{ config.max_concurrent | default('---') }}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <!-- System Info -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5 lg:col-span-2">
+      <h2 class="text-sm font-semibold text-gray-300 mb-4 flex items-center gap-2">
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        System Info
+      </h2>
+      <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div>
+          <dt class="text-gray-500">Version</dt>
+          <dd class="text-white font-medium">v0.1.0</dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">Uptime</dt>
+          <dd class="text-white">{{ uptime | default('---') }}</dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">Python</dt>
+          <dd class="text-white">{{ python_version | default('---') }}</dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">Environment</dt>
+          <dd class="text-white">{{ environment | default('production') }}</dd>
+        </div>
+      </dl>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

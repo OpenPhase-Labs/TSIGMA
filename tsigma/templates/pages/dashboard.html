@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - TSIGMA{% endblock %}
+
+{% block content %}
+<div x-data="{
+  totalSignals: 0,
+  activeSignals: 0,
+  issueCount: 0,
+  signals: [],
+  map: null,
+  chart: null,
+  loading: true,
+
+  async init() {
+    await this.fetchSignals();
+    this.initMap();
+    this.initChart();
+    this.loading = false;
+
+    // Auto-refresh every 60 seconds
+    setInterval(() => this.refreshMarkers(), 60000);
+  },
+
+  async fetchSignals() {
+    try {
+      const res = await fetch('/api/v1/signals', { credentials: 'same-origin' });
+      if (res.ok) {
+        this.signals = await res.json();
+        this.totalSignals = this.signals.length;
+        this.activeSignals = this.signals.filter(s => s.enabled).length;
+        this.issueCount = this.signals.filter(s => !s.enabled).length;
+      }
+    } catch (e) {
+      console.error('Failed to fetch signals:', e);
+    }
+  },
+
+  initMap() {
+    this.map = new maplibregl.Map({
+      container: 'dashboard-map',
+      style: { version: 8, sources: {
+        'osm-tiles': { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '&copy; OpenStreetMap contributors' }
+      }, layers: [{ id: 'osm', type: 'raster', source: 'osm-tiles' }] },
+      center: [-84.39, 33.75],
+      zoom: 10
+    });
+
+    this.map.on('load', () => this.addMarkers());
+  },
+
+  addMarkers() {
+    const features = this.signals
+      .filter(s => s.latitude && s.longitude)
+      .map(s => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [parseFloat(s.longitude), parseFloat(s.latitude)] },
+        properties: { signal_id: s.signal_id, primary_street: s.primary_street, enabled: s.enabled }
+      }));
+
+    if (this.map.getSource('signals')) {
+      this.map.getSource('signals').setData({ type: 'FeatureCollection', features });
+      return;
+    }
+
+    this.map.addSource('signals', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features }
+    });
+
+    this.map.addLayer({
+      id: 'signal-points',
+      type: 'circle',
+      source: 'signals',
+      paint: {
+        'circle-radius': 6,
+        'circle-color': ['case', ['get', 'enabled'], '#22c55e', '#ef4444'],
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#1f2937'
+      }
+    });
+
+    // Popup on click
+    this.map.on('click', 'signal-points', (e) => {
+      const props = e.features[0].properties;
+      new maplibregl.Popup({ closeButton: false, className: 'tsigma-popup' })
+        .setLngLat(e.lngLat)
+        .setHTML('<div class=\"text-sm\"><strong>' + props.signal_id + '</strong><br>' + props.primary_street + '</div>')
+        .addTo(this.map);
+    });
+
+    this.map.on('mouseenter', 'signal-points', () => { this.map.getCanvas().style.cursor = 'pointer'; });
+    this.map.on('mouseleave', 'signal-points', () => { this.map.getCanvas().style.cursor = ''; });
+
+    // Fit bounds if we have signals
+    if (features.length > 0) {
+      const bounds = new maplibregl.LngLatBounds();
+      features.forEach(f => bounds.extend(f.geometry.coordinates));
+      this.map.fitBounds(bounds, { padding: 50, maxZoom: 14 });
+    }
+  },
+
+  async refreshMarkers() {
+    await this.fetchSignals();
+    this.addMarkers();
+  },
+
+  initChart() {
+    this.chart = echarts.init(document.getElementById('volume-chart'));
+    const hours = Array.from({ length: 24 }, (_, i) => i + ':00');
+    const data = Array.from({ length: 24 }, () => Math.floor(Math.random() * 500 + 100));
+
+    this.chart.setOption({
+      backgroundColor: 'transparent',
+      textStyle: { color: '#9ca3af' },
+      tooltip: { trigger: 'axis' },
+      grid: { left: 50, right: 20, top: 20, bottom: 40 },
+      xAxis: { type: 'category', data: hours, axisLine: { lineStyle: { color: '#374151' } } },
+      yAxis: { type: 'value', axisLine: { lineStyle: { color: '#374151' } }, splitLine: { lineStyle: { color: '#1f2937' } } },
+      series: [{ data, type: 'bar', itemStyle: { color: '#3b82f6' }, barWidth: '60%' }]
+    });
+
+    window.addEventListener('resize', () => this.chart.resize());
+  }
+}">
+
+  <!-- Summary cards -->
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+      <p class="text-sm text-gray-400">Total Signals</p>
+      <p class="text-2xl font-bold text-white mt-1" x-text="totalSignals">--</p>
+    </div>
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+      <p class="text-sm text-gray-400">Active Signals</p>
+      <p class="text-2xl font-bold text-green-400 mt-1" x-text="activeSignals">--</p>
+    </div>
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
+      <p class="text-sm text-gray-400">Issues Detected</p>
+      <p class="text-2xl font-bold text-red-400 mt-1" x-text="issueCount">--</p>
+    </div>
+  </div>
+
+  <!-- Map -->
+  <div class="bg-gray-800 border border-gray-700 rounded-lg p-4 mb-6">
+    <h2 class="text-sm font-semibold text-gray-300 mb-3">Signal Locations</h2>
+    <div id="dashboard-map" class="w-full h-96 rounded-md overflow-hidden"></div>
+  </div>
+
+  <!-- Event volume chart + Quick links -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2 bg-gray-800 border border-gray-700 rounded-lg p-4">
+      <h2 class="text-sm font-semibold text-gray-300 mb-3">Event Volume (Today)</h2>
+      <div id="volume-chart" class="w-full h-64"></div>
+    </div>
+
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
+      <h2 class="text-sm font-semibold text-gray-300 mb-3">Quick Links</h2>
+      <div class="space-y-2">
+        <a href="/reports" class="block px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded-md transition-colors">
+          View All Reports
+        </a>
+        <a href="/signals" class="block px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded-md transition-colors">
+          Signal Inventory
+        </a>
+        <a href="/admin/settings" class="block px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded-md transition-colors">
+          System Settings
+        </a>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

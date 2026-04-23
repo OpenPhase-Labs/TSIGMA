@@ -1,0 +1,104 @@
+/* ==========================================================
+   TSIGMA Custom CSS
+   Minimal overrides — most styling handled by Tailwind CDN.
+   ========================================================== */
+
+/* ---- Loading spinner ---- */
+.tsigma-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.8);
+    z-index: 20;
+}
+
+.tsigma-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid #e5e7eb;
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: tsigma-spin 0.7s linear infinite;
+}
+
+@keyframes tsigma-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ---- Chart containers ---- */
+.chart-container {
+    position: relative;
+    min-height: 320px;
+    width: 100%;
+}
+
+.chart-container-sm {
+    position: relative;
+    min-height: 240px;
+    width: 100%;
+}
+
+/* ---- Transition utilities not in Tailwind CDN ---- */
+.transition-height {
+    transition-property: height;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 200ms;
+}
+
+.transition-max-height {
+    transition-property: max-height;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 300ms;
+}
+
+/* ---- Print styles ---- */
+@media print {
+    /* Hide navigation, sidebars, controls */
+    nav,
+    .no-print,
+    #tsigma-toasts,
+    .tsigma-loading,
+    button,
+    select,
+    input {
+        display: none !important;
+    }
+
+    /* Full-width charts */
+    .chart-container,
+    .chart-container-sm {
+        min-height: 250px;
+        page-break-inside: avoid;
+        break-inside: avoid;
+    }
+
+    /* Remove shadows and rounded corners for cleaner print */
+    .shadow,
+    .shadow-sm,
+    .shadow-md,
+    .shadow-lg {
+        box-shadow: none !important;
+    }
+
+    .rounded,
+    .rounded-lg,
+    .rounded-xl {
+        border-radius: 0 !important;
+    }
+
+    /* Ensure text is black for readability */
+    body {
+        color: #000 !important;
+        background: #fff !important;
+    }
+
+    /* Page margins */
+    @page {
+        margin: 1cm;
+    }
+}

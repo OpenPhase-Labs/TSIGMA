@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-950">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In - TSIGMA</title>
+  <script src="/static/vendor/tailwind/tailwind.min.js"></script>
+  <script defer src="/static/vendor/alpine/alpine.min.js"></script>
+</head>
+<body class="h-full flex items-center justify-center text-gray-100 antialiased">
+
+  <div x-data="{
+    mode: 'loading',
+    oidcUrl: '',
+    username: '',
+    password: '',
+    error: '',
+    loading: false,
+
+    async init() {
+      try {
+        const res = await fetch('/api/v1/auth/provider', { credentials: 'same-origin' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.provider === 'oidc' && data.login_url) {
+            this.oidcUrl = data.login_url;
+            this.mode = 'oidc';
+          } else {
+            this.mode = 'local';
+          }
+        } else {
+          this.mode = 'local';
+        }
+      } catch {
+        this.mode = 'local';
+      }
+    },
+
+    async login() {
+      this.error = '';
+      this.loading = true;
+      try {
+        const res = await fetch('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ username: this.username, password: this.password })
+        });
+        if (res.ok) {
+          window.location.href = '/';
+        } else {
+          const data = await res.json().catch(() => null);
+          this.error = (data && data.detail) ? data.detail : 'Invalid username or password.';
+        }
+      } catch {
+        this.error = 'Unable to connect to the server.';
+      } finally {
+        this.loading = false;
+      }
+    }
+  }" class="w-full max-w-sm px-4">
+
+    <!-- Card -->
+    <div class="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-8">
+      <!-- Logo / Title -->
+      <div class="text-center mb-8">
+        <h1 class="text-3xl font-bold text-white tracking-tight">TSIGMA</h1>
+        <p class="text-sm text-gray-500 mt-1">Traffic Signal Intelligence Platform</p>
+      </div>
+
+      <!-- Loading state -->
+      <div x-show="mode === 'loading'" class="text-center py-4">
+        <div class="inline-block w-6 h-6 border-2 border-gray-600 border-t-blue-500 rounded-full animate-spin"></div>
+      </div>
+
+      <!-- Local auth form -->
+      <template x-if="mode === 'local'">
+        <form @submit.prevent="login()" class="space-y-4">
+          <!-- Error message -->
+          <div x-show="error" x-transition class="p-3 bg-red-900/50 border border-red-800 rounded-md text-sm text-red-300">
+            <span x-text="error"></span>
+          </div>
+
+          <div>
+            <label for="username" class="block text-sm font-medium text-gray-400 mb-1">Username</label>
+            <input id="username" type="text" x-model="username" required autocomplete="username"
+                   class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-md text-white placeholder-gray-500
+                          focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                   placeholder="Enter your username">
+          </div>
+
+          <div>
+            <label for="password" class="block text-sm font-medium text-gray-400 mb-1">Password</label>
+            <input id="password" type="password" x-model="password" required autocomplete="current-password"
+                   class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-md text-white placeholder-gray-500
+                          focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                   placeholder="Enter your password">
+          </div>
+
+          <button type="submit" :disabled="loading"
+                  class="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50
+                         text-white text-sm font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900">
+            <span x-show="!loading">Sign In</span>
+            <span x-show="loading" class="flex items-center justify-center gap-2">
+              <span class="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+              Signing in...
+            </span>
+          </button>
+        </form>
+      </template>
+
+      <!-- OIDC auth -->
+      <template x-if="mode === 'oidc'">
+        <div class="space-y-4">
+          <a :href="oidcUrl"
+             class="block w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md
+                    text-center transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900">
+            Sign in with SSO
+          </a>
+          <p class="text-xs text-center text-gray-500">You will be redirected to your identity provider.</p>
+        </div>
+      </template>
+    </div>
+
+    <p class="text-center text-xs text-gray-600 mt-6">TSIGMA v0.1.0</p>
+  </div>
+
+</body>
+</html>

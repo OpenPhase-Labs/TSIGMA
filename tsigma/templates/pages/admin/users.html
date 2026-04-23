@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}Users - Admin - TSIGMA{% endblock %}
+
+{% block content %}
+<div x-data="{
+  users: [],
+  loading: true,
+  showModal: false,
+  editMode: false,
+  editUserId: null,
+  form: { username: '', password: '', role: 'viewer' },
+  error: '',
+  deleteConfirm: null,
+
+  async init() {
+    await this.fetchUsers();
+    this.loading = false;
+  },
+
+  async fetchUsers() {
+    try {
+      const res = await fetch('/api/v1/admin/users', { credentials: 'same-origin' });
+      if (res.ok) this.users = await res.json();
+    } catch (e) { console.error('Failed to fetch users:', e); }
+  },
+
+  openAdd() {
+    this.editMode = false;
+    this.editUserId = null;
+    this.form = { username: '', password: '', role: 'viewer' };
+    this.error = '';
+    this.showModal = true;
+  },
+
+  openEdit(user) {
+    this.editMode = true;
+    this.editUserId = user.user_id || user.username;
+    this.form = { username: user.username, password: '', role: user.role || 'viewer' };
+    this.error = '';
+    this.showModal = true;
+  },
+
+  async saveUser() {
+    this.error = '';
+    const url = this.editMode
+      ? '/api/v1/admin/users/' + this.editUserId
+      : '/api/v1/admin/users';
+    const method = this.editMode ? 'PUT' : 'POST';
+
+    const body = { username: this.form.username, role: this.form.role };
+    if (this.form.password) body.password = this.form.password;
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body)
+      });
+
+      if (res.ok) {
+        this.showModal = false;
+        await this.fetchUsers();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        this.error = data.detail || 'Operation failed.';
+      }
+    } catch (e) {
+      this.error = 'Failed to connect to the server.';
+    }
+  },
+
+  async deleteUser(userId) {
+    try {
+      const res = await fetch('/api/v1/admin/users/' + userId, {
+        method: 'DELETE',
+        credentials: 'same-origin'
+      });
+      if (res.ok) {
+        this.deleteConfirm = null;
+        await this.fetchUsers();
+      }
+    } catch (e) { console.error('Delete failed:', e); }
+  }
+}">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-xl font-bold text-white">Users</h1>
+      <p class="text-sm text-gray-400 mt-1">Manage user accounts and roles.</p>
+    </div>
+    <button @click="openAdd()"
+            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors">
+      Add User
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <template x-if="loading">
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-6 animate-pulse">
+      <div class="space-y-3">
+        <div class="h-4 bg-gray-700 rounded w-full"></div>
+        <div class="h-4 bg-gray-700 rounded w-full"></div>
+        <div class="h-4 bg-gray-700 rounded w-3/4"></div>
+      </div>
+    </div>
+  </template>
+
+  <!-- User table -->
+  <template x-if="!loading">
+    <div class="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-gray-700">
+              <th class="text-left px-5 py-3 text-xs text-gray-500 uppercase tracking-wider font-medium">Username</th>
+              <th class="text-left px-5 py-3 text-xs text-gray-500 uppercase tracking-wider font-medium">Role</th>
+              <th class="text-left px-5 py-3 text-xs text-gray-500 uppercase tracking-wider font-medium">Created</th>
+              <th class="text-right px-5 py-3 text-xs text-gray-500 uppercase tracking-wider font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-700/50">
+            <template x-for="u in users" :key="u.user_id || u.username">
+              <tr class="hover:bg-gray-750">
+                <td class="px-5 py-3 text-white font-medium" x-text="u.username"></td>
+                <td class="px-5 py-3">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+                        :class="{
+                          'bg-purple-900 text-purple-300': u.role === 'admin',
+                          'bg-blue-900 text-blue-300': u.role === 'operator',
+                          'bg-gray-700 text-gray-300': u.role === 'viewer'
+                        }"
+                        x-text="u.role || 'viewer'"></span>
+                </td>
+                <td class="px-5 py-3 text-gray-400" x-text="u.created_at ? new Date(u.created_at).toLocaleDateString() : '---'"></td>
+                <td class="px-5 py-3 text-right">
+                  <div class="flex items-center justify-end gap-2">
+                    <button @click="openEdit(u)" class="text-gray-400 hover:text-white transition-colors" title="Edit">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                      </svg>
+                    </button>
+                    <template x-if="deleteConfirm !== (u.user_id || u.username)">
+                      <button @click="deleteConfirm = u.user_id || u.username" class="text-gray-400 hover:text-red-400 transition-colors" title="Delete">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                      </button>
+                    </template>
+                    <template x-if="deleteConfirm === (u.user_id || u.username)">
+                      <div class="flex items-center gap-1">
+                        <button @click="deleteUser(u.user_id || u.username)"
+                                class="px-2 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded transition-colors">
+                          Confirm
+                        </button>
+                        <button @click="deleteConfirm = null"
+                                class="px-2 py-1 bg-gray-600 hover:bg-gray-500 text-white text-xs rounded transition-colors">
+                          Cancel
+                        </button>
+                      </div>
+                    </template>
+                  </div>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <div x-show="users.length === 0" class="text-center py-8">
+        <p class="text-sm text-gray-500">No users found.</p>
+      </div>
+    </div>
+  </template>
+
+  <!-- Add/Edit Modal -->
+  <div x-show="showModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60" @click="showModal = false"></div>
+    <div class="relative bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full max-w-md p-6">
+      <h2 class="text-lg font-bold text-white mb-4" x-text="editMode ? 'Edit User' : 'Add User'"></h2>
+
+      <div x-show="error" class="mb-4 p-3 bg-red-900/50 border border-red-800 rounded-md text-sm text-red-300">
+        <span x-text="error"></span>
+      </div>
+
+      <form @submit.prevent="saveUser()" class="space-y-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Username</label>
+          <input type="text" x-model="form.username" required :disabled="editMode"
+                 class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">
+            Password
+            <span x-show="editMode" class="text-xs text-gray-500">(leave blank to keep current)</span>
+          </label>
+          <input type="password" x-model="form.password" :required="!editMode"
+                 class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Role</label>
+          <select x-model="form.role"
+                  class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            <option value="viewer">Viewer</option>
+            <option value="operator">Operator</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+
+        <div class="flex justify-end gap-3 pt-2">
+          <button type="button" @click="showModal = false"
+                  class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors">
+            Cancel
+          </button>
+          <button type="submit"
+                  class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors">
+            <span x-text="editMode ? 'Save Changes' : 'Create User'"></span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
