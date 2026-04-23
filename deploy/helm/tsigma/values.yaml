@@ -1,0 +1,264 @@
+# Default values for the TSIGMA chart.
+# Override on `helm install` with --values, --set, or a values file.
+
+# ---------------------------------------------------------------------------
+# Image
+# ---------------------------------------------------------------------------
+image:
+  repository: ghcr.io/openphase-labs/tsigma
+  tag: ""              # Defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# Replicas / scheduling
+# ---------------------------------------------------------------------------
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  fsGroup: 10001
+  runAsNonRoot: true
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: [ALL]
+
+# ---------------------------------------------------------------------------
+# Component toggles — match TSIGMA_ENABLE_* env vars.
+# Run multiple replica sets if you want to scale them independently
+# (e.g., 1 collector replica, N API replicas).
+# ---------------------------------------------------------------------------
+components:
+  api: true
+  collector: true
+  scheduler: true
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  apiPort: 8080
+  grpcPort: 50051
+
+# ---------------------------------------------------------------------------
+# Ingress (REST/GraphQL/UI only — not for gRPC)
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: tsigma.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: tsigma-tls
+    #   hosts: [tsigma.example.com]
+
+# ---------------------------------------------------------------------------
+# gRPC ingestion endpoint (optional separate Service if you want a dedicated
+# LoadBalancer / NodePort exposure)
+# ---------------------------------------------------------------------------
+grpcIngestion:
+  enabled: true
+  service:
+    type: ClusterIP   # or LoadBalancer for external device push
+    port: 50051
+  tls:
+    enabled: false
+    # When enabled, mount cert/key from a Kubernetes Secret.
+    # Provide a Secret with keys `tls.crt` and `tls.key`.
+    secretName: ""
+
+# ---------------------------------------------------------------------------
+# Database connection
+#
+# This chart does NOT provision a database. PostgreSQL is expected to run
+# externally — typically a managed service (RDS / Cloud SQL / Crunchy /
+# Aiven / Timescale Cloud) or an in-cluster operator (CrunchyData PGO,
+# Zalando postgres-operator, CloudNativePG).
+#
+# Required PostgreSQL extensions:
+#   - pgcrypto         (for gen_random_uuid() — usually pre-installed)
+#   - timescaledb      (recommended; enables hypertables + continuous aggregates)
+#
+# For HA Postgres, point `host` at the cluster's primary read-write
+# endpoint (e.g., a Service that always routes to the current primary).
+# TSIGMA does not currently route reads to replicas.
+# ---------------------------------------------------------------------------
+database:
+  type: postgresql           # postgresql | mssql | oracle | mysql
+  host: tsigma-postgres      # FQDN of the primary RW endpoint
+  port: 5432
+  name: tsigma
+  user: tsigma
+
+  # Provide via existingSecret OR password (not both).
+  # The Secret must contain key: TSIGMA_PG_PASSWORD
+  existingSecret: ""
+  password: ""
+
+  # SSL/TLS to the database server. Set sslMode to one of:
+  #   disable | allow | prefer | require | verify-ca | verify-full
+  # Most managed services (RDS, Cloud SQL, Aiven, Timescale Cloud) require
+  # at least "require"; "verify-full" is recommended for production and
+  # needs the server's CA bundle mounted via caCertSecret.
+  ssl:
+    enabled: false
+    sslMode: "require"
+    # When sslMode is "verify-ca" or "verify-full", provide a Secret
+    # containing the CA bundle as key `ca.crt`. The chart mounts it at
+    # /etc/tsigma/db-tls/ca.crt and sets PGSSLROOTCERT accordingly.
+    caCertSecret: ""
+
+# ---------------------------------------------------------------------------
+# Storage / TimescaleDB tuning
+# ---------------------------------------------------------------------------
+storage:
+  timescaleChunkInterval: "1 day"
+  warmAfter: "7 days"
+  retention: "2 years"
+
+  cold:
+    enabled: false
+    after: "6 months"
+    path: /var/lib/tsigma/cold
+    persistence:
+      enabled: false
+      storageClass: ""
+      size: 100Gi
+
+# ---------------------------------------------------------------------------
+# Collector
+# ---------------------------------------------------------------------------
+collector:
+  maxConcurrent: 50
+  pollInterval: 300
+
+# ---------------------------------------------------------------------------
+# CORS / API
+# ---------------------------------------------------------------------------
+api:
+  corsOrigins: ""            # Comma-separated, e.g. "https://app.example.com"
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level: INFO                # DEBUG | INFO | WARNING | ERROR
+  format: json               # json | text
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+auth:
+  mode: local                # local | oidc | oauth2
+
+  local:
+    adminUser: admin
+    # Provide via existingSecret OR adminPassword.
+    # Secret must contain key TSIGMA_AUTH_ADMIN_PASSWORD.
+    existingSecret: ""
+    adminPassword: "changeme"
+    sessionTtlMinutes: 480
+    cookieName: tsigma_session
+    cookieSecure: true       # Set false only behind plain-HTTP ingress
+
+  oidc:
+    tenantId: ""
+    clientId: ""
+    # Secret must contain key TSIGMA_OIDC_CLIENT_SECRET.
+    existingSecret: ""
+    clientSecret: ""
+    scopes: "openid email profile"
+    redirectUri: ""
+    adminGroups: ""
+
+  oauth2:
+    issuerUrl: ""
+    clientId: ""
+    # Secret must contain key TSIGMA_OAUTH2_CLIENT_SECRET.
+    existingSecret: ""
+    clientSecret: ""
+    scopes: "openid email profile"
+    redirectUri: ""
+    authorizationEndpoint: ""
+    tokenEndpoint: ""
+    userinfoEndpoint: ""
+    adminGroups: ""
+    usernameClaim: email
+
+# ---------------------------------------------------------------------------
+# Database migration job (Alembic)
+# Runs `alembic upgrade head` before each release.
+# ---------------------------------------------------------------------------
+migration:
+  enabled: true
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+
+# ---------------------------------------------------------------------------
+# Horizontal pod autoscaling (API replica count)
+# ---------------------------------------------------------------------------
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+# ---------------------------------------------------------------------------
+# ServiceAccount
+# ---------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Probes
+# ---------------------------------------------------------------------------
+probes:
+  liveness:
+    path: /health
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: /ready
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# ---------------------------------------------------------------------------
+# Extra env vars (passed verbatim into the container)
+# ---------------------------------------------------------------------------
+extraEnv: []
+  # - name: TSIGMA_FOO
+  #   value: bar
+
+extraEnvFrom: []
+  # - secretRef:
+  #     name: my-extra-secret

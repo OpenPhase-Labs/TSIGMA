@@ -1,0 +1,61 @@
+# --- VCS / IDE -------------------------------------------------------------
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+.vs
+
+# --- Python ---------------------------------------------------------------
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+*.egg
+.eggs
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+.tox
+.nox
+.venv
+venv
+env
+
+# --- Build / test artifacts ------------------------------------------------
+build
+dist
+node_modules
+coverage.xml
+*.log
+*.sqlite
+*.db
+
+# --- Local config (must come from Kubernetes secrets / env) ----------------
+.env
+.env.*
+!.env.example
+
+# --- Docs / development tooling not needed in image ------------------------
+docs
+tests
+scripts
+README.md
+CONTRIBUTING.md
+LICENSE
+pyrightconfig.json
+pytest.ini
+
+# --- Cold storage scratch dir ----------------------------------------------
+storage_data
+cold_storage
+
+# --- Docker / k8s files (don't include in build context) -------------------
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+deploy

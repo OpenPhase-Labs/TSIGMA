@@ -1,0 +1,12 @@
+# Files in the chart directory that should NOT be packaged.
+.DS_Store
+.git/
+.gitignore
+.idea/
+.vscode/
+*.tmproj
+*.bak
+*.swp
+*.tgz
+.helmignore
+README.md.tmpl

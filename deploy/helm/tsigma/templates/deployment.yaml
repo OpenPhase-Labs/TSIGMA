@@ -1,0 +1,172 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tsigma.fullname" . }}
+  labels:
+    {{- include "tsigma.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "tsigma.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tsigma.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "tsigma.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: tsigma
+          image: {{ include "tsigma.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.apiPort }}
+              protocol: TCP
+            {{- if .Values.grpcIngestion.enabled }}
+            - name: grpc
+              containerPort: {{ .Values.grpcIngestion.service.port }}
+              protocol: TCP
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "tsigma.fullname" . }}-config
+            - secretRef:
+                name: {{ include "tsigma.dbSecretName" . }}
+            {{- if eq .Values.auth.mode "local" }}
+            {{- if .Values.auth.local.existingSecret }}
+            - secretRef:
+                name: {{ .Values.auth.local.existingSecret }}
+            {{- else }}
+            - secretRef:
+                name: {{ include "tsigma.authSecretName" . }}
+            {{- end }}
+            {{- end }}
+            {{- if eq .Values.auth.mode "oidc" }}
+            {{- if .Values.auth.oidc.existingSecret }}
+            - secretRef:
+                name: {{ .Values.auth.oidc.existingSecret }}
+            {{- else }}
+            - secretRef:
+                name: {{ include "tsigma.authSecretName" . }}
+            {{- end }}
+            {{- end }}
+            {{- if eq .Values.auth.mode "oauth2" }}
+            {{- if .Values.auth.oauth2.existingSecret }}
+            - secretRef:
+                name: {{ .Values.auth.oauth2.existingSecret }}
+            {{- else }}
+            - secretRef:
+                name: {{ include "tsigma.authSecretName" . }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.storage.cold.enabled }}
+            - name: cold-storage
+              mountPath: {{ .Values.storage.cold.path }}
+            {{- end }}
+            {{- if and .Values.grpcIngestion.enabled .Values.grpcIngestion.tls.enabled }}
+            - name: grpc-tls
+              mountPath: /etc/tsigma/grpc-tls
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.database.ssl.enabled .Values.database.ssl.caCertSecret }}
+            - name: db-tls
+              mountPath: /etc/tsigma/db-tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.storage.cold.enabled }}
+        - name: cold-storage
+          {{- if .Values.storage.cold.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "tsigma.fullname" . }}-cold
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- if and .Values.grpcIngestion.enabled .Values.grpcIngestion.tls.enabled }}
+        - name: grpc-tls
+          secret:
+            secretName: {{ required "grpcIngestion.tls.secretName is required when TLS is enabled" .Values.grpcIngestion.tls.secretName }}
+        {{- end }}
+        {{- if and .Values.database.ssl.enabled .Values.database.ssl.caCertSecret }}
+        - name: db-tls
+          secret:
+            secretName: {{ .Values.database.ssl.caCertSecret }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if and .Values.storage.cold.enabled .Values.storage.cold.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tsigma.fullname" . }}-cold
+  labels:
+    {{- include "tsigma.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.storage.cold.persistence.size }}
+  {{- if .Values.storage.cold.persistence.storageClass }}
+  storageClassName: {{ .Values.storage.cold.persistence.storageClass }}
+  {{- end }}
+{{- end }}

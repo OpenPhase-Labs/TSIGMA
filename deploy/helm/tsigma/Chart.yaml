@@ -1,0 +1,24 @@
+apiVersion: v2
+name: tsigma
+description: |
+  TSIGMA — Traffic Signal Intelligence: Gathering Metrics & Analytics.
+  Open-source replacement for ATSPM. Multi-protocol ingestion (FTP/HTTP/NATS/MQTT/gRPC),
+  plugin architecture for decoders / reports / validators, PostgreSQL+TimescaleDB backend.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/OpenPhase-Labs/TSIGMA
+sources:
+  - https://github.com/OpenPhase-Labs/TSIGMA
+maintainers:
+  - name: Heritage Grid, LLC
+    url: https://github.com/OpenPhase-Labs
+keywords:
+  - traffic-signals
+  - atspm
+  - traffic-engineering
+  - timescaledb
+  - openphase
+annotations:
+  category: Infrastructure

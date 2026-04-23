@@ -1,0 +1,60 @@
+TSIGMA {{ .Chart.AppVersion }} has been deployed.
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+1. Database migrations
+   {{- if .Values.migration.enabled }}
+   The pre-install hook ran `alembic upgrade head` automatically.
+   {{- else }}
+   Migrations were SKIPPED (migration.enabled=false). Run manually:
+
+       kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "tsigma.fullname" . }} -- alembic upgrade head
+   {{- end }}
+
+2. Reach the API
+   {{- if .Values.ingress.enabled }}
+   Configured Ingress hosts:
+   {{- range .Values.ingress.hosts }}
+     - http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+   {{- end }}
+   {{- else if eq .Values.service.type "LoadBalancer" }}
+
+       export SERVICE_IP=$(kubectl -n {{ .Release.Namespace }} get svc {{ include "tsigma.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+       echo "API: http://$SERVICE_IP:{{ .Values.service.apiPort }}"
+   {{- else }}
+
+       kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "tsigma.fullname" . }} 8080:{{ .Values.service.apiPort }}
+       open http://localhost:8080/docs
+   {{- end }}
+
+3. gRPC ingestion
+   {{- if .Values.grpcIngestion.enabled }}
+
+       Service: {{ include "tsigma.fullname" . }}-grpc:{{ .Values.grpcIngestion.service.port }} (type: {{ .Values.grpcIngestion.service.type }})
+       {{- if .Values.grpcIngestion.tls.enabled }}
+       TLS: enabled (cert from secret "{{ .Values.grpcIngestion.tls.secretName }}")
+       {{- else }}
+       TLS: DISABLED — devices will connect insecurely. Enable for production.
+       {{- end }}
+   {{- else }}
+   gRPC ingestion is disabled. Set grpcIngestion.enabled=true to expose it.
+   {{- end }}
+
+4. Default admin login (auth.mode={{ .Values.auth.mode }})
+   {{- if eq .Values.auth.mode "local" }}
+   Username: {{ .Values.auth.local.adminUser }}
+   Password: from Secret {{ if .Values.auth.local.existingSecret }}{{ .Values.auth.local.existingSecret }}{{ else }}{{ include "tsigma.authSecretName" . }}{{ end }} (key TSIGMA_AUTH_ADMIN_PASSWORD)
+
+   ⚠  Rotate the default admin password immediately if you used the chart default.
+   {{- else }}
+   External {{ upper .Values.auth.mode }} provider configured. Verify the OIDC/OAuth2 redirect URI matches your published Ingress host.
+   {{- end }}
+
+5. Component status
+   API:       {{ .Values.components.api }}
+   Collector: {{ .Values.components.collector }}
+   Scheduler: {{ .Values.components.scheduler }}
+
+   Check health:
+       kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}

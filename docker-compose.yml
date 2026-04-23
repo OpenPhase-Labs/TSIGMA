@@ -1,0 +1,60 @@
+# Local development stack:
+#   - PostgreSQL 18 + TimescaleDB
+#   - TSIGMA app (API + collector + scheduler in one container)
+#
+# Usage:
+#   docker compose up -d
+#   docker compose exec tsigma alembic upgrade head
+#   curl http://localhost:8080/ready
+#
+# For production, use the Helm chart in deploy/helm/tsigma/.
+version: "3.9"
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tsigma
+      POSTGRES_USER: tsigma
+      POSTGRES_PASSWORD: tsigma_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - tsigma_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tsigma -d tsigma"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  tsigma:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tsigma:dev
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TSIGMA_DB_TYPE: postgresql
+      TSIGMA_PG_HOST: db
+      TSIGMA_PG_PORT: "5432"
+      TSIGMA_PG_DATABASE: tsigma
+      TSIGMA_PG_USER: tsigma
+      TSIGMA_PG_PASSWORD: tsigma_dev
+      TSIGMA_ENABLE_API: "true"
+      TSIGMA_ENABLE_COLLECTOR: "true"
+      TSIGMA_ENABLE_SCHEDULER: "true"
+      TSIGMA_LOG_FORMAT: json
+      TSIGMA_AUTH_ADMIN_PASSWORD: changeme
+    ports:
+      - "8080:8080"     # REST + GraphQL + UI
+      - "50051:50051"   # gRPC ingestion (optional)
+    volumes:
+      - tsigma_cold:/var/lib/tsigma/cold
+
+volumes:
+  tsigma_pgdata:
+  tsigma_cold:

@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tsigma.fullname" . }}-config
+  labels:
+    {{- include "tsigma.labels" . | nindent 4 }}
+data:
+  TSIGMA_DB_TYPE: {{ .Values.database.type | quote }}
+  TSIGMA_PG_HOST: {{ .Values.database.host | quote }}
+  TSIGMA_PG_PORT: {{ .Values.database.port | quote }}
+  TSIGMA_PG_DATABASE: {{ .Values.database.name | quote }}
+  TSIGMA_PG_USER: {{ .Values.database.user | quote }}
+  {{- if .Values.database.ssl.enabled }}
+  # libpq honors PGSSL* env vars regardless of how the connection is built.
+  PGSSLMODE: {{ .Values.database.ssl.sslMode | quote }}
+  {{- if .Values.database.ssl.caCertSecret }}
+  PGSSLROOTCERT: "/etc/tsigma/db-tls/ca.crt"
+  {{- end }}
+  {{- end }}
+
+  TSIGMA_ENABLE_API: {{ .Values.components.api | quote }}
+  TSIGMA_ENABLE_COLLECTOR: {{ .Values.components.collector | quote }}
+  TSIGMA_ENABLE_SCHEDULER: {{ .Values.components.scheduler | quote }}
+
+  TSIGMA_TIMESCALE_CHUNK_INTERVAL: {{ .Values.storage.timescaleChunkInterval | quote }}
+  TSIGMA_STORAGE_WARM_AFTER: {{ .Values.storage.warmAfter | quote }}
+  TSIGMA_STORAGE_RETENTION: {{ .Values.storage.retention | quote }}
+
+  TSIGMA_STORAGE_COLD_ENABLED: {{ .Values.storage.cold.enabled | quote }}
+  TSIGMA_STORAGE_COLD_AFTER: {{ .Values.storage.cold.after | quote }}
+  TSIGMA_STORAGE_COLD_PATH: {{ .Values.storage.cold.path | quote }}
+
+  TSIGMA_COLLECTOR_MAX_CONCURRENT: {{ .Values.collector.maxConcurrent | quote }}
+  TSIGMA_COLLECTOR_POLL_INTERVAL: {{ .Values.collector.pollInterval | quote }}
+
+  TSIGMA_API_HOST: "0.0.0.0"
+  TSIGMA_API_PORT: {{ .Values.service.apiPort | quote }}
+  TSIGMA_CORS_ORIGINS: {{ .Values.api.corsOrigins | quote }}
+
+  TSIGMA_LOG_LEVEL: {{ .Values.logging.level | quote }}
+  TSIGMA_LOG_FORMAT: {{ .Values.logging.format | quote }}
+
+  TSIGMA_AUTH_MODE: {{ .Values.auth.mode | quote }}
+  TSIGMA_AUTH_ADMIN_USER: {{ .Values.auth.local.adminUser | quote }}
+  TSIGMA_AUTH_SESSION_TTL_MINUTES: {{ .Values.auth.local.sessionTtlMinutes | quote }}
+  TSIGMA_AUTH_COOKIE_NAME: {{ .Values.auth.local.cookieName | quote }}
+  TSIGMA_AUTH_COOKIE_SECURE: {{ .Values.auth.local.cookieSecure | quote }}
+
+  {{- if eq .Values.auth.mode "oidc" }}
+  TSIGMA_OIDC_TENANT_ID: {{ .Values.auth.oidc.tenantId | quote }}
+  TSIGMA_OIDC_CLIENT_ID: {{ .Values.auth.oidc.clientId | quote }}
+  TSIGMA_OIDC_SCOPES: {{ .Values.auth.oidc.scopes | quote }}
+  TSIGMA_OIDC_REDIRECT_URI: {{ .Values.auth.oidc.redirectUri | quote }}
+  TSIGMA_OIDC_ADMIN_GROUPS: {{ .Values.auth.oidc.adminGroups | quote }}
+  {{- end }}
+
+  {{- if eq .Values.auth.mode "oauth2" }}
+  TSIGMA_OAUTH2_ISSUER_URL: {{ .Values.auth.oauth2.issuerUrl | quote }}
+  TSIGMA_OAUTH2_CLIENT_ID: {{ .Values.auth.oauth2.clientId | quote }}
+  TSIGMA_OAUTH2_SCOPES: {{ .Values.auth.oauth2.scopes | quote }}
+  TSIGMA_OAUTH2_REDIRECT_URI: {{ .Values.auth.oauth2.redirectUri | quote }}
+  TSIGMA_OAUTH2_AUTHORIZATION_ENDPOINT: {{ .Values.auth.oauth2.authorizationEndpoint | quote }}
+  TSIGMA_OAUTH2_TOKEN_ENDPOINT: {{ .Values.auth.oauth2.tokenEndpoint | quote }}
+  TSIGMA_OAUTH2_USERINFO_ENDPOINT: {{ .Values.auth.oauth2.userinfoEndpoint | quote }}
+  TSIGMA_OAUTH2_ADMIN_GROUPS: {{ .Values.auth.oauth2.adminGroups | quote }}
+  TSIGMA_OAUTH2_USERNAME_CLAIM: {{ .Values.auth.oauth2.usernameClaim | quote }}
+  {{- end }}
