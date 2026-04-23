@@ -458,3 +458,129 @@ class TestSetAppUserUnsupported:
         helper = DialectHelper("sqlite")
         with pytest.raises(ValueError, match="not supported"):
             helper.set_app_user_sql()
+
+
+# ---------------------------------------------------------------------------
+# Partition management SQL generation
+# ---------------------------------------------------------------------------
+
+
+class TestPartitionName:
+    """Canonical partition naming."""
+
+    def test_daily_partition_name(self):
+        from datetime import date
+        helper = DialectHelper("mysql")
+        assert helper.partition_name(date(2026, 4, 23), 1) == "p_20260423"
+
+    def test_multi_day_partition_name_carries_interval_suffix(self):
+        from datetime import date
+        helper = DialectHelper("mysql")
+        assert helper.partition_name(date(2026, 4, 23), 7) == "p_20260423_7d"
+
+
+class TestListPartitionsSql:
+    """list_partitions_sql returns introspection queries per dialect."""
+
+    def test_postgresql_returns_none(self):
+        helper = DialectHelper("postgresql")
+        assert helper.list_partitions_sql("controller_event_log") is None
+
+    def test_mssql_references_partition_function(self):
+        helper = DialectHelper("mssql")
+        sql = helper.list_partitions_sql("controller_event_log")
+        assert sql is not None
+        assert "sys.partition_functions" in sql
+        assert "pf_controller_event_log_event_time" in sql
+
+    def test_oracle_references_user_tab_partitions(self):
+        helper = DialectHelper("oracle")
+        sql = helper.list_partitions_sql("controller_event_log")
+        assert sql is not None
+        assert "user_tab_partitions" in sql
+        # Oracle is case-sensitive on names unless wrapped with UPPER(); the
+        # emitted SQL passes the lowercase literal through UPPER() at runtime.
+        assert "UPPER('controller_event_log')" in sql
+
+    def test_mysql_references_information_schema(self):
+        helper = DialectHelper("mysql")
+        sql = helper.list_partitions_sql("controller_event_log")
+        assert sql is not None
+        assert "INFORMATION_SCHEMA.PARTITIONS" in sql
+        assert "controller_event_log" in sql
+
+
+class TestEnsurePartitionSql:
+    """ensure_partition_sql returns the right SQL for each dialect."""
+
+    def test_postgresql_returns_empty(self):
+        from datetime import date
+        helper = DialectHelper("postgresql")
+        assert helper.ensure_partition_sql(
+            "controller_event_log", date(2026, 4, 23), 1
+        ) == []
+
+    def test_oracle_returns_empty_for_interval_partitioning(self):
+        from datetime import date
+        helper = DialectHelper("oracle")
+        assert helper.ensure_partition_sql(
+            "controller_event_log", date(2026, 4, 23), 1
+        ) == []
+
+    def test_mssql_returns_scheme_and_function_split(self):
+        from datetime import date
+        helper = DialectHelper("mssql")
+        stmts = helper.ensure_partition_sql(
+            "controller_event_log", date(2026, 4, 23), 1,
+        )
+        assert len(stmts) == 2
+        assert "ALTER PARTITION SCHEME ps_controller_event_log_event_time NEXT USED" in stmts[0]
+        assert "SPLIT RANGE" in stmts[1]
+        # Boundary is start + interval = 2026-04-24
+        assert "2026-04-24" in stmts[1]
+
+    def test_mysql_returns_add_partition(self):
+        from datetime import date
+        helper = DialectHelper("mysql")
+        stmts = helper.ensure_partition_sql(
+            "controller_event_log", date(2026, 4, 23), 1,
+        )
+        assert len(stmts) == 1
+        assert "ALTER TABLE controller_event_log ADD PARTITION" in stmts[0]
+        assert "PARTITION p_20260423 VALUES LESS THAN" in stmts[0]
+        assert "UNIX_TIMESTAMP('2026-04-24" in stmts[0]
+
+
+class TestDropPartitionSql:
+    """drop_partition_sql across dialects."""
+
+    def test_postgresql_returns_empty(self):
+        helper = DialectHelper("postgresql")
+        assert helper.drop_partition_sql("controller_event_log", "p_20260423") == []
+
+    def test_mssql_uses_merge_range(self):
+        helper = DialectHelper("mssql")
+        stmts = helper.drop_partition_sql(
+            "controller_event_log", "2026-04-24 00:00:00",
+        )
+        assert len(stmts) == 1
+        assert "MERGE RANGE" in stmts[0]
+        assert "pf_controller_event_log_event_time" in stmts[0]
+
+    def test_oracle_uses_drop_partition(self):
+        helper = DialectHelper("oracle")
+        stmts = helper.drop_partition_sql(
+            "controller_event_log", "P_20260101",
+        )
+        assert stmts == [
+            "ALTER TABLE controller_event_log DROP PARTITION P_20260101"
+        ]
+
+    def test_mysql_uses_drop_partition(self):
+        helper = DialectHelper("mysql")
+        stmts = helper.drop_partition_sql(
+            "controller_event_log", "p_20260101",
+        )
+        assert stmts == [
+            "ALTER TABLE controller_event_log DROP PARTITION p_20260101"
+        ]

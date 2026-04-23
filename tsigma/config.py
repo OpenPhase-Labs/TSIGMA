@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     # default 1 — daily partitions work well for multi-million-row daily
     # event volumes at signal scale.
     event_log_partition_interval_days: int = 1
+    # How many future partitions to keep pre-created ahead of ``today`` on
+    # MS-SQL / Oracle / MySQL.  Safety margin against scheduler outages.
+    # No effect on PostgreSQL (TimescaleDB creates chunks on demand).
+    partition_lookahead_days: int = 7
+    # Drop partitions older than this many days on MS-SQL / Oracle / MySQL.
+    # ``None`` disables auto-drop (partitions grow without bound — safest
+    # default for pre-production).  Align with ``storage_retention`` when
+    # ready to enable retention in production.
+    partition_retention_days: int | None = None
     storage_warm_after: str = "7 days"
     storage_retention: str = "2 years"
 

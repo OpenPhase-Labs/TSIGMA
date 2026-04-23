@@ -17,6 +17,7 @@ No schema switching needed - complete instance isolation.
 import logging
 import re
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from typing import Any, AsyncIterator, Literal
 
 import pandas as pd
@@ -405,6 +406,129 @@ VALUES ({old_id_list}, @app_user, 'DELETE', JSON_OBJECT());
             raise ValueError(
                 f"set_app_user_sql not supported for {self.db_type}"
             )
+
+    # ------------------------------------------------------------------
+    # Partition management — MS-SQL / Oracle / MySQL
+    #
+    # PostgreSQL deployments use TimescaleDB hypertables (see the
+    # ``compress_chunks`` job and the ``event_log_partition_interval_days``
+    # setting piped into ``create_hypertable``).  The methods below produce
+    # dialect-specific SQL that the ``manage_partitions`` scheduler job runs
+    # to keep a rolling window of future / past partitions on the other
+    # three dialects.  All methods are pure — they return SQL strings, they
+    # do not touch the database.
+    # ------------------------------------------------------------------
+
+    def partition_name(self, start: date, interval_days: int) -> str:
+        """Canonical partition name for the partition starting on ``start``.
+
+        Daily → ``p_20260423``; multi-day → ``p_20260423_7d``.  Stable and
+        sortable for easy lexicographic ordering.
+        """
+        base = f"p_{start.strftime('%Y%m%d')}"
+        return base if interval_days == 1 else f"{base}_{interval_days}d"
+
+    def partition_function_name(self, table: str) -> str:
+        """MS-SQL partition function name for the given table."""
+        return f"pf_{table}_event_time"
+
+    def partition_scheme_name(self, table: str) -> str:
+        """MS-SQL partition scheme name for the given table."""
+        return f"ps_{table}_event_time"
+
+    def list_partitions_sql(self, table: str) -> str | None:
+        """Query returning (partition_name, boundary_iso) rows.
+
+        Returns ``None`` on PostgreSQL (TimescaleDB manages chunks).
+        An empty result on MS-SQL / Oracle / MySQL indicates the table
+        is not partitioned yet and ``manage_partitions`` will skip it.
+        """
+        if self.db_type == "postgresql":
+            return None
+        if self.db_type == "mssql":
+            func = self.partition_function_name(table)
+            return (
+                "SELECT CAST(rv.boundary_id AS NVARCHAR(50)) AS partition_name, "
+                "       CONVERT(NVARCHAR(30), rv.value, 126) AS boundary_iso "
+                "FROM sys.partition_functions pf "
+                "JOIN sys.partition_range_values rv "
+                "  ON rv.function_id = pf.function_id "
+                f"WHERE pf.name = '{func}' "
+                "ORDER BY rv.boundary_id"
+            )
+        if self.db_type == "oracle":
+            return (
+                "SELECT partition_name, high_value "
+                "FROM user_tab_partitions "
+                f"WHERE table_name = UPPER('{table}') "
+                "ORDER BY partition_position"
+            )
+        if self.db_type == "mysql":
+            return (
+                "SELECT PARTITION_NAME AS partition_name, "
+                "       PARTITION_DESCRIPTION AS boundary_iso "
+                "FROM INFORMATION_SCHEMA.PARTITIONS "
+                f"WHERE TABLE_NAME = '{table}' "
+                "  AND PARTITION_NAME IS NOT NULL "
+                "ORDER BY PARTITION_ORDINAL_POSITION"
+            )
+        raise ValueError(f"list_partitions_sql not supported for {self.db_type}")
+
+    def ensure_partition_sql(
+        self,
+        table: str,
+        start: date,
+        interval_days: int,
+    ) -> list[str]:
+        """SQL statements to create/split the partition covering
+        ``[start, start + interval_days)``.
+
+        ``[]`` on PostgreSQL (TimescaleDB) and Oracle (INTERVAL partitioning
+        creates partitions automatically on insert).  MS-SQL returns two
+        statements (scheme NEXT USED + function SPLIT RANGE).  MySQL returns
+        one ``ALTER TABLE ... ADD PARTITION``.
+        """
+        if self.db_type in ("postgresql", "oracle"):
+            return []
+        boundary = (start + timedelta(days=interval_days))
+        if self.db_type == "mssql":
+            scheme = self.partition_scheme_name(table)
+            func = self.partition_function_name(table)
+            # Boundary as ISO datetime literal (SQL Server datetime2 accepts it).
+            bound = boundary.strftime("%Y-%m-%d %H:%M:%S")
+            return [
+                f"ALTER PARTITION SCHEME {scheme} NEXT USED [PRIMARY]",
+                f"ALTER PARTITION FUNCTION {func}() SPLIT RANGE ('{bound}')",
+            ]
+        if self.db_type == "mysql":
+            name = self.partition_name(start, interval_days)
+            bound = boundary.strftime("%Y-%m-%d %H:%M:%S")
+            return [
+                f"ALTER TABLE {table} ADD PARTITION "
+                f"(PARTITION {name} VALUES LESS THAN "
+                f"(UNIX_TIMESTAMP('{bound}')))",
+            ]
+        raise ValueError(f"ensure_partition_sql not supported for {self.db_type}")
+
+    def drop_partition_sql(self, table: str, partition_name: str) -> list[str]:
+        """SQL statements to drop a partition by name.
+
+        ``[]`` on PostgreSQL.  MS-SQL uses MERGE RANGE to remove the boundary
+        (data in the dropped partition is absorbed into the prior partition —
+        callers should truncate or SWITCH OUT first if they want data gone).
+        Oracle and MySQL use ``ALTER TABLE DROP PARTITION``.
+        """
+        if self.db_type == "postgresql":
+            return []
+        if self.db_type == "mssql":
+            # We don't have the boundary value from the partition_name alone,
+            # so callers pass the boundary ISO string as ``partition_name`` for
+            # MS-SQL (see manage_partitions).
+            func = self.partition_function_name(table)
+            return [f"ALTER PARTITION FUNCTION {func}() MERGE RANGE ('{partition_name}')"]
+        if self.db_type in ("oracle", "mysql"):
+            return [f"ALTER TABLE {table} DROP PARTITION {partition_name}"]
+        raise ValueError(f"drop_partition_sql not supported for {self.db_type}")
 
 
 class DatabaseFacade:

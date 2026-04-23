@@ -7,12 +7,15 @@ Revision ID: 000000000001
 Revises:
 Create Date: 2026-04-23
 """
+import logging
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
+
+logger = logging.getLogger(__name__)
 
 # revision identifiers, used by Alembic.
 revision: str = "000000000001"
@@ -516,58 +519,34 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # Controller event log (TimescaleDB hypertable candidate)
-    # `validation_metadata` is included from initial creation (was a
-    # follow-up migration before the squash).
+    # Controller event log — partitioned on event_time across all dialects.
+    #
+    #   PostgreSQL  : standard table + TimescaleDB hypertable conversion.
+    #   MS-SQL      : partition function + scheme, table created ON scheme.
+    #   Oracle      : native INTERVAL partitioning (auto-creates partitions).
+    #   MySQL       : RANGE partitioning by UNIX_TIMESTAMP(event_time).
+    #
+    # Chunk / partition interval is driven by
+    # settings.event_log_partition_interval_days (default: 1 day) — the
+    # same setting the manage_partitions scheduler job reads to extend the
+    # rolling window.
     # ------------------------------------------------------------------
-    op.create_table(
-        "controller_event_log",
-        sa.Column("signal_id", sa.Text, primary_key=True),
-        sa.Column(
-            "event_time",
-            postgresql.TIMESTAMP(timezone=True),
-            primary_key=True,
-        ),
-        sa.Column("event_code", sa.Integer, primary_key=True),
-        sa.Column("event_param", sa.Integer, primary_key=True),
-        sa.Column("device_id", sa.SmallInteger, nullable=False, server_default="1"),
-        sa.Column("validation_metadata", postgresql.JSONB, nullable=True),
-    )
-    op.create_index(
-        "idx_cel_signal_time",
-        "controller_event_log",
-        [sa.text("signal_id"), sa.text("event_time DESC")],
-    )
-    op.create_index(
-        "idx_cel_event_time",
-        "controller_event_log",
-        [sa.text("event_code"), sa.text("event_time DESC")],
-    )
-    op.create_index(
-        "idx_cel_validation_metadata",
-        "controller_event_log",
-        ["validation_metadata"],
-        postgresql_using="gin",
-        postgresql_where=sa.text("validation_metadata IS NOT NULL"),
-    )
-
-    # Convert to TimescaleDB hypertable if extension is available.
-    # Chunk interval is driven by settings.event_log_partition_interval_days
-    # (default: 1 day) — the same setting that drives partition management
-    # for MS-SQL / Oracle / MySQL.  Safe to run: errors silently if
-    # TimescaleDB is not installed.
     chunk_days = int(settings.event_log_partition_interval_days)
-    op.execute(
-        "DO $$ BEGIN "
-        "  PERFORM create_hypertable("
-        "    'controller_event_log', 'event_time', "
-        f"    chunk_time_interval => INTERVAL '{chunk_days} days', "
-        "    migrate_data => true, if_not_exists => true"
-        "  ); "
-        "EXCEPTION WHEN undefined_function THEN "
-        "  RAISE NOTICE 'TimescaleDB not available — skipping hypertable creation'; "
-        "END $$;"
-    )
+    dialect_name = op.get_bind().dialect.name
+
+    if dialect_name == "postgresql":
+        _create_event_log_postgresql(chunk_days)
+    elif dialect_name == "mssql":
+        _create_event_log_mssql(chunk_days)
+    elif dialect_name == "oracle":
+        _create_event_log_oracle(chunk_days)
+    elif dialect_name == "mysql":
+        _create_event_log_mysql(chunk_days)
+    else:
+        raise RuntimeError(
+            f"controller_event_log migration: unsupported dialect "
+            f"{dialect_name!r} — supported: postgresql, mssql, oracle, mysql"
+        )
 
     # ------------------------------------------------------------------
     # Audit tables (no enforced FKs — populated by DB triggers)
@@ -1061,6 +1040,226 @@ def upgrade() -> None:
         "EXCEPTION WHEN undefined_function THEN "
         "  RAISE NOTICE 'TimescaleDB not available — keeping regular tables for cycle aggregates'; "
         "END $$;"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dialect-specific CREATE TABLE for controller_event_log
+#
+# Fixed anchor for the initial partition boundary.  Any date before the
+# deployment start is safe — the initial partition absorbs any data older
+# than the anchor; the manage_partitions scheduler job extends the range
+# forward from here daily.
+# ---------------------------------------------------------------------------
+_EVENT_LOG_INITIAL_ANCHOR = "2020-01-01 00:00:00"
+
+
+def _existing_index_names(table_name: str) -> set[str]:
+    """Return the set of existing index names on ``table_name``.
+
+    Returns an empty set if the table does not exist — callers use this
+    for idempotent index creation alongside ``inspect().has_table``.
+    """
+    insp = sa.inspect(op.get_bind())
+    if not insp.has_table(table_name):
+        return set()
+    return {idx["name"] for idx in insp.get_indexes(table_name)}
+
+
+def _create_event_log_postgresql(chunk_days: int) -> None:
+    """PostgreSQL: standard table + optional TimescaleDB hypertable.
+
+    Idempotent: skips table creation when it already exists and guards
+    each index.  The TimescaleDB ``create_hypertable`` call already uses
+    ``if_not_exists => true``.
+    """
+    insp = sa.inspect(op.get_bind())
+    if not insp.has_table("controller_event_log"):
+        op.create_table(
+            "controller_event_log",
+            sa.Column("signal_id", sa.Text, primary_key=True),
+            sa.Column(
+                "event_time",
+                postgresql.TIMESTAMP(timezone=True),
+                primary_key=True,
+            ),
+            sa.Column("event_code", sa.Integer, primary_key=True),
+            sa.Column("event_param", sa.Integer, primary_key=True),
+            sa.Column("device_id", sa.SmallInteger, nullable=False, server_default="1"),
+            sa.Column("validation_metadata", postgresql.JSONB, nullable=True),
+        )
+    existing = _existing_index_names("controller_event_log")
+    if "idx_cel_signal_time" not in existing:
+        op.create_index(
+            "idx_cel_signal_time",
+            "controller_event_log",
+            [sa.text("signal_id"), sa.text("event_time DESC")],
+        )
+    if "idx_cel_event_time" not in existing:
+        op.create_index(
+            "idx_cel_event_time",
+            "controller_event_log",
+            [sa.text("event_code"), sa.text("event_time DESC")],
+        )
+    if "idx_cel_validation_metadata" not in existing:
+        op.create_index(
+            "idx_cel_validation_metadata",
+            "controller_event_log",
+            ["validation_metadata"],
+            postgresql_using="gin",
+            postgresql_where=sa.text("validation_metadata IS NOT NULL"),
+        )
+    # TimescaleDB conversion is already idempotent via if_not_exists => true.
+    op.execute(
+        "DO $$ BEGIN "
+        "  PERFORM create_hypertable("
+        "    'controller_event_log', 'event_time', "
+        f"    chunk_time_interval => INTERVAL '{chunk_days} days', "
+        "    migrate_data => true, if_not_exists => true"
+        "  ); "
+        "EXCEPTION WHEN undefined_function THEN "
+        "  RAISE NOTICE 'TimescaleDB not available — skipping hypertable creation'; "
+        "END $$;"
+    )
+
+
+def _create_event_log_mssql(chunk_days: int) -> None:
+    """MS-SQL: partition function + scheme first, then table ON scheme.
+
+    Each step guarded by an ``IF NOT EXISTS`` sys-catalog check so the
+    migration is safe to re-run after a partial failure.
+    """
+    # Partition function.
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.partition_functions "
+        "WHERE name = 'pf_controller_event_log_event_time') "
+        "CREATE PARTITION FUNCTION pf_controller_event_log_event_time (DATETIME2) "
+        f"AS RANGE RIGHT FOR VALUES ('{_EVENT_LOG_INITIAL_ANCHOR}')"
+    )
+    # Partition scheme.
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.partition_schemes "
+        "WHERE name = 'ps_controller_event_log_event_time') "
+        "CREATE PARTITION SCHEME ps_controller_event_log_event_time "
+        "AS PARTITION pf_controller_event_log_event_time ALL TO ([PRIMARY])"
+    )
+    # Table — clustered PK leads with event_time so the partition scheme aligns.
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.tables "
+        "WHERE name = 'controller_event_log') "
+        "CREATE TABLE controller_event_log ("
+        "  signal_id NVARCHAR(64) NOT NULL, "
+        "  event_time DATETIME2 NOT NULL, "
+        "  event_code INT NOT NULL, "
+        "  event_param INT NOT NULL, "
+        "  device_id SMALLINT NOT NULL CONSTRAINT df_cel_device_id DEFAULT 1, "
+        "  validation_metadata NVARCHAR(MAX) NULL, "
+        "  CONSTRAINT pk_controller_event_log PRIMARY KEY CLUSTERED "
+        "    (event_time, signal_id, event_code, event_param) "
+        "    ON ps_controller_event_log_event_time(event_time) "
+        ")"
+    )
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.indexes "
+        "WHERE name = 'idx_cel_signal_time' "
+        "  AND object_id = OBJECT_ID('controller_event_log')) "
+        "CREATE INDEX idx_cel_signal_time "
+        "ON controller_event_log (signal_id, event_time DESC) "
+        "ON ps_controller_event_log_event_time(event_time)"
+    )
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.indexes "
+        "WHERE name = 'idx_cel_event_time' "
+        "  AND object_id = OBJECT_ID('controller_event_log')) "
+        "CREATE INDEX idx_cel_event_time "
+        "ON controller_event_log (event_code, event_time DESC) "
+        "ON ps_controller_event_log_event_time(event_time)"
+    )
+    logger.info(
+        "controller_event_log partitioned on ps_controller_event_log_event_time "
+        "(partition cadence: %d day(s))", chunk_days,
+    )
+
+
+def _create_event_log_oracle(chunk_days: int) -> None:
+    """Oracle: INTERVAL partitioning — DB auto-creates partitions on insert.
+
+    Idempotent: skips CREATE TABLE when it already exists; index guards
+    use SQLAlchemy introspection so a partial re-run picks up where it
+    left off.
+    """
+    insp = sa.inspect(op.get_bind())
+    if not insp.has_table("controller_event_log"):
+        op.execute(
+            "CREATE TABLE controller_event_log ("
+            "  signal_id VARCHAR2(64) NOT NULL, "
+            "  event_time TIMESTAMP WITH TIME ZONE NOT NULL, "
+            "  event_code INTEGER NOT NULL, "
+            "  event_param INTEGER NOT NULL, "
+            "  device_id NUMBER(5) DEFAULT 1 NOT NULL, "
+            "  validation_metadata CLOB NULL, "
+            "  CONSTRAINT pk_controller_event_log PRIMARY KEY "
+            "    (signal_id, event_time, event_code, event_param) "
+            ") "
+            "PARTITION BY RANGE (event_time) "
+            f"INTERVAL (NUMTODSINTERVAL({chunk_days}, 'DAY')) "
+            "(PARTITION p_initial VALUES LESS THAN "
+            f" (TIMESTAMP '{_EVENT_LOG_INITIAL_ANCHOR}'))"
+        )
+    existing = _existing_index_names("controller_event_log")
+    if "idx_cel_signal_time" not in existing:
+        op.create_index(
+            "idx_cel_signal_time",
+            "controller_event_log",
+            [sa.text("signal_id"), sa.text("event_time DESC")],
+        )
+    if "idx_cel_event_time" not in existing:
+        op.create_index(
+            "idx_cel_event_time",
+            "controller_event_log",
+            [sa.text("event_code"), sa.text("event_time DESC")],
+        )
+
+
+def _create_event_log_mysql(chunk_days: int) -> None:
+    """MySQL: RANGE partitioning by UNIX_TIMESTAMP(event_time).
+
+    Every unique key must include the partition expression's columns —
+    the composite PK already includes event_time, so the constraint is
+    met.  Idempotent: ``CREATE TABLE IF NOT EXISTS`` + introspection-based
+    index guards.
+    """
+    op.execute(
+        "CREATE TABLE IF NOT EXISTS controller_event_log ("
+        "  signal_id VARCHAR(64) NOT NULL, "
+        "  event_time DATETIME(6) NOT NULL, "
+        "  event_code INT NOT NULL, "
+        "  event_param INT NOT NULL, "
+        "  device_id SMALLINT NOT NULL DEFAULT 1, "
+        "  validation_metadata JSON NULL, "
+        "  PRIMARY KEY (signal_id, event_time, event_code, event_param) "
+        ") ENGINE=InnoDB "
+        "PARTITION BY RANGE (UNIX_TIMESTAMP(event_time)) ("
+        "  PARTITION p_initial VALUES LESS THAN "
+        f" (UNIX_TIMESTAMP('{_EVENT_LOG_INITIAL_ANCHOR}'))"
+        ")"
+    )
+    existing = _existing_index_names("controller_event_log")
+    if "idx_cel_signal_time" not in existing:
+        op.create_index(
+            "idx_cel_signal_time",
+            "controller_event_log",
+            [sa.text("signal_id"), sa.text("event_time DESC")],
+        )
+    if "idx_cel_event_time" not in existing:
+        op.create_index(
+            "idx_cel_event_time",
+            "controller_event_log",
+            [sa.text("event_code"), sa.text("event_time DESC")],
+        )
+    logger.info(
+        "controller_event_log partitioned by UNIX_TIMESTAMP(event_time) "
+        "(partition cadence: %d day(s))", chunk_days,
     )
 
 
