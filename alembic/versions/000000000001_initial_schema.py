@@ -552,11 +552,16 @@ def upgrade() -> None:
     )
 
     # Convert to TimescaleDB hypertable if extension is available.
-    # Safe to run — errors silently if TimescaleDB is not installed.
+    # Chunk interval is driven by settings.event_log_partition_interval_days
+    # (default: 1 day) — the same setting that drives partition management
+    # for MS-SQL / Oracle / MySQL.  Safe to run: errors silently if
+    # TimescaleDB is not installed.
+    chunk_days = int(settings.event_log_partition_interval_days)
     op.execute(
         "DO $$ BEGIN "
         "  PERFORM create_hypertable("
         "    'controller_event_log', 'event_time', "
+        f"    chunk_time_interval => INTERVAL '{chunk_days} days', "
         "    migrate_data => true, if_not_exists => true"
         "  ); "
         "EXCEPTION WHEN undefined_function THEN "

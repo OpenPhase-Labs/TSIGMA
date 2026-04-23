@@ -15,6 +15,7 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tsigma.config import settings
 from tsigma.database.db import DatabaseFacade
 from tsigma.models.base import Base
 
@@ -24,8 +25,8 @@ logger = logging.getLogger(__name__)
 async def initialize_database(
     db_facade: DatabaseFacade,
     enable_timescale: bool = True,
-    chunk_time_interval_days: int = 7,
-    compression_after_days: int = 7
+    chunk_time_interval_days: int | None = None,
+    compression_after_days: int = 7,
 ) -> None:
     """
     Initialize database on first run.
@@ -37,10 +38,16 @@ async def initialize_database(
     - Indexes
 
     Args:
-        enable_timescale: Enable TimescaleDB hypertables (PostgreSQL only)
-        chunk_time_interval_days: Hypertable chunk size in days (default: 7)
-        compression_after_days: Compress chunks older than N days (default: 7)
+        enable_timescale: Enable TimescaleDB hypertables (PostgreSQL only).
+        chunk_time_interval_days: Hypertable chunk size in days. When None
+            (default), reads from ``settings.event_log_partition_interval_days``
+            (default: 1) so the TimescaleDB baseline matches the partition
+            interval used by MS-SQL / Oracle / MySQL.
+        compression_after_days: Compress chunks older than N days (default: 7).
     """
+    if chunk_time_interval_days is None:
+        chunk_time_interval_days = settings.event_log_partition_interval_days
+
     async with db_facade.session() as session:
         # Create all tables from models
         async with session.begin():
@@ -51,7 +58,7 @@ async def initialize_database(
             await _setup_timescale(
                 session,
                 chunk_time_interval_days,
-                compression_after_days
+                compression_after_days,
             )
 
         # Create indexes for query performance
@@ -87,7 +94,7 @@ async def _setup_timescale(
             text("""
                 SELECT create_hypertable(
                     'controller_event_log',
-                    'timestamp',
+                    'event_time',
                     chunk_time_interval => INTERVAL :chunk_interval,
                     if_not_exists => TRUE,
                     migrate_data => TRUE
@@ -111,7 +118,7 @@ async def _setup_timescale(
             ALTER TABLE controller_event_log SET (
                 timescaledb.compress,
                 timescaledb.compress_segmentby = 'signal_id',
-                timescaledb.compress_orderby = 'timestamp DESC'
+                timescaledb.compress_orderby = 'event_time DESC'
             )
         """))
         await session.execute(
@@ -140,19 +147,19 @@ async def _create_indexes(
     Create indexes for query performance.
 
     Database-neutral strategy:
-    - PRIMARY: signal_id + timestamp (single-signal queries)
-    - SECONDARY: event_code + timestamp (cross-signal queries)
+    - PRIMARY: signal_id + event_time (single-signal queries)
+    - SECONDARY: event_code + event_time (cross-signal queries)
     """
     # Index 1: Signal + Time (covers PCD, split monitor, etc.)
     await session.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_cel_signal_timestamp
-        ON controller_event_log (signal_id, timestamp DESC)
+        CREATE INDEX IF NOT EXISTS idx_cel_signal_event_time
+        ON controller_event_log (signal_id, event_time DESC)
     """))
 
     # Index 2: Event code + Time (covers flash status, daily reports)
     await session.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_cel_event_timestamp
-        ON controller_event_log (event_code, timestamp DESC)
+        CREATE INDEX IF NOT EXISTS idx_cel_event_code_time
+        ON controller_event_log (event_code, event_time DESC)
     """))
 
     logger.info("Indexes created")

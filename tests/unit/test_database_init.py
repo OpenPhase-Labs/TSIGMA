@@ -63,14 +63,18 @@ class TestInitializeDatabase:
 
     @pytest.mark.asyncio
     async def test_calls_timescale_setup_for_postgresql(self):
-        """Test TimescaleDB setup is called for PostgreSQL."""
+        """Test TimescaleDB setup is called for PostgreSQL.
+
+        Default chunk interval reads from
+        ``settings.event_log_partition_interval_days`` (default: 1 day).
+        """
         mock_facade, mock_session = _make_facade_with_mock_session("postgresql")
 
         with patch("tsigma.database.init._setup_timescale", new_callable=AsyncMock) as mock_ts, \
              patch("tsigma.database.init._create_indexes", new_callable=AsyncMock):
             await initialize_database(mock_facade, enable_timescale=True)
 
-        mock_ts.assert_awaited_once_with(mock_session, 7, 7)
+        mock_ts.assert_awaited_once_with(mock_session, 1, 7)
 
     @pytest.mark.asyncio
     async def test_skips_timescale_for_mssql(self):
@@ -225,15 +229,15 @@ class TestCreateIndexes:
     """Tests for _create_indexes()."""
 
     @pytest.mark.asyncio
-    async def test_creates_signal_timestamp_index(self):
-        """Test signal+timestamp composite index is created."""
+    async def test_creates_signal_event_time_index(self):
+        """Test signal+event_time composite index is created."""
         mock_session = AsyncMock()
 
         await _create_indexes(mock_session, "postgresql")
 
         all_sql = [str(c[0][0].text) for c in mock_session.execute.call_args_list]
-        assert any("idx_cel_signal_timestamp" in sql for sql in all_sql)
-        assert any("signal_id" in sql and "timestamp" in sql for sql in all_sql)
+        assert any("idx_cel_signal_event_time" in sql for sql in all_sql)
+        assert any("signal_id" in sql and "event_time" in sql for sql in all_sql)
 
     @pytest.mark.asyncio
     async def test_creates_event_timestamp_index(self):
@@ -243,7 +247,7 @@ class TestCreateIndexes:
         await _create_indexes(mock_session, "postgresql")
 
         all_sql = [str(c[0][0].text) for c in mock_session.execute.call_args_list]
-        assert any("idx_cel_event_timestamp" in sql for sql in all_sql)
+        assert any("idx_cel_event_code_time" in sql for sql in all_sql)
         assert any("event_code" in sql for sql in all_sql)
 
     @pytest.mark.asyncio

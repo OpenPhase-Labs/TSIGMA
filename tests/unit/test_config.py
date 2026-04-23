@@ -18,7 +18,7 @@ class TestSettings:
         assert settings.pg_port == 5432
         assert settings.pg_database == "tsigma"
         assert settings.enable_api is True
-        assert settings.timescale_chunk_interval == "1 day"
+        assert settings.event_log_partition_interval_days == 1
 
     def test_env_override(self, monkeypatch):
         """Test environment variables override defaults."""
@@ -31,10 +31,15 @@ class TestSettings:
         assert settings.pg_port == 5433
         assert settings.enable_api is False
 
-    def test_timescale_config(self):
-        """Test TimescaleDB-specific settings."""
+    def test_partition_and_storage_config(self):
+        """Test event-log partition and storage tier settings.
+
+        ``event_log_partition_interval_days`` is the unified chunk/partition
+        size used by TimescaleDB on PostgreSQL and by the partition-management
+        job for MS-SQL / Oracle / MySQL — default 1 (daily).
+        """
         settings = Settings()
-        assert settings.timescale_chunk_interval == "1 day"
+        assert settings.event_log_partition_interval_days == 1
         assert settings.storage_warm_after == "7 days"
         assert settings.storage_retention == "2 years"
 

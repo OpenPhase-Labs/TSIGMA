@@ -35,8 +35,12 @@ class Settings(BaseSettings):
     enable_collector: bool = True
     enable_scheduler: bool = True
 
-    # TimescaleDB tuning (configurable at app init)
-    timescale_chunk_interval: str = "1 day"
+    # Event-log partition tuning (configurable at app init).
+    # Used by TimescaleDB (chunk_time_interval) on PostgreSQL and by the
+    # partition-management job for MS-SQL / Oracle / MySQL.  Integer days,
+    # default 1 — daily partitions work well for multi-million-row daily
+    # event volumes at signal scale.
+    event_log_partition_interval_days: int = 1
     storage_warm_after: str = "7 days"
     storage_retention: str = "2 years"
 
