@@ -1,0 +1,11 @@
+.vscode/
+.antigravity/
+__pycache__/
+
+.env
+.venv
+venv
+
+.coverage
+htmlcov/
+.pytest_cache/
