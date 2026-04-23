@@ -94,8 +94,11 @@ async def run_report(
     # (e.g. the left-turn-gap-data-check uses 422 when overall_ready is
     # False so clients can route on status without parsing the body).
     preferred = report_cls.preferred_http_status(result)
-    body = {"status": "complete", "data": json.loads(result.to_json(orient="records", date_format="iso"))}
-    if preferred is not None and preferred != status.HTTP_200_OK:
+    body = {
+        "status": "complete",
+        "data": json.loads(result.to_json(orient="records", date_format="iso")),
+    }
+    if isinstance(preferred, int) and preferred != status.HTTP_200_OK:
         return JSONResponse(status_code=preferred, content=body)
     return body
 
