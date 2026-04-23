@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tsigma"
+version = "1.0.0"
+description = "Traffic Signal Intelligence: Gathering Metrics & Analytics"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MPL-2.0"
+authors = [
+    { name = "OpenPhase Labs" },
+]
+
+dependencies = [
+    # Web framework
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "starlette>=0.45",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+
+    # Data processing
+    "pandas>=2.2",
+
+    # Configuration
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+
+    # Authentication
+    "bcrypt>=4.2",
+
+    # Session store / cache
+    "valkey>=6.0",
+
+    # GraphQL
+    "strawberry-graphql[fastapi]>=0.262",
+
+    # HTTP clients
+    "httpx>=0.28",
+    "aiohttp>=3.11",
+
+    # XML security
+    "defusedxml>=0.7",
+
+    # Credential encryption
+    "cryptography>=44.0",
+
+    # Real-time streaming
+    "nats-py>=2.9",
+    "aiomqtt>=2.3",
+    "grpcio>=1.60",
+
+    # Protobuf decoding (OpenPhase protocol)
+    "protobuf>=5.29",
+
+    # Scheduling
+    "apscheduler>=3.10,<4",
+
+    # File watching
+    "watchdog>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "httpx",
+    "ruff>=0.9",
+]
+mssql = ["aioodbc>=0.5"]
+oracle = ["oracledb>=2.0"]
+mysql = ["aiomysql>=0.2"]
+s3 = ["aiobotocore>=2.15"]
+snmp = ["pysnmp>=7.1"]
+
+[project.scripts]
+tsigma = "tsigma.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tsigma"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+# Generated protobuf code — do not lint.
+extend-exclude = ["tsigma/collection/decoders/proto/**"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+# Blank-line rules (E302/E303/E305) are in ruff preview — enable just those.
+preview = true
+explicit-preview-rules = true
+extend-select = ["E302", "E303", "E305"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --strict-markers --tb=short --cov=tsigma --cov-report=term-missing --cov-report=html"
+markers = [
+    "integration: requires a running PostgreSQL database (set TSIGMA_TEST_DB_URL)",
+]
