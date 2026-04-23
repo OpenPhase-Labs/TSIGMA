@@ -1,0 +1,5 @@
+{
+  "extraPaths": [
+    "tsigma/collection/decoders/proto"
+  ]
+}
