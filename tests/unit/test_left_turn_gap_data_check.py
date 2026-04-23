@@ -325,12 +325,13 @@ class TestNoDetectors:
            new_callable=AsyncMock)
     @patch("tsigma.reports.left_turn_gap_data_check.get_config_at",
            new_callable=AsyncMock)
-    async def test_unknown_approach_returns_not_ready(self, mock_config, mock_fetch):
-        """Approach ID not in config → same empty not-ready row."""
+    async def test_unknown_approach_raises_resource_not_found(self, mock_config, mock_fetch):
+        """Approach ID not in config → ReportResourceNotFoundError (API surfaces as 404)."""
         from tsigma.reports.left_turn_gap_data_check import (
             LeftTurnGapDataCheckParams,
             LeftTurnGapDataCheckReport,
         )
+        from tsigma.reports.registry import ReportResourceNotFoundError
 
         mock_config.return_value = _make_config()
         mock_fetch.return_value = _events_to_df([])
@@ -340,12 +341,8 @@ class TestNoDetectors:
             signal_id="SIG-001", approach_id="APP-DOES-NOT-EXIST",
             start=_START_ISO, end=_END_ISO,
         )
-        result = await report.execute(params, _mock_session())
-
-        assert len(result) == 1
-        row = result.iloc[0]
-        assert bool(row["overall_ready"]) is False
-        assert bool(row["insufficient_detector_event_count"]) is True
+        with pytest.raises(ReportResourceNotFoundError, match="APP-DOES-NOT-EXIST"):
+            await report.execute(params, _mock_session())
 
 
 # =========================================================================

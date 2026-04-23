@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pandas as pd
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -55,16 +56,31 @@ def _add_session_override(app, mock_session):
 
 
 def _make_fake_report_cls(execute_result=None, export_result=None):
-    """Create a fake report class for mocking ReportRegistry."""
+    """Create a fake report class for mocking ReportRegistry.
+
+    ``execute_result`` may be a DataFrame (matches the real Report
+    contract) or a dict / list which will be wrapped in a DataFrame.
+    """
+    if execute_result is None:
+        execute_result = pd.DataFrame([{"col": "val"}])
+    elif isinstance(execute_result, dict):
+        execute_result = pd.DataFrame([execute_result])
+    elif isinstance(execute_result, list):
+        execute_result = pd.DataFrame(execute_result)
+
     cls = MagicMock()
     instance = MagicMock()
-    instance.execute = AsyncMock(return_value=execute_result or [{"col": "val"}])
+    instance.execute = AsyncMock(return_value=execute_result)
     instance.export = AsyncMock(return_value=export_result or b"csv,data\n1,2")
     cls.return_value = instance
     cls.description = "Test report"
     cls.category = "standard"
     cls.estimated_time = "fast"
     cls.export_formats = ["csv", "json"]
+    # The real preferred_http_status hook returns None for "use 200";
+    # MagicMock's default return is another MagicMock, which would
+    # confuse the API handler's isinstance check.
+    cls.preferred_http_status = MagicMock(return_value=None)
     return cls
 
 
@@ -122,7 +138,7 @@ class TestRunReport:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "complete"
-        assert data["data"] == {"metric": 42}
+        assert data["data"] == [{"metric": 42}]
 
     @patch("tsigma.api.v1.reports.ReportRegistry")
     def test_report_not_found(self, mock_registry):
