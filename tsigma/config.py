@@ -75,6 +75,26 @@ class Settings(BaseSettings):
     checkpoint_future_tolerance_seconds: int = 300  # 5 minutes
     checkpoint_silent_cycles_threshold: int = 3  # alert after N silent cycles
 
+    # Watchdog data-quality checks
+    # Minimum raw-event volume (any event code) per signal over the last hour.
+    # Below this threshold indicates likely comm failure, controller sleep,
+    # or decoder issue.
+    watchdog_low_event_count_threshold: int = 100
+    # Maximum allowed gap (minutes) between the latest event for a signal and
+    # now-UTC before the signal is flagged as having a data-window gap.
+    watchdog_missing_window_minutes: int = 30
+    # Minimum continuous-active duration (minutes) for a pedestrian detector
+    # before it is flagged as stuck.
+    watchdog_stuck_ped_minutes: int = 120
+    # Number of standard deviations a phase's last-hour termination ratio
+    # (gap-out / max-out / force-off) must exceed its 7-day baseline by in
+    # order to be flagged as anomalous.
+    watchdog_termination_anomaly_stddev: float = 3.0
+    # Minimum detector ON events (code 82) per detector per hour during hours
+    # where the approach has had at least one green phase. Below this
+    # threshold flags a detector as having a low hit count.
+    watchdog_low_hit_threshold: int = 5
+
     # API configuration
     api_host: str = "127.0.0.1"
     api_port: int = 8080

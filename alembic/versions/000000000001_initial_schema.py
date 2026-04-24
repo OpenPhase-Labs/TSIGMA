@@ -14,6 +14,12 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
+from tsigma.database.migration_aggregates_helpers import (
+    create_second_batch_aggregate_tables as _create_second_batch_aggregate_tables,
+)
+from tsigma.database.migration_aggregates_helpers import (
+    second_batch_continuous_aggregates as _second_batch_continuous_aggregates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -771,6 +777,38 @@ def upgrade() -> None:
     op.create_index("ix_system_setting_category", "system_setting", ["category"])
 
     # ------------------------------------------------------------------
+    # Alert suppression — watchdog check throttling rules
+    # ------------------------------------------------------------------
+    insp = sa.inspect(op.get_bind())
+    if not insp.has_table("alert_suppression"):
+        op.create_table(
+            "alert_suppression",
+            sa.Column(
+                "suppression_id",
+                postgresql.UUID(as_uuid=True),
+                primary_key=True,
+                server_default=sa.text("gen_random_uuid()"),
+            ),
+            sa.Column("signal_id", sa.Text, nullable=True),
+            sa.Column("check_name", sa.Text, nullable=False),
+            sa.Column("reason", sa.Text, nullable=True),
+            sa.Column("created_by", sa.Text, nullable=True),
+            sa.Column(
+                "created_at",
+                postgresql.TIMESTAMP(timezone=True),
+                nullable=False,
+                server_default=sa.func.now(),
+            ),
+            sa.Column("expires_at", postgresql.TIMESTAMP(timezone=True), nullable=True),
+        )
+    if "idx_alert_suppression_lookup" not in _existing_index_names("alert_suppression"):
+        op.create_index(
+            "idx_alert_suppression_lookup",
+            "alert_suppression",
+            ["check_name", "signal_id", "expires_at"],
+        )
+
+    # ------------------------------------------------------------------
     # Aggregate tables (analytics — no FKs)
     # ------------------------------------------------------------------
     op.create_table(
@@ -863,6 +901,15 @@ def upgrade() -> None:
         "idx_pth_signal_hour", "phase_termination_hourly", ["signal_id", "hour_start"],
     )
     op.create_index("idx_pth_hour", "phase_termination_hourly", ["hour_start"])
+
+    # ------------------------------------------------------------------
+    # Second-batch aggregates (speed / cycle / left-turn gap / pedestrian
+    # / preemption / priority / signal event count / yellow-red activation).
+    # All are 15-minute binned.  Idempotency is provided by the table-
+    # creation path already — alembic op.create_table() is wrapped below
+    # in inspect().has_table() checks so the migration is safe to re-run.
+    # ------------------------------------------------------------------
+    _create_second_batch_aggregate_tables()
 
     # ------------------------------------------------------------------
     # PCD Cycle Aggregate Tables
@@ -1041,6 +1088,25 @@ def upgrade() -> None:
         "  RAISE NOTICE 'TimescaleDB not available — keeping regular tables for cycle aggregates'; "
         "END $$;"
     )
+
+    # ------------------------------------------------------------------
+    # TimescaleDB Continuous Aggregates for the second-batch tables.
+    # Each view replaces the regular table of the same name when
+    # TimescaleDB is available; the scheduler ``agg_*`` job noops in
+    # that case (see ``_should_skip``).  All DDL is guarded by the
+    # ``undefined_function`` EXCEPTION so non-TimescaleDB PostgreSQL
+    # deployments retain the regular tables.
+    # ------------------------------------------------------------------
+    for stmt in _second_batch_continuous_aggregates():
+        op.execute(stmt)
+
+    # ------------------------------------------------------------------
+    # Roadside sensor configuration tables — radar / LiDAR / video
+    # devices that live at the roadway edge (Wavetronix, Iteris, FLIR,
+    # Houston Radar, Quanergy, etc.).  Parallel to the cabinet-connected
+    # ``detector`` table.  See ``tsigma/models/roadside_sensor.py``.
+    # ------------------------------------------------------------------
+    _create_roadside_sensor_tables()
 
 
 # ---------------------------------------------------------------------------
@@ -1263,11 +1329,286 @@ def _create_event_log_mysql(chunk_days: int) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Roadside sensor configuration tables
+# ---------------------------------------------------------------------------
+
+
+def _create_roadside_sensor_tables() -> None:
+    """Create the 6 roadside-sensor config tables idempotently.
+
+    Order:
+      1. ``roadside_sensor_vendor``         (reference)
+      2. ``roadside_sensor_model``          (reference, FK → vendor)
+      3. ``roadside_sensor``                (FK → model + signal)
+      4. ``roadside_sensor_lane``           (FK → sensor + approach)
+      5. ``roadside_sensor_audit``          (JSONB change history)
+      6. ``roadside_sensor_lane_audit``     (JSONB change history)
+
+    Each step guarded with ``inspect(bind).has_table(...)``; each index
+    guarded with ``_existing_index_names(...)``.  Re-running after a
+    partial failure resumes from where it stopped.
+    """
+    insp = sa.inspect(op.get_bind())
+
+    if not insp.has_table("roadside_sensor_vendor"):
+        op.create_table(
+            "roadside_sensor_vendor",
+            sa.Column(
+                "vendor_id",
+                postgresql.UUID(as_uuid=True),
+                primary_key=True,
+                server_default=sa.text("gen_random_uuid()"),
+            ),
+            sa.Column("name", sa.Text, nullable=False),
+        )
+
+    if not insp.has_table("roadside_sensor_model"):
+        op.create_table(
+            "roadside_sensor_model",
+            sa.Column(
+                "model_id",
+                postgresql.UUID(as_uuid=True),
+                primary_key=True,
+                server_default=sa.text("gen_random_uuid()"),
+            ),
+            sa.Column(
+                "vendor_id",
+                postgresql.UUID(as_uuid=True),
+                sa.ForeignKey("roadside_sensor_vendor.vendor_id"),
+                nullable=False,
+            ),
+            sa.Column("name", sa.Text, nullable=False),
+            sa.Column("sensor_type", sa.Text, nullable=False),
+            sa.Column("default_protocol", sa.Text, nullable=True),
+        )
+
+    if not insp.has_table("roadside_sensor"):
+        op.create_table(
+            "roadside_sensor",
+            sa.Column(
+                "sensor_id",
+                postgresql.UUID(as_uuid=True),
+                primary_key=True,
+                server_default=sa.text("gen_random_uuid()"),
+            ),
+            sa.Column(
+                "model_id",
+                postgresql.UUID(as_uuid=True),
+                sa.ForeignKey("roadside_sensor_model.model_id"),
+                nullable=False,
+            ),
+            sa.Column(
+                "signal_id",
+                sa.Text,
+                sa.ForeignKey("signal.signal_id"),
+                nullable=False,
+            ),
+            sa.Column("device_name", sa.Text, nullable=False),
+            sa.Column("serial_number", sa.Text, nullable=True),
+            sa.Column("firmware_version", sa.Text, nullable=True),
+            sa.Column(
+                "install_date", postgresql.TIMESTAMP(timezone=True), nullable=True,
+            ),
+            sa.Column("latitude", sa.Numeric, nullable=True),
+            sa.Column("longitude", sa.Numeric, nullable=True),
+            sa.Column("mounting_height_feet", sa.Numeric, nullable=True),
+            sa.Column("azimuth_degrees", sa.Numeric, nullable=True),
+            sa.Column("ip_address", postgresql.INET, nullable=True),
+            sa.Column("port", sa.Integer, nullable=True),
+            sa.Column("protocol", sa.Text, nullable=True),
+            sa.Column("username", sa.Text, nullable=True),
+            sa.Column("password", sa.Text, nullable=True),
+            sa.Column(
+                "emits_speed", sa.Boolean, nullable=False, server_default="false",
+            ),
+            sa.Column(
+                "emits_classification", sa.Boolean, nullable=False,
+                server_default="false",
+            ),
+            sa.Column(
+                "emits_queue_length", sa.Boolean, nullable=False,
+                server_default="false",
+            ),
+            sa.Column(
+                "emits_occupancy", sa.Boolean, nullable=False,
+                server_default="false",
+            ),
+            sa.Column(
+                "is_active", sa.Boolean, nullable=False, server_default="true",
+            ),
+            sa.Column(
+                "last_seen_at", postgresql.TIMESTAMP(timezone=True), nullable=True,
+            ),
+            sa.Column("metadata", postgresql.JSONB, nullable=True),
+            sa.Column(
+                "created_at", postgresql.TIMESTAMP(timezone=True), nullable=False,
+                server_default=sa.func.now(),
+            ),
+            sa.Column(
+                "updated_at", postgresql.TIMESTAMP(timezone=True), nullable=False,
+                server_default=sa.func.now(),
+            ),
+        )
+    existing = _existing_index_names("roadside_sensor")
+    if "idx_roadside_sensor_signal" not in existing:
+        op.create_index("idx_roadside_sensor_signal", "roadside_sensor", ["signal_id"])
+    if "idx_roadside_sensor_model" not in existing:
+        op.create_index("idx_roadside_sensor_model", "roadside_sensor", ["model_id"])
+    if "idx_roadside_sensor_active" not in existing:
+        op.create_index("idx_roadside_sensor_active", "roadside_sensor", ["is_active"])
+
+    if not insp.has_table("roadside_sensor_lane"):
+        op.create_table(
+            "roadside_sensor_lane",
+            sa.Column(
+                "zone_id",
+                postgresql.UUID(as_uuid=True),
+                primary_key=True,
+                server_default=sa.text("gen_random_uuid()"),
+            ),
+            sa.Column(
+                "sensor_id",
+                postgresql.UUID(as_uuid=True),
+                sa.ForeignKey("roadside_sensor.sensor_id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "approach_id",
+                postgresql.UUID(as_uuid=True),
+                sa.ForeignKey("approach.approach_id"),
+                nullable=False,
+            ),
+            sa.Column("lane_number", sa.SmallInteger, nullable=False),
+            sa.Column("vendor_lane_id", sa.Text, nullable=False),
+            sa.Column(
+                "created_at", postgresql.TIMESTAMP(timezone=True), nullable=False,
+                server_default=sa.func.now(),
+            ),
+            sa.Column(
+                "updated_at", postgresql.TIMESTAMP(timezone=True), nullable=False,
+                server_default=sa.func.now(),
+            ),
+        )
+    existing = _existing_index_names("roadside_sensor_lane")
+    if "idx_roadside_sensor_lane_sensor" not in existing:
+        op.create_index(
+            "idx_roadside_sensor_lane_sensor", "roadside_sensor_lane", ["sensor_id"],
+        )
+    if "idx_roadside_sensor_lane_approach" not in existing:
+        op.create_index(
+            "idx_roadside_sensor_lane_approach", "roadside_sensor_lane", ["approach_id"],
+        )
+
+    if not insp.has_table("roadside_sensor_audit"):
+        op.create_table(
+            "roadside_sensor_audit",
+            sa.Column(
+                "audit_id", sa.BigInteger, primary_key=True, autoincrement=True,
+            ),
+            sa.Column(
+                "sensor_id", postgresql.UUID(as_uuid=True), nullable=False,
+            ),
+            sa.Column("signal_id", sa.Text, nullable=False),
+            sa.Column(
+                "changed_at", postgresql.TIMESTAMP(timezone=True), nullable=False,
+                server_default=sa.func.now(),
+            ),
+            sa.Column("changed_by", sa.Text, nullable=True),
+            sa.Column("operation", sa.Text, nullable=False),
+            sa.Column("old_values", postgresql.JSONB, nullable=True),
+            sa.Column("new_values", postgresql.JSONB, nullable=True),
+        )
+    existing = _existing_index_names("roadside_sensor_audit")
+    if "idx_roadside_sensor_audit_sensor" not in existing:
+        op.create_index(
+            "idx_roadside_sensor_audit_sensor", "roadside_sensor_audit",
+            [sa.text("sensor_id"), sa.text("changed_at DESC")],
+        )
+    if "idx_roadside_sensor_audit_signal" not in existing:
+        op.create_index(
+            "idx_roadside_sensor_audit_signal", "roadside_sensor_audit",
+            [sa.text("signal_id"), sa.text("changed_at DESC")],
+        )
+    if "idx_roadside_sensor_audit_time" not in existing:
+        op.create_index(
+            "idx_roadside_sensor_audit_time", "roadside_sensor_audit",
+            [sa.text("changed_at DESC")],
+        )
+
+    if not insp.has_table("roadside_sensor_lane_audit"):
+        op.create_table(
+            "roadside_sensor_lane_audit",
+            sa.Column(
+                "audit_id", sa.BigInteger, primary_key=True, autoincrement=True,
+            ),
+            sa.Column("zone_id", postgresql.UUID(as_uuid=True), nullable=False),
+            sa.Column("sensor_id", postgresql.UUID(as_uuid=True), nullable=False),
+            sa.Column("approach_id", postgresql.UUID(as_uuid=True), nullable=False),
+            sa.Column(
+                "changed_at", postgresql.TIMESTAMP(timezone=True), nullable=False,
+                server_default=sa.func.now(),
+            ),
+            sa.Column("changed_by", sa.Text, nullable=True),
+            sa.Column("operation", sa.Text, nullable=False),
+            sa.Column("old_values", postgresql.JSONB, nullable=True),
+            sa.Column("new_values", postgresql.JSONB, nullable=True),
+        )
+    existing = _existing_index_names("roadside_sensor_lane_audit")
+    if "idx_roadside_sensor_lane_audit_zone" not in existing:
+        op.create_index(
+            "idx_roadside_sensor_lane_audit_zone", "roadside_sensor_lane_audit",
+            [sa.text("zone_id"), sa.text("changed_at DESC")],
+        )
+    if "idx_roadside_sensor_lane_audit_sensor" not in existing:
+        op.create_index(
+            "idx_roadside_sensor_lane_audit_sensor", "roadside_sensor_lane_audit",
+            [sa.text("sensor_id"), sa.text("changed_at DESC")],
+        )
+    if "idx_roadside_sensor_lane_audit_time" not in existing:
+        op.create_index(
+            "idx_roadside_sensor_lane_audit_time", "roadside_sensor_lane_audit",
+            [sa.text("changed_at DESC")],
+        )
+
+
 def downgrade() -> None:
+    # Roadside sensor tables — audit tables first (no FK dependents),
+    # then the lane mapping, then the sensor, then the reference tables
+    # (no dependents remain after the main tables are dropped).
+    op.execute("DROP TABLE IF EXISTS roadside_sensor_lane_audit")
+    op.execute("DROP TABLE IF EXISTS roadside_sensor_audit")
+    op.execute("DROP TABLE IF EXISTS roadside_sensor_lane")
+    op.execute("DROP TABLE IF EXISTS roadside_sensor")
+    op.execute("DROP TABLE IF EXISTS roadside_sensor_model")
+    op.execute("DROP TABLE IF EXISTS roadside_sensor_vendor")
+
     # PCD Cycle Aggregates
     op.drop_table("cycle_summary_15min")
     op.drop_table("cycle_detector_arrival")
     op.drop_table("cycle_boundary")
+
+    # Second-batch aggregates (drop CAGGs first where they exist, then tables)
+    for view in (
+        "approach_speed_15min",
+        "phase_cycle_15min",
+        "phase_left_turn_gap_15min",
+        "phase_pedestrian_15min",
+        "preemption_15min",
+        "priority_15min",
+        "signal_event_count_15min",
+        "yellow_red_activation_15min",
+    ):
+        op.execute(
+            "DO $$ BEGIN "
+            f"  DROP MATERIALIZED VIEW IF EXISTS {view} CASCADE; "
+            "EXCEPTION "
+            "  WHEN undefined_table THEN NULL; "
+            "  WHEN undefined_function THEN NULL; "
+            "END $$;"
+        )
+        # Regular (non-CAGG) table drop — guarded by checkfirst.
+        op.execute(f"DROP TABLE IF EXISTS {view}")
 
     # Aggregates
     op.drop_table("phase_termination_hourly")
@@ -1280,6 +1621,9 @@ def downgrade() -> None:
 
     # System
     op.drop_table("system_setting")
+
+    # Alert suppression
+    op.drop_table("alert_suppression")
 
     # Auth (drop api_key before auth_user due to FK)
     op.drop_table("api_key")

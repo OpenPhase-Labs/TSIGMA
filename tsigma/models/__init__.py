@@ -17,8 +17,27 @@ from .aggregates import (
     PhaseTerminationHourly,
     SplitFailureHourly,
 )
+from .aggregates_phase import (
+    ApproachSpeed15Min,
+    PhaseCycle15Min,
+    PhaseLeftTurnGap15Min,
+    PhasePedestrian15Min,
+    Priority15Min,
+    YellowRedActivation15Min,
+)
+from .aggregates_signal import (
+    Preemption15Min,
+    SignalEventCount15Min,
+)
+from .alert_suppression import AlertSuppression
 from .approach import Approach
-from .audit import ApproachAudit, AuthAuditLog, DetectorAudit
+from .audit import (
+    ApproachAudit,
+    AuthAuditLog,
+    DetectorAudit,
+    RoadsideSensorAudit,
+    RoadsideSensorLaneAudit,
+)
 from .base import Base, TimestampMixin
 from .checkpoint import PollingCheckpoint
 from .detector import Detector
@@ -33,7 +52,10 @@ from .reference import (
     LaneType,
     MovementType,
     Region,
+    RoadsideSensorModel,
+    RoadsideSensorVendor,
 )
+from .roadside_sensor import RoadsideSensor, RoadsideSensorLane
 from .route import Route, RouteDistance, RoutePhase, RouteSignal
 from .signal import Signal, SignalAudit
 from .signal_plan import SignalPlan
@@ -44,6 +66,7 @@ __all__ = [
     "Base",
     "TimestampMixin",
     # Core
+    "AlertSuppression",
     "PollingCheckpoint",
     "Signal",
     "SignalAudit",
@@ -54,6 +77,11 @@ __all__ = [
     "Detector",
     "ControllerEventLog",
     "SignalPlan",
+    # Roadside sensors (radar / LiDAR / video)
+    "RoadsideSensor",
+    "RoadsideSensorLane",
+    "RoadsideSensorAudit",
+    "RoadsideSensorLaneAudit",
     # Routes
     "Route",
     "RouteSignal",
@@ -61,6 +89,7 @@ __all__ = [
     "RouteDistance",
     # Aggregates
     "ApproachDelay15Min",
+    "ApproachSpeed15Min",
     "ArrivalOnRedHourly",
     "CoordinationQualityHourly",
     "CycleBoundary",
@@ -68,8 +97,15 @@ __all__ = [
     "CycleSummary15Min",
     "DetectorOccupancyHourly",
     "DetectorVolumeHourly",
+    "PhaseCycle15Min",
+    "PhaseLeftTurnGap15Min",
+    "PhasePedestrian15Min",
     "PhaseTerminationHourly",
+    "Preemption15Min",
+    "Priority15Min",
+    "SignalEventCount15Min",
     "SplitFailureHourly",
+    "YellowRedActivation15Min",
     # Reference
     "Corridor",
     "ControllerType",
@@ -80,6 +116,8 @@ __all__ = [
     "LaneType",
     "MovementType",
     "Region",
+    "RoadsideSensorModel",
+    "RoadsideSensorVendor",
     # System
     "SystemSetting",
 ]

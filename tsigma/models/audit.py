@@ -86,6 +86,71 @@ class DetectorAudit(Base):
     )
 
 
+class RoadsideSensorAudit(Base):
+    """
+    Roadside sensor configuration change history.
+
+    Populated by database trigger on the roadside_sensor table.
+    Same JSONB snapshot pattern as signal_audit / approach_audit /
+    detector_audit.
+    """
+
+    __tablename__ = "roadside_sensor_audit"
+
+    audit_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sensor_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    signal_id: Mapped[str] = mapped_column(Text, nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now(),
+    )
+    changed_by: Mapped[Optional[str]] = mapped_column(Text)
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+    old_values: Mapped[Optional[dict]] = mapped_column(JSONB)
+    new_values: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+    __table_args__ = (
+        Index("idx_roadside_sensor_audit_sensor", "sensor_id", "changed_at",
+              postgresql_ops={"changed_at": "DESC"}),
+        Index("idx_roadside_sensor_audit_signal", "signal_id", "changed_at",
+              postgresql_ops={"changed_at": "DESC"}),
+        Index("idx_roadside_sensor_audit_time", "changed_at",
+              postgresql_ops={"changed_at": "DESC"}),
+        {"schema": tsigma_schema("config")},
+    )
+
+
+class RoadsideSensorLaneAudit(Base):
+    """
+    Roadside sensor lane-mapping change history.
+
+    Populated by database trigger on the roadside_sensor_lane table.
+    """
+
+    __tablename__ = "roadside_sensor_lane_audit"
+
+    audit_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    zone_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    sensor_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    approach_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now(),
+    )
+    changed_by: Mapped[Optional[str]] = mapped_column(Text)
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+    old_values: Mapped[Optional[dict]] = mapped_column(JSONB)
+    new_values: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+    __table_args__ = (
+        Index("idx_roadside_sensor_lane_audit_zone", "zone_id", "changed_at",
+              postgresql_ops={"changed_at": "DESC"}),
+        Index("idx_roadside_sensor_lane_audit_sensor", "sensor_id", "changed_at",
+              postgresql_ops={"changed_at": "DESC"}),
+        Index("idx_roadside_sensor_lane_audit_time", "changed_at",
+              postgresql_ops={"changed_at": "DESC"}),
+        {"schema": tsigma_schema("config")},
+    )
+
+
 class AuthAuditLog(Base):
     """
     Authentication event log.
