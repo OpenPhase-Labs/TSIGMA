@@ -75,6 +75,17 @@ dev = [
     "httpx",
     "ruff>=0.9",
 ]
+# Multi-dialect integration-test extras.  Each dialect's integration
+# tests prefer a dev-provided DB URL (TSIGMA_TEST_{PG,MSSQL,ORACLE,MYSQL}_URL)
+# and fall back to spinning up a Docker container via testcontainers
+# if the URL is unset and Docker is available.  Tests skip gracefully
+# when neither path is usable.
+integration = [
+    "testcontainers[postgres,mssql,oracle,mysql]>=4.8",
+    "aioodbc>=0.5",
+    "oracledb>=2.0",
+    "aiomysql>=0.2",
+]
 mssql = ["aioodbc>=0.5"]
 oracle = ["oracledb>=2.0"]
 mysql = ["aiomysql>=0.2"]
