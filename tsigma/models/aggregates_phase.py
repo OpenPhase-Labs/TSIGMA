@@ -28,10 +28,16 @@ class ApproachSpeed15Min(Base):
     """
     15-minute approach-speed percentile bins.
 
-    Populated from detector-ON events (code 82) on detectors configured
-    with a speed-capture capability (``detector.min_speed_filter`` set and
-    approach speed limit populated).  ``event_param`` on code 82 carries
-    the observed speed bin for controllers supporting Hi-Res speed logging.
+    Populated from ``roadside_event`` rows with ``event_type = SPEED``
+    (1) joined through ``roadside_sensor_lane`` to an approach.  Speed
+    samples are per-vehicle ``mph`` readings emitted by roadside radar
+    / LiDAR / video sensors (Wavetronix, Iteris, FLIR, Houston Radar,
+    Quanergy, etc.) — the cabinet controller does not emit an mph
+    value for any Indiana Hi-Res event code TSIGMA currently decodes,
+    so controller-only deployments leave this table empty.
+
+    See ``tsigma.scheduler.jobs.aggregate_phase.agg_approach_speed``
+    for the 15-minute refresh job that populates this table.
     """
 
     __tablename__ = "approach_speed_15min"

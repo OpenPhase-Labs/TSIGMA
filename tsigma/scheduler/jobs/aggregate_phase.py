@@ -45,6 +45,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tsigma.database.db import db_facade
+from tsigma.models.roadside_event import ROADSIDE_EVENT_TYPE_SPEED
 from tsigma.reports.sdk.events import (
     EVENT_DETECTOR_ON,
     EVENT_PED_CALL,
@@ -128,19 +129,37 @@ def _seconds_diff(earlier: str, later: str) -> str:
 
 @JobRegistry.register(name="agg_approach_speed", trigger="cron", minute="*/15")
 async def agg_approach_speed(session: AsyncSession) -> None:
-    """Aggregate 15-minute approach speed percentiles.
+    """Aggregate 15-minute approach speed percentiles from roadside sensors.
 
-    STATUS: speed percentiles are not correctly computable with the
-    current event model.  ``event_code = 82`` with ``event_param`` =
-    detector channel is the TSIGMA convention; the Indiana Hi-Res event
-    that carries an observed speed value in ``event_param`` is a
-    separate code not yet wired into the decoders.  Until the speed
-    event is surfaced, ``p15 / p50 / p85`` cannot be meaningfully
-    filled — this job populates ``sample_count`` (detector-ON events on
-    speed-capable approaches) and leaves the percentile columns at zero.
+    Source:  ``roadside_event`` rows with ``event_type = SPEED`` (1) and
+    a non-null ``mph``.  Per-vehicle detections emitted by roadside
+    radar / LiDAR / video sensors (Wavetronix, Iteris, FLIR, Houston
+    Radar, Quanergy, etc.) — not from the cabinet controller, which
+    does not emit an mph value in any Indiana Hi-Res code TSIGMA
+    currently decodes.
 
-    Track in ATSPM_FEATURE_CATALOG.md as DESIGNED, not IMPLEMENTED,
-    until the speed event is added to the SDK + decoders.
+    Join path:  ``roadside_event.sensor_id + lane_number`` →
+    ``roadside_sensor_lane`` → ``approach_id``.  A sensor that serves
+    three lanes of an approach contributes three streams of detections
+    which are pooled at the approach level before the percentile
+    computation — so p15 / p50 / p85 are computed over the union of
+    all mph samples hitting that approach in the 15-minute window.
+
+    Percentile implementation varies per dialect:
+
+      - PostgreSQL / Oracle — native ``PERCENTILE_CONT`` aggregate with
+        ``WITHIN GROUP (ORDER BY mph)``.
+      - MS-SQL — ``PERCENTILE_CONT`` is window-only; wrapped in
+        ``SELECT DISTINCT`` over the partition.
+      - MySQL 8 — no native ``PERCENTILE_CONT``; nearest-rank
+        emulation via ``ROW_NUMBER() / COUNT() OVER`` inside a
+        derived table.  Nearest-rank differs from linear interpolation
+        at sub-sample resolution; for traffic speed distributions the
+        bias is well inside measurement noise.
+
+    If a second speed source ever comes online (e.g. a future decoder
+    that surfaces an mph-bearing Indiana Hi-Res event), add a UNION ALL
+    branch on the source rather than replacing this one.
     """
     if await _should_skip(session):
         return
@@ -149,60 +168,11 @@ async def agg_approach_speed(session: AsyncSession) -> None:
     hours = settings.aggregation_lookback_hours
     predicate = db_facade.lookback_predicate("event_time", hours)
     bucket = _fifteen_minute_bucket()
-
-    if db_facade.db_type == "postgresql":
-        sql = f"""
-            INSERT INTO approach_speed_15min
-                (signal_id, approach_id, bin_start, p15, p50, p85, sample_count)
-            SELECT
-                cel.signal_id,
-                CAST(d.approach_id AS TEXT) AS approach_id,
-                {bucket} AS bin_start,
-                COALESCE(PERCENTILE_CONT(0.15)
-                    WITHIN GROUP (ORDER BY cel.event_param), 0) AS p15,
-                COALESCE(PERCENTILE_CONT(0.50)
-                    WITHIN GROUP (ORDER BY cel.event_param), 0) AS p50,
-                COALESCE(PERCENTILE_CONT(0.85)
-                    WITHIN GROUP (ORDER BY cel.event_param), 0) AS p85,
-                COUNT(*) AS sample_count
-            FROM controller_event_log cel
-            JOIN detector d
-              ON d.detector_channel = cel.event_param
-            JOIN approach a
-              ON a.approach_id = d.approach_id
-            WHERE cel.event_code = {EVENT_DETECTOR_ON}
-              AND d.min_speed_filter IS NOT NULL
-              AND a.mph IS NOT NULL
-              AND {predicate}
-            GROUP BY cel.signal_id, d.approach_id, {bucket}
-        """
-    else:
-        # Percentile syntax varies by dialect.  Fall back to count-only
-        # aggregation (percentile columns remain 0) so the table still
-        # populates and downstream report plugins can compute the full
-        # distribution on demand from raw events.
-        sql = f"""
-            INSERT INTO approach_speed_15min
-                (signal_id, approach_id, bin_start, p15, p50, p85, sample_count)
-            SELECT
-                cel.signal_id,
-                CAST(d.approach_id AS CHAR) AS approach_id,
-                {bucket} AS bin_start,
-                0 AS p15,
-                0 AS p50,
-                0 AS p85,
-                COUNT(*) AS sample_count
-            FROM controller_event_log cel
-            JOIN detector d
-              ON d.detector_channel = cel.event_param
-            JOIN approach a
-              ON a.approach_id = d.approach_id
-            WHERE cel.event_code = {EVENT_DETECTOR_ON}
-              AND d.min_speed_filter IS NOT NULL
-              AND a.mph IS NOT NULL
-              AND {predicate}
-            GROUP BY cel.signal_id, d.approach_id, {bucket}
-        """
+    sql = _approach_speed_insert_sql(
+        db_type=db_facade.db_type,
+        predicate=predicate,
+        bucket=bucket,
+    )
 
     await _refresh_aggregate(
         session,
@@ -211,6 +181,136 @@ async def agg_approach_speed(session: AsyncSession) -> None:
         insert_sql=sql,
     )
     logger.info("Refreshed approach_speed_15min")
+
+
+def _approach_speed_insert_sql(
+    *, db_type: str, predicate: str, bucket: str,
+) -> str:
+    """Return the dialect-specific INSERT SQL for agg_approach_speed.
+
+    Split out of ``agg_approach_speed`` so each dialect's syntax stays
+    readable and the job function stays under the 50-line soft limit.
+    """
+    event_type = ROADSIDE_EVENT_TYPE_SPEED
+
+    if db_type == "postgresql":
+        return f"""
+            INSERT INTO approach_speed_15min
+                (signal_id, approach_id, bin_start, p15, p50, p85, sample_count)
+            SELECT
+                re.signal_id,
+                CAST(rsl.approach_id AS TEXT) AS approach_id,
+                {bucket} AS bin_start,
+                COALESCE(PERCENTILE_CONT(0.15)
+                    WITHIN GROUP (ORDER BY re.mph), 0) AS p15,
+                COALESCE(PERCENTILE_CONT(0.50)
+                    WITHIN GROUP (ORDER BY re.mph), 0) AS p50,
+                COALESCE(PERCENTILE_CONT(0.85)
+                    WITHIN GROUP (ORDER BY re.mph), 0) AS p85,
+                COUNT(*) AS sample_count
+            FROM roadside_event re
+            JOIN roadside_sensor_lane rsl
+              ON rsl.sensor_id = re.sensor_id
+             AND rsl.lane_number = re.lane_number
+            WHERE re.event_type = {event_type}
+              AND re.mph IS NOT NULL
+              AND {predicate}
+            GROUP BY re.signal_id, rsl.approach_id, {bucket}
+        """
+
+    if db_type == "oracle":
+        return f"""
+            INSERT INTO approach_speed_15min
+                (signal_id, approach_id, bin_start, p15, p50, p85, sample_count)
+            SELECT
+                re.signal_id,
+                CAST(rsl.approach_id AS VARCHAR2(36)) AS approach_id,
+                {bucket} AS bin_start,
+                NVL(PERCENTILE_CONT(0.15)
+                    WITHIN GROUP (ORDER BY re.mph), 0) AS p15,
+                NVL(PERCENTILE_CONT(0.50)
+                    WITHIN GROUP (ORDER BY re.mph), 0) AS p50,
+                NVL(PERCENTILE_CONT(0.85)
+                    WITHIN GROUP (ORDER BY re.mph), 0) AS p85,
+                COUNT(*) AS sample_count
+            FROM roadside_event re
+            JOIN roadside_sensor_lane rsl
+              ON rsl.sensor_id = re.sensor_id
+             AND rsl.lane_number = re.lane_number
+            WHERE re.event_type = {event_type}
+              AND re.mph IS NOT NULL
+              AND {predicate}
+            GROUP BY re.signal_id, rsl.approach_id, {bucket}
+        """
+
+    if db_type == "mssql":
+        # MS-SQL has PERCENTILE_CONT only as a window function; one row
+        # per (signal_id, approach_id, bucket) falls out via DISTINCT
+        # over the partition.
+        partition = f"PARTITION BY re.signal_id, rsl.approach_id, {bucket}"
+        return f"""
+            INSERT INTO approach_speed_15min
+                (signal_id, approach_id, bin_start, p15, p50, p85, sample_count)
+            SELECT DISTINCT
+                re.signal_id,
+                CAST(rsl.approach_id AS NVARCHAR(36)) AS approach_id,
+                {bucket} AS bin_start,
+                ISNULL(PERCENTILE_CONT(0.15) WITHIN GROUP (ORDER BY re.mph)
+                    OVER ({partition}), 0) AS p15,
+                ISNULL(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY re.mph)
+                    OVER ({partition}), 0) AS p50,
+                ISNULL(PERCENTILE_CONT(0.85) WITHIN GROUP (ORDER BY re.mph)
+                    OVER ({partition}), 0) AS p85,
+                COUNT(*) OVER ({partition}) AS sample_count
+            FROM roadside_event re
+            JOIN roadside_sensor_lane rsl
+              ON rsl.sensor_id = re.sensor_id
+             AND rsl.lane_number = re.lane_number
+            WHERE re.event_type = {event_type}
+              AND re.mph IS NOT NULL
+              AND {predicate}
+        """
+
+    if db_type == "mysql":
+        # No PERCENTILE_CONT in MySQL 8 — nearest-rank via row indexes.
+        # For a window of N samples ordered by mph ascending, the
+        # q-percentile is the sample at rank CEIL(N * q) (clamped to 1).
+        partition = f"PARTITION BY re.signal_id, rsl.approach_id, {bucket}"
+        return f"""
+            INSERT INTO approach_speed_15min
+                (signal_id, approach_id, bin_start, p15, p50, p85, sample_count)
+            SELECT
+                signal_id, approach_id, bin_start,
+                COALESCE(MAX(CASE WHEN rn =
+                    GREATEST(1, CAST(CEIL(cnt * 0.15) AS UNSIGNED))
+                    THEN mph END), 0) AS p15,
+                COALESCE(MAX(CASE WHEN rn =
+                    GREATEST(1, CAST(CEIL(cnt * 0.50) AS UNSIGNED))
+                    THEN mph END), 0) AS p50,
+                COALESCE(MAX(CASE WHEN rn =
+                    GREATEST(1, CAST(CEIL(cnt * 0.85) AS UNSIGNED))
+                    THEN mph END), 0) AS p85,
+                cnt AS sample_count
+            FROM (
+                SELECT
+                    re.signal_id,
+                    CAST(rsl.approach_id AS CHAR) AS approach_id,
+                    {bucket} AS bin_start,
+                    re.mph,
+                    ROW_NUMBER() OVER ({partition} ORDER BY re.mph) AS rn,
+                    COUNT(*) OVER ({partition}) AS cnt
+                FROM roadside_event re
+                JOIN roadside_sensor_lane rsl
+                  ON rsl.sensor_id = re.sensor_id
+                 AND rsl.lane_number = re.lane_number
+                WHERE re.event_type = {event_type}
+                  AND re.mph IS NOT NULL
+                  AND {predicate}
+            ) ordered
+            GROUP BY signal_id, approach_id, bin_start, cnt
+        """
+
+    raise ValueError(f"Unsupported db_type for agg_approach_speed: {db_type!r}")
 
 
 # ---------------------------------------------------------------------------
