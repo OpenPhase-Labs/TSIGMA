@@ -9,7 +9,7 @@ use plain model objects).
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch  # noqa: F401 — patch used in decorators
+from unittest.mock import AsyncMock, patch
 
 import pandas as pd
 import pytest

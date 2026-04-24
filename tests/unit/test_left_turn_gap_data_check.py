@@ -247,7 +247,6 @@ class TestRegistry:
     def test_registered_by_discovery(self):
         """Registry auto-discovers ``left-turn-gap-data-check``."""
         # Trigger discovery
-        import tsigma.reports  # noqa: F401
         from tsigma.reports.registry import ReportRegistry
 
         cls = ReportRegistry.get("left-turn-gap-data-check")

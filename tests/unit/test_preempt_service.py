@@ -258,7 +258,6 @@ class TestPreemptServiceWithData:
     @patch("tsigma.reports.preempt_service.fetch_events", new_callable=AsyncMock)
     async def test_registered_in_registry(self, mock_fetch, mock_plans):
         """Report is discoverable under the name 'preempt-service'."""
-        import tsigma.reports.preempt_service  # noqa: F401 (ensure import registers)
         from tsigma.reports.registry import ReportRegistry
 
         cls = ReportRegistry.get("preempt-service")

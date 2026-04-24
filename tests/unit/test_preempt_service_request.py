@@ -353,7 +353,6 @@ class TestPreemptServiceRequestWithData:
     async def test_report_registered(self):
         """The report is auto-discovered and registered under its name."""
         # Force auto-discovery
-        import tsigma.reports  # noqa: F401
         from tsigma.reports.registry import ReportRegistry
 
         assert "preempt-service-request" in ReportRegistry.list_all()
