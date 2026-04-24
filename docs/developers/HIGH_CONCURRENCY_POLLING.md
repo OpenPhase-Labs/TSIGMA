@@ -177,13 +177,23 @@ With `collector_poll_interval=3600` (1 hour):
 - All jobs burst at once
 - Idle for most of the interval
 
-### Solution: Shorter Poll Intervals
+### Solution: Match the Controller's Rotation Cadence
 
-With `collector_poll_interval=300` (5 minutes):
-- 9,000 signals polled every 5 minutes
-- Load distributed more evenly
-- More frequent data collection
-- Controller checkpoint ensures only new data is downloaded each cycle
+With `collector_poll_interval=900` (15 minutes — default):
+- 9,000 signals polled every 15 minutes
+- Matches the typical controller `.dat` file rotation cadence:
+  polling any faster returns zero new data on most deployments
+- Load distributed across each 15-minute window via the concurrency
+  semaphore and per-host backoff
+- Controller checkpoint ensures only new data is downloaded each
+  cycle regardless of interval
+
+Poll more frequently only when the controller rotates files faster
+than 15 minutes (rare) or when an HTTP XML endpoint returns
+incremental events continuously.  The `sensor_poll_interval` setting
+controls the same cadence for roadside-sensor polling (legacy
+radar / LiDAR trace-file pulls); push-driven sensors ignore this
+setting entirely.
 
 ---
 

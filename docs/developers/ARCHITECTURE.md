@@ -1287,7 +1287,8 @@ class Settings(BaseSettings):
 
     # Collector
     collector_max_concurrent: int = 50
-    collector_poll_interval: int = 300
+    collector_poll_interval: int = 900   # controller cadence (15 min)
+    sensor_poll_interval: int = 900      # roadside-sensor cadence (15 min)
 
     # Aggregation
     aggregation_enabled: bool = True
