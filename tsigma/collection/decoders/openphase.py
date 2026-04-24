@@ -37,7 +37,10 @@ _PROTO_DIR = str(Path(__file__).parent / "proto")
 if _PROTO_DIR not in sys.path:
     sys.path.insert(0, _PROTO_DIR)
 
-from openphase.v1 import common_pb2, ihr_events_pb2  # noqa: E402
+from openphase.v1 import (  # noqa: E402  # generated proto modules require sys.path.insert above
+    common_pb2,
+    ihr_events_pb2,
+)
 
 
 @DecoderRegistry.register

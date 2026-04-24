@@ -161,12 +161,22 @@ class _SplitCycleState:
 
 
 def _resolve_red_window_start(state: _SplitCycleState) -> datetime:
-    """Determine the red window start from available phase boundaries."""
+    """Determine the red window start from available phase boundaries.
+
+    Precondition: ``state.yellow_start`` is not None — enforced by the
+    caller (see the guard in ``_flush_split_cycle``). The assert makes
+    the precondition explicit so that future callers fail loudly instead
+    of silently returning None and crashing downstream.
+    """
     if state.red_start is not None:
         return state.red_start
     if state.phase_end is not None:
         return state.phase_end
-    return state.yellow_start  # type: ignore[return-value]
+    assert state.yellow_start is not None, (
+        "yellow_start must be set before _resolve_red_window_start "
+        "(see _flush_split_cycle guard)"
+    )
+    return state.yellow_start
 
 
 def _flush_split_cycle(

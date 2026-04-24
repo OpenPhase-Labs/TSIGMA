@@ -6,8 +6,8 @@ SchedulerService provides the APScheduler abstraction layer.
 """
 
 # Import jobs to trigger auto-discovery
-from . import jobs  # noqa: F401
+from . import jobs
 from .registry import JobRegistry
 from .service import SchedulerService
 
-__all__ = ["JobRegistry", "SchedulerService"]
+__all__ = ["JobRegistry", "SchedulerService", "jobs"]

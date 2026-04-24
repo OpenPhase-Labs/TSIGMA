@@ -5,7 +5,7 @@ Includes decoders (format parsers) and methods (data sources).
 """
 
 # Import methods to trigger auto-discovery
-from . import methods  # noqa: F401
+from . import methods
 from .decoders import BaseDecoder, DecodedEvent, DecoderRegistry
 from .registry import (
     BaseIngestionMethod,
@@ -23,5 +23,5 @@ __all__ = [
     "BaseIngestionMethod",
     "ExecutionMode",
     "IngestionMethodRegistry",
-    "PollingIngestionMethod",
+    "PollingIngestionMethod", "methods",
 ]

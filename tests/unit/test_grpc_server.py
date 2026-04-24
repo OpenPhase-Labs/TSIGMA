@@ -19,15 +19,15 @@ _PROTO_DIR = str(
 if _PROTO_DIR not in sys.path:
     sys.path.insert(0, _PROTO_DIR)
 
-from openphase.v1 import common_pb2, ihr_events_pb2  # noqa: E402
+from openphase.v1 import common_pb2, ihr_events_pb2  # noqa: E402  # imports must follow sys.path.insert above
 
-from tsigma.collection.decoders.base import DecodedEvent  # noqa: E402
-from tsigma.collection.methods.grpc_server import (  # noqa: E402
+from tsigma.collection.decoders.base import DecodedEvent  # noqa: E402  # see sys.path.insert above
+from tsigma.collection.methods.grpc_server import (  # noqa: E402  # see sys.path.insert above
     GRPCServerConfig,
     GRPCServerMethod,
     _IngestionServicer,
 )
-from tsigma.collection.registry import IngestionMethodRegistry  # noqa: E402
+from tsigma.collection.registry import IngestionMethodRegistry  # noqa: E402  # see sys.path.insert above
 
 
 class TestGRPCServerRegistration:

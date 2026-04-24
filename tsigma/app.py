@@ -15,10 +15,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
-import tsigma.auth.providers  # noqa: F401 — triggers auto-discovery
 import tsigma.database.db as _db_module
-import tsigma.notifications  # noqa: F401 — triggers auto-discovery
-import tsigma.validation  # noqa: F401 — triggers auto-discovery
 
 from .api.graphql.schema import graphql_router
 from .api.ui import router as ui_router

@@ -21,11 +21,11 @@ sys.path.insert(
     ),
 )
 
-from google.protobuf.timestamp_pb2 import Timestamp  # noqa: E402
-from openphase.v1 import common_pb2, ihr_events_pb2  # noqa: E402
+from google.protobuf.timestamp_pb2 import Timestamp
+from openphase.v1 import common_pb2, ihr_events_pb2
 
-from tsigma.collection.decoders.base import DecoderRegistry  # noqa: E402
-from tsigma.collection.decoders.openphase import OpenPhaseDecoder  # noqa: E402
+from tsigma.collection.decoders.base import DecoderRegistry
+from tsigma.collection.decoders.openphase import OpenPhaseDecoder
 
 
 class TestRegistration:

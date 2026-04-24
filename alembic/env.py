@@ -11,10 +11,7 @@ from logging.config import fileConfig
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-import tsigma.auth.models  # noqa: F401
-
 # Import all models so Base.metadata has every table registered.
-import tsigma.models  # noqa: F401
 from alembic import context
 from tsigma.config import settings
 from tsigma.models.base import Base
