@@ -157,7 +157,6 @@ def _make_detector_events(
 class TestRegistry:
     def test_registered(self):
         # Importing the package auto-registers all plugins.
-        import tsigma.reports  # noqa: F401
         from tsigma.reports.registry import ReportRegistry
 
         assert "left-turn-volume" in ReportRegistry.list_all()

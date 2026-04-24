@@ -381,7 +381,6 @@ class TestArrivalOnRedRegistration:
 
     def test_registered(self):
         """Report registers itself under the 'arrival-on-red' name."""
-        from tsigma.reports import arrival_on_red  # noqa: F401 — triggers registration
         from tsigma.reports.registry import ReportRegistry
 
         assert "arrival-on-red" in ReportRegistry._reports

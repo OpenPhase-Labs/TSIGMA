@@ -409,7 +409,6 @@ class TestRegistryAutodiscovery:
     def test_registered_under_kebab_name(self):
         """Registry auto-discovers the kebab-case name."""
         # Force auto-discovery
-        import tsigma.reports  # noqa: F401
         from tsigma.reports.registry import ReportRegistry
 
         reports = ReportRegistry.list_all()

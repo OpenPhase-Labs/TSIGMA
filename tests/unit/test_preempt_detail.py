@@ -101,7 +101,6 @@ class TestPreemptDetailRegistration:
     def test_registered_under_expected_name(self):
         """The report registers itself under 'preempt-detail'."""
         # Trigger plugin auto-discovery.
-        import tsigma.reports  # noqa: F401
         from tsigma.reports.registry import ReportRegistry
 
         cls = ReportRegistry.get("preempt-detail")
@@ -110,7 +109,6 @@ class TestPreemptDetailRegistration:
 
     def test_preemption_still_registered(self):
         """The legacy 'preemption' report remains registered alongside."""
-        import tsigma.reports  # noqa: F401
         from tsigma.reports.registry import ReportRegistry
 
         cls = ReportRegistry.get("preemption")
