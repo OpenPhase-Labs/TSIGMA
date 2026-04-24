@@ -196,12 +196,16 @@ class CollectorService:
         now = datetime.now(timezone.utc)
 
         async with self._session_factory() as session:
+            # device_type scoped to "controller" — this service currently
+            # polls the Signal table only; a future DeviceSource refactor
+            # will parameterize this.
             stmt = select(PollingCheckpoint).where(
                 PollingCheckpoint.method == method_name,
-                PollingCheckpoint.signal_id.in_(signal_ids),
+                PollingCheckpoint.device_type == "controller",
+                PollingCheckpoint.device_id.in_(signal_ids),
             )
             result = await session.execute(stmt)
-            checkpoints = {cp.signal_id: cp for cp in result.scalars()}
+            checkpoints = {cp.device_id: cp for cp in result.scalars()}
 
             for cp in checkpoints.values():
                 # Silent cycle detection: consecutive_silent_cycles is
@@ -241,7 +245,7 @@ class CollectorService:
             checkpoint: The silent signal's checkpoint.
             now: Current server time (UTC).
         """
-        signal_id = checkpoint.signal_id
+        signal_id = checkpoint.device_id
         method = checkpoint.method
         tolerance = timedelta(
             seconds=self._settings.checkpoint_future_tolerance_seconds,

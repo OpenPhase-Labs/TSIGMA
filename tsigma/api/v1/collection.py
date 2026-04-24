@@ -438,7 +438,8 @@ async def trigger_poll(
 def _to_checkpoint_dict(cp) -> dict:
     """Convert a PollingCheckpoint row to a JSON-serialisable dict."""
     return {
-        "signal_id": cp.signal_id,
+        "device_type": cp.device_type,
+        "device_id": cp.device_id,
         "method": cp.method,
         "last_filename": cp.last_filename,
         "last_file_mtime": (
@@ -486,7 +487,11 @@ async def list_checkpoints(
     stmt = select(PollingCheckpoint)
     if method:
         stmt = stmt.where(PollingCheckpoint.method == method)
-    stmt = stmt.order_by(PollingCheckpoint.signal_id, PollingCheckpoint.method)
+    stmt = stmt.order_by(
+        PollingCheckpoint.device_type,
+        PollingCheckpoint.device_id,
+        PollingCheckpoint.method,
+    )
 
     result = await session.execute(stmt)
     rows = result.scalars().all()
@@ -501,7 +506,7 @@ async def get_signal_checkpoints(
     _access=Depends(require_access("management")),
 ):
     """
-    Get polling checkpoints for a specific signal.
+    Get polling checkpoints for a specific signal (controller device).
 
     Returns all checkpoints for the signal, one per ingestion method.
 
@@ -514,7 +519,8 @@ async def get_signal_checkpoints(
     """
     result = await session.execute(
         select(PollingCheckpoint).where(
-            PollingCheckpoint.signal_id == signal_id
+            PollingCheckpoint.device_type == "controller",
+            PollingCheckpoint.device_id == signal_id,
         )
     )
     rows = result.scalars().all()

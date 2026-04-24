@@ -475,7 +475,8 @@ class TestCheckSilentSignals:
         old_poll = now - timedelta(seconds=300)  # well past 1.5x poll interval
 
         cp = MagicMock(spec=PollingCheckpoint)
-        cp.signal_id = "SIG-001"
+        cp.device_type = "controller"
+        cp.device_id = "SIG-001"
         cp.method = "test_poll"
         cp.last_successful_poll = old_poll
         cp.consecutive_silent_cycles = 0
@@ -516,7 +517,8 @@ class TestCheckSilentSignals:
         future_ts = now + timedelta(hours=2)  # well past tolerance
 
         cp = MagicMock()
-        cp.signal_id = "SIG-POISON"
+        cp.device_type = "controller"
+        cp.device_id = "SIG-POISON"
         cp.method = "http_pull"
         cp.last_event_timestamp = future_ts
         cp.consecutive_silent_cycles = 5
@@ -556,7 +558,8 @@ class TestCheckSilentSignals:
         past_ts = now - timedelta(hours=1)
 
         cp = MagicMock()
-        cp.signal_id = "SIG-SILENT"
+        cp.device_type = "controller"
+        cp.device_id = "SIG-SILENT"
         cp.method = "http_pull"
         cp.last_event_timestamp = past_ts
         cp.consecutive_silent_cycles = 5

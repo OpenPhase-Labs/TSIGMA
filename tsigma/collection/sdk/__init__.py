@@ -35,14 +35,17 @@ logger = logging.getLogger(__name__)
 
 async def load_checkpoint(
     method_name: str,
-    signal_id: str,
+    device_type: str,
+    device_id: str,
     session_factory,
 ) -> Optional[PollingCheckpoint]:
-    """Load the checkpoint for a signal and method.
+    """Load the checkpoint for a device and method.
 
     Args:
         method_name: Ingestion method name (e.g. ``"http_pull"``).
-        signal_id: Traffic signal identifier.
+        device_type: ``"controller"`` or ``"sensor"``.
+        device_id: Device identifier (signal_id for controllers,
+            stringified sensor_id for roadside sensors).
         session_factory: Async session factory.
 
     Returns:
@@ -50,7 +53,8 @@ async def load_checkpoint(
     """
     async with session_factory() as session:
         stmt = select(PollingCheckpoint).where(
-            PollingCheckpoint.signal_id == signal_id,
+            PollingCheckpoint.device_type == device_type,
+            PollingCheckpoint.device_id == device_id,
             PollingCheckpoint.method == method_name,
         )
         result = await session.execute(stmt)
@@ -62,7 +66,8 @@ async def load_checkpoint(
 
 async def record_error(
     method_name: str,
-    signal_id: str,
+    device_type: str,
+    device_id: str,
     session_factory,
     error_msg: str,
 ) -> None:
@@ -70,14 +75,16 @@ async def record_error(
 
     Args:
         method_name: Ingestion method name.
-        signal_id: Traffic signal identifier.
+        device_type: ``"controller"`` or ``"sensor"``.
+        device_id: Device identifier.
         session_factory: Async session factory.
         error_msg: Error description (truncated to 1000 chars).
     """
     now = datetime.now(timezone.utc)
     async with session_factory() as session:
         stmt = select(PollingCheckpoint).where(
-            PollingCheckpoint.signal_id == signal_id,
+            PollingCheckpoint.device_type == device_type,
+            PollingCheckpoint.device_id == device_id,
             PollingCheckpoint.method == method_name,
         )
         result = await session.execute(stmt)
@@ -85,7 +92,8 @@ async def record_error(
 
         if checkpoint is None:
             checkpoint = PollingCheckpoint(
-                signal_id=signal_id,
+                device_type=device_type,
+                device_id=device_id,
                 method=method_name,
             )
             session.add(checkpoint)
@@ -301,7 +309,8 @@ def resolve_decoder_by_extension(
 
 async def save_checkpoint(
     method_name: str,
-    signal_id: str,
+    device_type: str,
+    device_id: str,
     session_factory,
     **kwargs,
 ) -> None:
@@ -321,14 +330,16 @@ async def save_checkpoint(
 
     Args:
         method_name: Ingestion method name (e.g. ``"http_pull"``).
-        signal_id: Traffic signal identifier.
+        device_type: ``"controller"`` or ``"sensor"``.
+        device_id: Device identifier.
         session_factory: Async session factory.
         **kwargs: Plugin-specific checkpoint fields.
     """
     now = datetime.now(timezone.utc)
     async with session_factory() as session:
         stmt = select(PollingCheckpoint).where(
-            PollingCheckpoint.signal_id == signal_id,
+            PollingCheckpoint.device_type == device_type,
+            PollingCheckpoint.device_id == device_id,
             PollingCheckpoint.method == method_name,
         )
         result = await session.execute(stmt)
@@ -336,7 +347,8 @@ async def save_checkpoint(
 
         if checkpoint is None:
             checkpoint = PollingCheckpoint(
-                signal_id=signal_id,
+                device_type=device_type,
+                device_id=device_id,
                 method=method_name,
             )
             session.add(checkpoint)
@@ -351,9 +363,9 @@ async def save_checkpoint(
             capped = min(raw_ts, future_cutoff)
             if capped < raw_ts:
                 logger.warning(
-                    "Signal %s: capping checkpoint from %s to %s "
+                    "%s %s: capping checkpoint from %s to %s "
                     "(future-dated events detected)",
-                    signal_id,
+                    device_type, device_id,
                     raw_ts.isoformat(),
                     capped.isoformat(),
                 )

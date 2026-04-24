@@ -57,7 +57,7 @@ async def test_load_checkpoint_found():
     result_mock.scalar_one_or_none.return_value = sentinel
     session.execute.return_value = result_mock
 
-    cp = await load_checkpoint("http_pull", "SIG-001", factory)
+    cp = await load_checkpoint("http_pull", "controller", "SIG-001", factory)
 
     assert cp is sentinel
     session.expunge.assert_called_once_with(sentinel)
@@ -71,7 +71,7 @@ async def test_load_checkpoint_not_found():
     result_mock.scalar_one_or_none.return_value = None
     session.execute.return_value = result_mock
 
-    cp = await load_checkpoint("http_pull", "SIG-001", factory)
+    cp = await load_checkpoint("http_pull", "controller", "SIG-001", factory)
 
     assert cp is None
     session.expunge.assert_not_called()
@@ -102,7 +102,9 @@ async def test_record_error_creates_checkpoint():
         patch("tsigma.collection.sdk.select", return_value=mock_select),
         patch("tsigma.collection.sdk.PollingCheckpoint", return_value=fake_cp),
     ):
-        await record_error("http_pull", "SIG-001", factory, "connection timeout")
+        await record_error(
+            "http_pull", "controller", "SIG-001", factory, "connection timeout",
+        )
 
     session.add.assert_called_once_with(fake_cp)
     assert fake_cp.consecutive_errors == 1
@@ -121,7 +123,9 @@ async def test_record_error_increments():
     result_mock.scalar_one_or_none.return_value = existing_cp
     session.execute.return_value = result_mock
 
-    await record_error("http_pull", "SIG-001", factory, "timeout again")
+    await record_error(
+        "http_pull", "controller", "SIG-001", factory, "timeout again",
+    )
 
     session.add.assert_not_called()
     assert existing_cp.consecutive_errors == 3

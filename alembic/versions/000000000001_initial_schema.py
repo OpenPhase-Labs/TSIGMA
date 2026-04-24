@@ -390,16 +390,18 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # Polling checkpoint (composite PK: signal_id + method)
+    # Polling checkpoint (composite PK: device_type + device_id + method)
+    #
+    # Device-polymorphic: device_type is 'controller' (device_id =
+    # Signal.signal_id) or 'sensor' (device_id = stringified
+    # RoadsideSensor.sensor_id).  No FK on device_id because the target
+    # table varies with device_type — application layer (DeviceSource)
+    # upholds referential integrity.
     # ------------------------------------------------------------------
     op.create_table(
         "polling_checkpoint",
-        sa.Column(
-            "signal_id",
-            sa.Text,
-            sa.ForeignKey("signal.signal_id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
+        sa.Column("device_type", sa.Text, primary_key=True),
+        sa.Column("device_id", sa.Text, primary_key=True),
         sa.Column("method", sa.Text, primary_key=True),
         sa.Column("last_filename", sa.Text, nullable=True),
         sa.Column("last_file_mtime", postgresql.TIMESTAMP(timezone=True), nullable=True),
