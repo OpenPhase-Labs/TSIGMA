@@ -71,7 +71,8 @@ class TestSettings:
         """Test default collector settings."""
         settings = Settings()
         assert settings.collector_max_concurrent == 50
-        assert settings.collector_poll_interval == 300
+        assert settings.collector_poll_interval == 900
+        assert settings.sensor_poll_interval == 900
 
     def test_collector_env_override(self, monkeypatch):
         """Test collector settings can be overridden via environment."""

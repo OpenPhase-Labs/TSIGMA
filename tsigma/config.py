@@ -67,9 +67,21 @@ class Settings(BaseSettings):
     storage_s3_access_key: str = ""
     storage_s3_secret_key: str = ""
 
-    # Collector settings
+    # Collector settings.  Poll intervals are the default cadence for
+    # each device class; the installed scheduler can override per
+    # source at runtime.  Defaults align with typical controller /
+    # sensor file-rotation cadence (15 min).
     collector_max_concurrent: int = 50
-    collector_poll_interval: int = 300
+    # Controller polling cadence (Signal-backed devices: ATSPM 4.x
+    # .dat files, MaxTime / SEPAC HTTP XML, etc.).  Files usually
+    # rotate every 15 min on-controller, so polling faster returns
+    # no new data but multiplies load across a 9000-signal network.
+    collector_poll_interval: int = 900
+    # Roadside-sensor polling cadence (RoadsideSensor-backed devices:
+    # legacy radar / LiDAR trace-file pulls).  Matches the controller
+    # cadence by default; most roadside sensors push over TCP / MQTT
+    # and don't touch this setting.
+    sensor_poll_interval: int = 900
 
     # Checkpoint resilience
     checkpoint_future_tolerance_seconds: int = 300  # 5 minutes
