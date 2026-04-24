@@ -111,11 +111,14 @@ class TestCollectorServiceStart:
             await svc.start()
             try:
                 jobs = JobRegistry.list_all()
-                assert "poll_cycle_poll_a" in jobs
-                assert "poll_cycle_poll_b" in jobs
-                assert jobs["poll_cycle_poll_a"]["trigger"] == "interval"
-                assert jobs["poll_cycle_poll_a"]["trigger_kwargs"]["seconds"] == 120
-                assert jobs["poll_cycle_poll_a"]["needs_session"] is False
+                # Job name now scopes on device_type so (method x source)
+                # pairs stay distinct.
+                assert "poll_cycle_poll_a_controller" in jobs
+                assert "poll_cycle_poll_b_controller" in jobs
+                job_a = jobs["poll_cycle_poll_a_controller"]
+                assert job_a["trigger"] == "interval"
+                assert job_a["trigger_kwargs"]["seconds"] == 120
+                assert job_a["needs_session"] is False
             finally:
                 await svc.stop()
 
@@ -136,9 +139,9 @@ class TestCollectorServiceStop:
         ):
             svc = CollectorService(AsyncMock(), _make_settings())
             await svc.start()
-            assert "poll_cycle_test_poll" in JobRegistry.list_all()
+            assert "poll_cycle_test_poll_controller" in JobRegistry.list_all()
             await svc.stop()
-            assert "poll_cycle_test_poll" not in JobRegistry.list_all()
+            assert "poll_cycle_test_poll_controller" not in JobRegistry.list_all()
 
     @pytest.mark.asyncio
     async def test_stop_idempotent(self):
@@ -176,7 +179,7 @@ class TestPollCycle:
         svc._polling_instances["test_poll"] = mock_method
         svc._session_factory = sf
 
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
         mock_method.poll_once.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -200,7 +203,7 @@ class TestPollCycle:
         svc._polling_instances["test_poll"] = mock_method
         svc._session_factory = sf
 
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
 
         call_args = mock_method.poll_once.call_args
         config_arg = call_args[0][1]
@@ -231,7 +234,7 @@ class TestPollCycle:
         svc._polling_instances["test_poll"] = mock_method
         svc._session_factory = sf
 
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
         assert mock_method.poll_once.await_count == 3
 
     @pytest.mark.asyncio
@@ -249,7 +252,7 @@ class TestPollCycle:
         svc._polling_instances["test_poll"] = mock_method
         svc._session_factory = sf
 
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
         mock_method.poll_once.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -283,7 +286,7 @@ class TestPollCycle:
         svc._polling_instances["test_poll"] = mock_method
         svc._session_factory = sf
 
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
         assert mock_method.poll_once.await_count == 3
 
     @pytest.mark.asyncio
@@ -311,7 +314,7 @@ class TestPollCycle:
 
         original_semaphore_value = 3
 
-        async def tracked_poll(signal_id, config, session_factory):
+        async def tracked_poll(signal_id, config, session_factory, *, target=None):
             nonlocal max_concurrent_seen, current_concurrent
             async with lock:
                 current_concurrent += 1
@@ -330,7 +333,7 @@ class TestPollCycle:
         svc._polling_instances["test_poll"] = mock_method
         svc._session_factory = sf
 
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
         assert max_concurrent_seen <= original_semaphore_value
 
     @pytest.mark.asyncio
@@ -360,7 +363,7 @@ class TestPollCycle:
         svc._polling_instances["test_poll"] = mock_method
         svc._session_factory = sf
 
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
         assert mock_method.poll_once.await_count == 1
 
     @pytest.mark.asyncio
@@ -385,7 +388,7 @@ class TestPollCycle:
         svc._polling_instances["test_poll"] = mock_method
         svc._session_factory = sf
 
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
         mock_method.poll_once.assert_not_awaited()
 
 
@@ -394,16 +397,21 @@ class TestProcessSignal:
 
     @pytest.mark.asyncio
     async def test_calls_poll_once_with_correct_args(self):
-        """Test _process_signal calls poll_once with signal_id, config, and factory."""
+        """Test _process_signal calls poll_once with signal_id, config, factory, and target."""
         sf = AsyncMock()
         mock_method = AsyncMock(spec=PollingIngestionMethod)
 
         svc = CollectorService(sf, _make_settings())
 
         config = {"protocol": "ftp", "host": "10.0.0.1"}
-        await svc._process_signal(mock_method, "SIG-001", config)
+        source = svc._sources[0]
+        await svc._process_device(
+            mock_method, source, "SIG-001", config,
+        )
 
-        mock_method.poll_once.assert_awaited_once_with("SIG-001", config, sf)
+        mock_method.poll_once.assert_awaited_once_with(
+            "SIG-001", config, sf, target=source.target,
+        )
 
     @pytest.mark.asyncio
     async def test_catches_exceptions(self):
@@ -416,7 +424,9 @@ class TestProcessSignal:
         svc = CollectorService(sf, _make_settings())
 
         # Should not raise
-        await svc._process_signal(mock_method, "SIG-001", {"host": "10.0.0.1"})
+        await svc._process_device(
+            mock_method, svc._sources[0], "SIG-001", {"host": "10.0.0.1"},
+        )
 
     @pytest.mark.asyncio
     async def test_acquires_semaphore(self):
@@ -427,7 +437,9 @@ class TestProcessSignal:
         svc = CollectorService(sf, _make_settings(collector_max_concurrent=1))
         assert svc._semaphore._value == 1
 
-        await svc._process_signal(mock_method, "SIG-001", {"host": "10.0.0.1"})
+        await svc._process_device(
+            mock_method, svc._sources[0], "SIG-001", {"host": "10.0.0.1"},
+        )
         # Semaphore should be released after call
         assert svc._semaphore._value == 1
 
@@ -504,7 +516,7 @@ class TestCheckSilentSignals:
         )
         svc = CollectorService(sf, settings)
 
-        await svc._check_silent_signals("test_poll", ["SIG-001"])
+        await svc._check_silent_signals("test_poll", svc._sources[0], ["SIG-001"])
 
         assert cp.consecutive_silent_cycles == 1
 
@@ -584,7 +596,7 @@ class TestCheckSilentSignals:
         mock_notify.assert_awaited_once()
         call_kwargs = mock_notify.call_args
         subject = call_kwargs[1].get("subject") or call_kwargs.kwargs.get("subject", "")
-        assert "Silent signal" in subject
+        assert "Silent device" in subject
         from tsigma.notifications.registry import WARNING
         severity = call_kwargs[1].get("severity") or call_kwargs.kwargs.get("severity")
         assert severity == WARNING
@@ -612,7 +624,7 @@ class TestCheckSilentSignals:
         svc._session_factory = sf
 
         # Should not crash, should log debug, no poll_once calls
-        await svc._run_poll_cycle("test_poll")
+        await svc._run_poll_cycle("test_poll", svc._sources[0])
         mock_method.poll_once.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -624,7 +636,7 @@ class TestCheckSilentSignals:
         # No instances registered
 
         # Should not crash
-        await svc._run_poll_cycle("nonexistent_method")
+        await svc._run_poll_cycle("nonexistent_method", svc._sources[0])
 
 
 class TestHealthCheckExceptionHandling:

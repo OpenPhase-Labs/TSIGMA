@@ -95,6 +95,23 @@ def _mock_session_factory():
     return factory, mock_session
 
 
+def _make_mock_target() -> MagicMock:
+    """Build a mock ``IngestionTarget`` with async SDK methods.
+
+    Matches the ``IngestionTarget`` protocol: ``resolve_decoder`` is
+    synchronous; persistence/checkpoint methods are async.
+    """
+    target = MagicMock()
+    target.device_type = "controller"
+    target.load_checkpoint = AsyncMock(return_value=None)
+    target.save_checkpoint = AsyncMock()
+    target.record_error = AsyncMock()
+    target.persist = AsyncMock()
+    target.persist_with_drift_check = AsyncMock()
+    target.resolve_decoder = MagicMock()
+    return target
+
+
 def _mock_aiohttp_response(status=200, body=b"<EventResponses/>"):
     """Create a mock aiohttp response."""
     response = AsyncMock()
@@ -255,17 +272,13 @@ class TestPollOnce:
         mock_ctx, mock_http_session = _mock_aiohttp_session()
         decoder = MagicMock()
         decoder.decode_bytes.return_value = []
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=decoder), \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock):
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
         mock_http_session.get.assert_called_once()
         call_url = mock_http_session.get.call_args[0][0]
@@ -290,17 +303,13 @@ class TestPollOnce:
 
         decoder = MagicMock()
         decoder.decode_bytes.return_value = []
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=decoder), \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock):
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
         decoder.decode_bytes.assert_called_once_with(xml_body)
 
@@ -322,21 +331,17 @@ class TestPollOnce:
 
         decoder = MagicMock()
         decoder.decode_bytes.return_value = events
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=decoder), \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.save_checkpoint",
-                   new_callable=AsyncMock), \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock) as mock_persist:
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
-        mock_persist.assert_awaited_once_with(events, "SIG-001", factory)
+        target.persist_with_drift_check.assert_awaited_once_with(
+            events, "SIG-001", factory,
+        )
 
     @pytest.mark.asyncio
     async def test_saves_checkpoint_on_success(self):
@@ -353,23 +358,17 @@ class TestPollOnce:
 
         decoder = MagicMock()
         decoder.decode_bytes.return_value = events
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=decoder), \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.save_checkpoint",
-                   new_callable=AsyncMock) as mock_save, \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock):
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
-        mock_save.assert_awaited_once()
-        assert mock_save.call_args[1]["last_event_timestamp"] == now
-        assert mock_save.call_args[1]["events_ingested"] == 1
+        target.save_checkpoint.assert_awaited_once()
+        assert target.save_checkpoint.call_args[1]["last_event_timestamp"] == now
+        assert target.save_checkpoint.call_args[1]["events_ingested"] == 1
 
     @pytest.mark.asyncio
     async def test_uses_since_param_on_subsequent_poll(self):
@@ -388,18 +387,14 @@ class TestPollOnce:
 
         decoder = MagicMock()
         decoder.decode_bytes.return_value = []
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
+        target.load_checkpoint.return_value = checkpoint
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=decoder), \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock,
-                   return_value=checkpoint), \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock):
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
         call_url = mock_http_session.get.call_args[0][0]
         assert "?since=" in call_url
@@ -416,17 +411,13 @@ class TestPollOnce:
 
         decoder = MagicMock()
         decoder.decode_bytes.return_value = []
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=decoder), \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock):
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
         call_url = mock_http_session.get.call_args[0][0]
         assert "?since=" not in call_url
@@ -441,17 +432,14 @@ class TestPollOnce:
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(side_effect=ConnectionError("refused"))
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        target = _make_mock_target()
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.record_error",
-                   new_callable=AsyncMock) as mock_error:
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
-        mock_error.assert_awaited_once()
+        target.record_error.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_response_no_events(self):
@@ -465,22 +453,16 @@ class TestPollOnce:
 
         decoder = MagicMock()
         decoder.decode_bytes.return_value = []
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=decoder), \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch("tsigma.collection.methods.http_pull.save_checkpoint",
-                   new_callable=AsyncMock) as mock_save:
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
         # No events — checkpoint should not be saved
-        mock_save.assert_not_awaited()
+        target.save_checkpoint.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_http_error_status_records_error(self):
@@ -491,20 +473,15 @@ class TestPollOnce:
 
         response = _mock_aiohttp_response(status=500, body=b"Internal Server Error")
         mock_ctx, _ = _mock_aiohttp_session(response)
+        target = _make_mock_target()
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.record_error",
-                   new_callable=AsyncMock) as mock_error, \
-             patch("tsigma.collection.methods.http_pull.save_checkpoint",
-                   new_callable=AsyncMock) as mock_save:
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
-        mock_error.assert_awaited_once()
-        mock_save.assert_not_awaited()
+        target.record_error.assert_awaited_once()
+        target.save_checkpoint.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_explicit_decoder(self):
@@ -518,19 +495,15 @@ class TestPollOnce:
 
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = mock_decoder_inst
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=mock_decoder_inst) as mock_resolve, \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock):
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
-        mock_resolve.assert_called_once_with("custom_xml")
+        target.resolve_decoder.assert_called_once_with(decoder_name="custom_xml")
 
     @pytest.mark.asyncio
     async def test_default_decoder_is_maxtime(self):
@@ -544,19 +517,15 @@ class TestPollOnce:
 
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = mock_decoder_inst
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=mock_decoder_inst) as mock_resolve, \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock):
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
-        mock_resolve.assert_called_once_with("maxtime")
+        target.resolve_decoder.assert_called_once_with(decoder_name="maxtime")
 
 
 # ---------------------------------------------------------------------------
@@ -692,7 +661,7 @@ class TestPollOnceDecodeError:
 
     @pytest.mark.asyncio
     async def test_poll_once_decode_error(self):
-        """Decoder raises, error recorded via record_error."""
+        """Decoder raises, error recorded via target.record_error."""
         method = HTTPPullMethod()
         config = _make_config_dict()
         factory, _ = _mock_session_factory()
@@ -702,22 +671,16 @@ class TestPollOnceDecodeError:
 
         mock_decoder = MagicMock()
         mock_decoder.decode_bytes.side_effect = ValueError("bad XML")
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = mock_decoder
 
-        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp, \
-             patch("tsigma.collection.methods.http_pull.resolve_decoder_by_name",
-                   return_value=mock_decoder), \
-             patch("tsigma.collection.methods.http_pull.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("tsigma.collection.methods.http_pull.record_error",
-                   new_callable=AsyncMock) as mock_error, \
-             patch("tsigma.collection.methods.http_pull.persist_events_with_drift_check",
-                   new_callable=AsyncMock) as mock_persist:
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
 
-        mock_error.assert_awaited_once()
-        mock_persist.assert_not_awaited()
+        target.record_error.assert_awaited_once()
+        target.persist_with_drift_check.assert_not_awaited()
 
 
 class TestHTTPPullHealthCheck:
