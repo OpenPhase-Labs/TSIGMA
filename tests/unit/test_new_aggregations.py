@@ -124,7 +124,9 @@ class TestNewAggregationsRegistered:
 
 
 _JOB_TABLE_EVENTS = [
-    ("agg_approach_speed", "approach_speed_15min", ("82",)),
+    # agg_approach_speed is parametrised separately — it sources from
+    # roadside_event, not controller_event_log, so the generic
+    # event-code-in-SQL assertion doesn't fit it.
     ("agg_phase_cycle", "phase_cycle_15min", ("1", "8", "9")),
     ("agg_phase_left_turn_gap", "phase_left_turn_gap_15min", ("4",)),
     ("agg_phase_pedestrian", "phase_pedestrian_15min", ("21", "45")),
@@ -453,6 +455,140 @@ async def test_signal_event_count_no_phase_column(patched_agg_modules):
     header = insert_sql.split("SELECT", 1)[0]
     assert " phase" not in header.lower()
     assert "event_count" in insert_sql
+
+
+# ---------------------------------------------------------------------------
+# agg_approach_speed — dedicated tests, since it sources from roadside_event
+# and has dialect-specific SQL shapes that don't fit the generic matrix.
+# ---------------------------------------------------------------------------
+
+
+class TestApproachSpeedSQL:
+    """agg_approach_speed emits dialect-correct percentile SQL against
+    roadside_event, not controller_event_log."""
+
+    @pytest.mark.asyncio
+    async def test_postgresql_uses_percentile_cont_aggregate(
+        self, patched_agg_modules,
+    ):
+        mock_settings, mock_facade = patched_agg_modules
+        _configure_mocks(
+            mock_settings, mock_facade, db_type="postgresql",
+            delete_sql="DELETE FROM approach_speed_15min",
+        )
+        _reset_timescale_flags()
+
+        func = JobRegistry.get("agg_approach_speed")["func"]
+        session = _mock_session()
+        await func(session)
+
+        assert session.execute.call_count == 2
+        insert_sql = str(session.execute.call_args_list[1][0][0].text)
+        assert "INSERT INTO approach_speed_15min" in insert_sql
+        assert "roadside_event" in insert_sql
+        assert "roadside_sensor_lane" in insert_sql
+        # Controller table must NOT appear — the rewrite dropped that branch.
+        assert "controller_event_log" not in insert_sql
+        # event_type = SPEED (1), not controller event code 82.
+        assert "event_type = 1" in insert_sql
+        assert "re.mph" in insert_sql
+        # Real percentile computation — not zero placeholders.
+        assert "PERCENTILE_CONT(0.15)" in insert_sql
+        assert "PERCENTILE_CONT(0.50)" in insert_sql
+        assert "PERCENTILE_CONT(0.85)" in insert_sql
+        assert "WITHIN GROUP" in insert_sql
+
+    @pytest.mark.asyncio
+    async def test_oracle_uses_percentile_cont_aggregate(
+        self, patched_agg_modules,
+    ):
+        mock_settings, mock_facade = patched_agg_modules
+        _configure_mocks(
+            mock_settings, mock_facade, db_type="oracle",
+            delete_sql="DELETE FROM approach_speed_15min",
+        )
+        _reset_timescale_flags()
+
+        func = JobRegistry.get("agg_approach_speed")["func"]
+        session = _mock_session()
+        await func(session)
+
+        insert_sql = str(session.execute.call_args_list[1][0][0].text)
+        assert "roadside_event" in insert_sql
+        assert "PERCENTILE_CONT(0.15)" in insert_sql
+        assert "WITHIN GROUP" in insert_sql
+        assert "NVL" in insert_sql
+
+    @pytest.mark.asyncio
+    async def test_mssql_uses_percentile_cont_window(
+        self, patched_agg_modules,
+    ):
+        mock_settings, mock_facade = patched_agg_modules
+        _configure_mocks(
+            mock_settings, mock_facade, db_type="mssql",
+            delete_sql="DELETE FROM approach_speed_15min",
+        )
+        _reset_timescale_flags()
+
+        func = JobRegistry.get("agg_approach_speed")["func"]
+        session = _mock_session()
+        await func(session)
+
+        insert_sql = str(session.execute.call_args_list[1][0][0].text)
+        assert "roadside_event" in insert_sql
+        assert "PERCENTILE_CONT(0.15)" in insert_sql
+        # Window form — PERCENTILE_CONT used with OVER(PARTITION BY ...).
+        assert "OVER" in insert_sql
+        assert "PARTITION BY" in insert_sql
+        assert "SELECT DISTINCT" in insert_sql
+        assert "ISNULL" in insert_sql
+
+    @pytest.mark.asyncio
+    async def test_mysql_uses_row_number_emulation(
+        self, patched_agg_modules,
+    ):
+        mock_settings, mock_facade = patched_agg_modules
+        _configure_mocks(
+            mock_settings, mock_facade, db_type="mysql",
+            delete_sql="DELETE FROM approach_speed_15min",
+        )
+        _reset_timescale_flags()
+
+        func = JobRegistry.get("agg_approach_speed")["func"]
+        session = _mock_session()
+        await func(session)
+
+        insert_sql = str(session.execute.call_args_list[1][0][0].text)
+        assert "roadside_event" in insert_sql
+        # MySQL has no PERCENTILE_CONT — must use ROW_NUMBER nearest-rank.
+        assert "PERCENTILE_CONT" not in insert_sql
+        assert "ROW_NUMBER" in insert_sql
+        assert "CEIL(cnt * 0.15)" in insert_sql
+        assert "CEIL(cnt * 0.50)" in insert_sql
+        assert "CEIL(cnt * 0.85)" in insert_sql
+
+    @pytest.mark.asyncio
+    async def test_skips_when_disabled(self, patched_agg_modules):
+        mock_settings, _ = patched_agg_modules
+        mock_settings.aggregation_enabled = False
+        _reset_timescale_flags()
+
+        func = JobRegistry.get("agg_approach_speed")["func"]
+        session = _mock_session()
+        await func(session)
+        session.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_timescaledb_active(self, patched_agg_modules):
+        mock_settings, mock_facade = patched_agg_modules
+        mock_settings.aggregation_enabled = True
+        mock_facade.has_timescaledb = AsyncMock(return_value=True)
+        _reset_timescale_flags()
+
+        func = JobRegistry.get("agg_approach_speed")["func"]
+        session = _mock_session()
+        await func(session)
+        session.execute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
