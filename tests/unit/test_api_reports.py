@@ -117,6 +117,82 @@ class TestListReports:
         assert resp.json() == []
 
 
+class TestReportSchema:
+    """Tests for GET /api/v1/reports/{report_name}/schema."""
+
+    @patch("tsigma.api.v1.reports.ReportRegistry")
+    def test_returns_pydantic_schema_for_known_report(self, mock_registry):
+        """The schema endpoint returns the declared Pydantic params schema."""
+        from tsigma.reports.arrival_on_red import ArrivalOnRedReport
+
+        mock_registry.get.return_value = ArrivalOnRedReport
+
+        app = _create_test_app()
+        _add_access_overrides(app)
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/reports/arrival-on-red/schema")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["name"] == "arrival-on-red"
+        assert body["schema"] is not None
+        props = body["schema"]["properties"]
+        # Fields declared on ArrivalOnRedParams are surfaced with their
+        # real names — the UI can no longer send mismatched start_date/end_date.
+        assert "signal_id" in props
+        assert "start" in props
+        assert "end" in props
+        assert "bin_size_minutes" in props
+        assert "yellow_as_red" in props
+        assert body["schema"]["required"] == ["signal_id", "start", "end"]
+
+    @patch("tsigma.api.v1.reports.ReportRegistry")
+    def test_returns_404_for_unknown_report(self, mock_registry):
+        mock_registry.get.side_effect = ValueError("Unknown report: nope")
+        app = _create_test_app()
+        _add_access_overrides(app)
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/reports/nope/schema")
+        assert resp.status_code == 404
+
+    @patch("tsigma.api.v1.reports.ReportRegistry")
+    def test_returns_null_schema_when_report_has_no_params_class(self, mock_registry):
+        """A report that does not inherit Report[SomeBaseModel] has no schema."""
+        # Fake class with no __orig_bases__ pointing at a BaseModel subclass.
+        fake_cls = MagicMock()
+        fake_cls.__orig_bases__ = ()
+        mock_registry.get.return_value = fake_cls
+
+        app = _create_test_app()
+        _add_access_overrides(app)
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/reports/weird/schema")
+        assert resp.status_code == 200
+        assert resp.json() == {"name": "weird", "schema": None}
+
+
+class TestParamsClsExtraction:
+    """Unit tests for _params_cls_for helper."""
+
+    def test_extracts_declared_params_class(self):
+        from tsigma.api.v1.reports import _params_cls_for
+        from tsigma.reports.arrival_on_red import (
+            ArrivalOnRedParams,
+            ArrivalOnRedReport,
+        )
+        assert _params_cls_for(ArrivalOnRedReport) is ArrivalOnRedParams
+
+    def test_returns_none_when_no_pydantic_base(self):
+        from tsigma.api.v1.reports import _params_cls_for
+
+        class Nothing:
+            __orig_bases__ = ()
+
+        assert _params_cls_for(Nothing) is None
+
+
 class TestRunReport:
     """Tests for POST /api/v1/reports/{report_name}."""
 

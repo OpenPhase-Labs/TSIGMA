@@ -2,143 +2,7 @@
 {% block title %}{{ report_name }} - Reports - TSIGMA{% endblock %}
 
 {% block content %}
-<div x-data="{
-  reportName: '{{ report_name }}',
-  signalId: new URLSearchParams(window.location.search).get('signal_id') || '',
-  startDate: '',
-  endDate: '',
-  phaseNumber: '',
-  running: false,
-  hasResults: false,
-  results: [],
-  columns: [],
-  error: '',
-  chart: null,
-
-  init() {
-    // Default date range: last 24 hours
-    const now = new Date();
-    const yesterday = new Date(now.getTime() - 86400000);
-    this.endDate = now.toISOString().slice(0, 16);
-    this.startDate = yesterday.toISOString().slice(0, 16);
-  },
-
-  async runReport() {
-    this.error = '';
-    this.running = true;
-    this.hasResults = false;
-
-    const body = {
-      signal_id: this.signalId || undefined,
-      start_date: this.startDate || undefined,
-      end_date: this.endDate || undefined
-    };
-    if (this.phaseNumber) body.phase_number = parseInt(this.phaseNumber);
-
-    try {
-      const res = await fetch('/api/v1/reports/' + this.reportName, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify(body)
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        this.error = err.detail || 'Report execution failed.';
-        this.running = false;
-        return;
-      }
-
-      const data = await res.json();
-      this.results = data.data || data.results || data || [];
-      this.columns = this.results.length > 0 ? Object.keys(this.results[0]) : [];
-      this.hasResults = true;
-
-      this.$nextTick(() => this.renderChart(data));
-    } catch (e) {
-      this.error = 'Failed to connect to the server.';
-    } finally {
-      this.running = false;
-    }
-  },
-
-  renderChart(data) {
-    const el = document.getElementById('report-chart');
-    if (!el) return;
-
-    if (this.chart) this.chart.dispose();
-    this.chart = echarts.init(el);
-
-    // Delegate to per-report chart module if loaded
-    if (window.__tsigma_chart_render) {
-      window.__tsigma_chart_render(this.chart, data, this.reportName);
-      window.addEventListener('resize', () => this.chart.resize());
-      return;
-    }
-
-    // Default: bar chart with first two columns
-    if (this.results.length === 0 || this.columns.length < 2) return;
-
-    const xKey = this.columns[0];
-    const yKey = this.columns[1];
-
-    this.chart.setOption({
-      backgroundColor: 'transparent',
-      textStyle: { color: '#9ca3af' },
-      tooltip: { trigger: 'axis' },
-      grid: { left: 60, right: 20, top: 20, bottom: 50 },
-      xAxis: {
-        type: 'category',
-        data: this.results.map(r => r[xKey]),
-        axisLine: { lineStyle: { color: '#374151' } },
-        axisLabel: { rotate: 45 }
-      },
-      yAxis: {
-        type: 'value',
-        axisLine: { lineStyle: { color: '#374151' } },
-        splitLine: { lineStyle: { color: '#1f2937' } }
-      },
-      series: [{ data: this.results.map(r => r[yKey]), type: 'bar', itemStyle: { color: '#3b82f6' } }]
-    });
-
-    window.addEventListener('resize', () => this.chart.resize());
-  },
-
-  async exportReport(format) {
-    const body = {
-      signal_id: this.signalId || undefined,
-      start_date: this.startDate || undefined,
-      end_date: this.endDate || undefined,
-      format: format
-    };
-    if (this.phaseNumber) body.phase_number = parseInt(this.phaseNumber);
-
-    try {
-      const res = await fetch('/api/v1/reports/' + this.reportName + '/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify(body)
-      });
-
-      if (!res.ok) {
-        this.error = 'Export failed.';
-        return;
-      }
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = this.reportName + '.' + format;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      this.error = 'Export failed.';
-    }
-  }
-}">
+<div x-data="reportViewer('{{ report_name }}', new URLSearchParams(window.location.search))">
 
   <!-- Header -->
   <div class="flex items-center gap-3 mb-6">
@@ -147,66 +11,136 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
       </svg>
     </a>
-    <h1 class="text-xl font-bold text-white" x-text="reportName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())"></h1>
+    <h1 class="text-xl font-bold text-white" x-text="prettyName"></h1>
   </div>
 
-  <!-- Parameter form -->
-  <div class="bg-gray-800 border border-gray-700 rounded-lg p-5 mb-6">
-    <h2 class="text-sm font-semibold text-gray-300 mb-4">Report Parameters</h2>
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      <div>
-        <label class="block text-xs text-gray-400 mb-1">Signal ID</label>
-        <input type="text" x-model="signalId" placeholder="e.g. 1001"
-               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+  <!-- Schema load / error -->
+  <template x-if="schemaError">
+    <div class="mb-6 p-3 bg-red-900/50 border border-red-800 rounded-md text-sm text-red-300">
+      <span x-text="schemaError"></span>
+    </div>
+  </template>
+
+  <!-- Dynamic parameter form -->
+  <template x-if="!schemaError && formFields.length > 0">
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5 mb-6">
+      <h2 class="text-sm font-semibold text-gray-300 mb-4">Report Parameters</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <template x-for="f in formFields" :key="f.name">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">
+              <span x-text="f.label"></span>
+              <span x-show="f.required" class="text-red-400">*</span>
+            </label>
+
+            <!-- boolean -->
+            <template x-if="f.widget === 'checkbox'">
+              <label class="inline-flex items-center gap-2 mt-1">
+                <input type="checkbox" x-model="values[f.name]"
+                       class="rounded bg-gray-900 border-gray-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-gray-800">
+                <span class="text-sm text-gray-300" x-text="f.description || ''"></span>
+              </label>
+            </template>
+
+            <!-- datetime-local -->
+            <template x-if="f.widget === 'datetime'">
+              <input type="datetime-local" x-model="values[f.name]"
+                     class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            </template>
+
+            <!-- integer -->
+            <template x-if="f.widget === 'integer'">
+              <input type="number" step="1" x-model.number="values[f.name]" :placeholder="f.placeholder"
+                     class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            </template>
+
+            <!-- float -->
+            <template x-if="f.widget === 'number'">
+              <input type="number" step="any" x-model.number="values[f.name]" :placeholder="f.placeholder"
+                     class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            </template>
+
+            <!-- string -->
+            <template x-if="f.widget === 'text'">
+              <input type="text" x-model="values[f.name]" :placeholder="f.placeholder"
+                     class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            </template>
+
+            <!-- enum (dropdown for string enums) -->
+            <template x-if="f.widget === 'enum'">
+              <select x-model="values[f.name]"
+                      class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                <template x-for="opt in f.enumOptions" :key="opt">
+                  <option :value="opt" x-text="opt"></option>
+                </template>
+              </select>
+            </template>
+
+            <!-- CSV (list of string / integer) -->
+            <template x-if="f.widget === 'csv'">
+              <input type="text" x-model="values[f.name]" :placeholder="f.placeholder || 'comma-separated'"
+                     class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            </template>
+
+            <!-- JSON (object or complex array) -->
+            <template x-if="f.widget === 'json'">
+              <textarea x-model="values[f.name]" rows="3" :placeholder="f.placeholder || '{}'"
+                        class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
+            </template>
+
+            <p x-show="f.widget !== 'checkbox' && f.description" class="text-xs text-gray-500 mt-1" x-text="f.description"></p>
+          </div>
+        </template>
       </div>
-      <div>
-        <label class="block text-xs text-gray-400 mb-1">Start Date/Time</label>
-        <input type="datetime-local" x-model="startDate"
-               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-      </div>
-      <div>
-        <label class="block text-xs text-gray-400 mb-1">End Date/Time</label>
-        <input type="datetime-local" x-model="endDate"
-               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-      </div>
-      <div>
-        <label class="block text-xs text-gray-400 mb-1">Phase Number</label>
-        <input type="number" x-model="phaseNumber" placeholder="Optional" min="1" max="16"
-               class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+
+      <div class="flex items-center gap-3 mt-4">
+        <button @click="runReport()" :disabled="running"
+                class="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-sm font-medium rounded-md transition-colors">
+          <span x-show="!running">Run Report</span>
+          <span x-show="running" class="flex items-center gap-2">
+            <span class="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+            Running...
+          </span>
+        </button>
+
+        <template x-if="hasResults">
+          <div class="flex items-center gap-2">
+            <button @click="exportReport('csv')"
+                    class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors">
+              Export CSV
+            </button>
+            <button @click="exportReport('json')"
+                    class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors">
+              Export JSON
+            </button>
+          </div>
+        </template>
       </div>
     </div>
+  </template>
 
-    <div class="flex items-center gap-3 mt-4">
-      <button @click="runReport()" :disabled="running"
-              class="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-sm font-medium rounded-md transition-colors">
-        <span x-show="!running">Run Report</span>
-        <span x-show="running" class="flex items-center gap-2">
-          <span class="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-          Running...
-        </span>
-      </button>
-
-      <template x-if="hasResults">
-        <div class="flex items-center gap-2">
-          <button @click="exportReport('csv')"
-                  class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors">
-            Export CSV
-          </button>
-          <button @click="exportReport('json')"
-                  class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors">
-            Export JSON
-          </button>
-        </div>
-      </template>
-    </div>
-  </div>
-
-  <!-- Error -->
+  <!-- Runtime error (422 / 500 / network) -->
   <div x-show="error" x-transition class="mb-6 p-3 bg-red-900/50 border border-red-800 rounded-md text-sm text-red-300">
     <span x-text="error"></span>
   </div>
 
-  <!-- Loading indicator -->
+  <!-- Not-ready warning (422 from a gating report) -->
+  <template x-if="notReadyReason">
+    <div class="mb-6 p-4 bg-amber-900/40 border border-amber-700 rounded-md">
+      <div class="flex items-start gap-2">
+        <svg class="w-5 h-5 text-amber-400 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+        <div>
+          <p class="text-sm font-semibold text-amber-300">Signal is not ready for this report.</p>
+          <p class="text-xs text-amber-200/80 mt-1" x-text="notReadyReason"></p>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- Loading -->
   <div x-show="running" class="text-center py-12">
     <div class="inline-block w-8 h-8 border-3 border-gray-600 border-t-blue-500 rounded-full animate-spin"></div>
     <p class="text-sm text-gray-400 mt-3">Executing report...</p>
@@ -215,12 +149,10 @@
   <!-- Results -->
   <template x-if="hasResults && !running">
     <div class="space-y-6">
-      <!-- Chart -->
       <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
         <div id="report-chart" class="w-full h-80"></div>
       </div>
 
-      <!-- Data table -->
       <div class="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
         <div class="px-5 py-3 border-b border-gray-700">
           <h2 class="text-sm font-semibold text-gray-300">
@@ -241,7 +173,7 @@
               <template x-for="(row, idx) in results" :key="idx">
                 <tr class="hover:bg-gray-750">
                   <template x-for="col in columns" :key="col">
-                    <td class="px-4 py-2 text-gray-300 whitespace-nowrap" x-text="row[col] ?? '---'"></td>
+                    <td class="px-4 py-2 text-gray-300 whitespace-nowrap" x-text="formatCell(row[col])"></td>
                   </template>
                 </tr>
               </template>
@@ -256,8 +188,429 @@
 {% endblock %}
 
 {% block scripts %}
-<!-- Per-report chart module: override window.__tsigma_chart_render for custom visualization -->
 <script>
   window.__tsigma_report_name = '{{ report_name }}';
+
+  /**
+   * Dynamic report viewer.
+   *
+   * Fetches the report's JSON schema from /api/v1/reports/{name}/schema,
+   * renders a form that matches the Pydantic params class exactly (no more
+   * fixed start_date/end_date/phase_number mismatch), and submits the
+   * values with the correct field names and types.
+   */
+  function reportViewer(reportName, urlParams) {
+    return {
+      reportName,
+      prettyName: reportName.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+
+      // Schema + form state
+      schema: null,
+      schemaError: '',
+      formFields: [],
+      values: {},
+
+      // Execution state
+      running: false,
+      hasResults: false,
+      results: [],
+      columns: [],
+      error: '',
+      notReadyReason: '',
+      chart: null,
+
+      async init() {
+        try {
+          const res = await fetch('/api/v1/reports/' + this.reportName + '/schema', {
+            credentials: 'same-origin',
+          });
+          if (!res.ok) {
+            this.schemaError = 'Could not load report schema (HTTP ' + res.status + ').';
+            return;
+          }
+          const body = await res.json();
+          this.schema = body.schema;
+          if (!this.schema) {
+            this.schemaError = 'This report has no declared parameter schema.';
+            return;
+          }
+          this.buildForm(urlParams);
+        } catch (e) {
+          this.schemaError = 'Could not load report schema: ' + e.message;
+        }
+      },
+
+      buildForm(urlParams) {
+        const props = this.schema.properties || {};
+        const required = new Set(this.schema.required || []);
+        const fields = [];
+        for (const [name, spec] of Object.entries(props)) {
+          const widget = this.pickWidget(name, spec);
+          const def = this.initialValue(name, spec, widget, urlParams);
+          this.values[name] = def;
+          fields.push({
+            name,
+            label: spec.title || name,
+            description: spec.description || '',
+            required: required.has(name),
+            widget,
+            enumOptions: spec.enum || [],
+            placeholder: spec.examples && spec.examples[0]
+              ? String(spec.examples[0])
+              : (spec.default !== undefined ? String(spec.default) : ''),
+          });
+        }
+        this.formFields = fields;
+      },
+
+      pickWidget(name, spec) {
+        const t = spec.type;
+        if (spec.enum && Array.isArray(spec.enum)) return 'enum';
+        if (t === 'boolean') return 'checkbox';
+        if (t === 'integer') return 'integer';
+        if (t === 'number') return 'number';
+        if (t === 'array') return 'csv';
+        if (t === 'object') return 'json';
+        if (t === 'string') {
+          if (spec.format === 'date-time') return 'datetime';
+          // Heuristic: ISO-8601 strings commonly named start / end / *_time / *_date
+          if (/^(start|end)$/i.test(name)) return 'datetime';
+          if (/_time$|_date$|_datetime$/i.test(name)) return 'datetime';
+          return 'text';
+        }
+        // anyOf / oneOf: pick first concrete type we can render
+        if (Array.isArray(spec.anyOf)) {
+          for (const alt of spec.anyOf) {
+            if (alt.type && alt.type !== 'null') {
+              return this.pickWidget(name, alt);
+            }
+          }
+        }
+        return 'text';
+      },
+
+      initialValue(name, spec, widget, urlParams) {
+        // URL query param always wins if present.
+        const qp = urlParams.get(name);
+        if (qp !== null && qp !== '') {
+          return this.coerce(qp, widget);
+        }
+        if (spec.default !== undefined) {
+          if (widget === 'csv' && Array.isArray(spec.default)) {
+            return spec.default.join(',');
+          }
+          if (widget === 'json' && typeof spec.default === 'object') {
+            return JSON.stringify(spec.default);
+          }
+          return spec.default;
+        }
+        // Sensible defaults for the common start/end datetime pair.
+        if (widget === 'datetime' && (name === 'start' || name === 'end')) {
+          const now = new Date();
+          const anchor = name === 'end' ? now : new Date(now.getTime() - 86400000);
+          return anchor.toISOString().slice(0, 16);
+        }
+        if (widget === 'checkbox') return false;
+        if (widget === 'integer' || widget === 'number') return null;
+        return '';
+      },
+
+      coerce(value, widget) {
+        if (widget === 'checkbox') {
+          return value === 'true' || value === '1';
+        }
+        if (widget === 'integer') {
+          const n = parseInt(value, 10);
+          return Number.isNaN(n) ? null : n;
+        }
+        if (widget === 'number') {
+          const n = parseFloat(value);
+          return Number.isNaN(n) ? null : n;
+        }
+        return value;
+      },
+
+      buildRequestBody() {
+        const body = {};
+        for (const f of this.formFields) {
+          let v = this.values[f.name];
+          if (v === '' || v === null || v === undefined) {
+            // Omit empty optional fields; include for required so server
+            // returns a clear validation error rather than silently defaulting.
+            if (f.required) body[f.name] = v;
+            continue;
+          }
+          if (f.widget === 'csv') {
+            // Comma-split, trim, drop empties.  Inner type unknown from JSON
+            // Schema alone — server-side Pydantic will coerce "7" → 7.
+            if (typeof v === 'string') {
+              v = v.split(',').map(s => s.trim()).filter(Boolean);
+            }
+          } else if (f.widget === 'json') {
+            if (typeof v === 'string') {
+              try {
+                v = JSON.parse(v);
+              } catch (e) {
+                throw new Error('Invalid JSON for field "' + f.name + '": ' + e.message);
+              }
+            }
+          }
+          body[f.name] = v;
+        }
+        return body;
+      },
+
+      async runReport() {
+        this.error = '';
+        this.notReadyReason = '';
+        this.hasResults = false;
+
+        let body;
+        try {
+          body = this.buildRequestBody();
+        } catch (e) {
+          this.error = e.message;
+          return;
+        }
+
+        // Round-trip the configured params into the URL so refresh / share
+        // preserves the run.  We write *only* non-default values so the URL
+        // stays readable and doesn't churn on unrelated param additions.
+        this.syncUrl(body);
+
+        this.running = true;
+        try {
+          const res = await fetch('/api/v1/reports/' + this.reportName, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(body),
+          });
+
+          if (res.status === 422) {
+            // Gating report signaled "not ready" — body carries the details.
+            const payload = await res.json().catch(() => ({}));
+            const rows = (payload && payload.data) || [];
+            this.notReadyReason = this.summarizeNotReady(rows);
+            this.running = false;
+            return;
+          }
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.error = err.detail || 'Report execution failed (HTTP ' + res.status + ').';
+            this.running = false;
+            return;
+          }
+
+          const data = await res.json();
+          this.results = data.data || data.results || [];
+          this.columns = this.results.length > 0 ? Object.keys(this.results[0]) : [];
+          this.hasResults = true;
+
+          this.$nextTick(() => this.renderChart(data));
+        } catch (e) {
+          this.error = 'Failed to connect to the server: ' + e.message;
+        } finally {
+          this.running = false;
+        }
+      },
+
+      syncUrl(body) {
+        const defaults = {};
+        for (const f of this.formFields) {
+          const prop = (this.schema.properties || {})[f.name] || {};
+          if (prop.default !== undefined) defaults[f.name] = prop.default;
+        }
+        const qs = new URLSearchParams();
+        for (const [k, v] of Object.entries(body)) {
+          if (v === null || v === undefined || v === '') continue;
+          // Skip values equal to the schema default.
+          if (defaults[k] !== undefined && JSON.stringify(defaults[k]) === JSON.stringify(v)) continue;
+          qs.set(k, Array.isArray(v) || typeof v === 'object' ? JSON.stringify(v) : String(v));
+        }
+        const url = window.location.pathname + (qs.toString() ? '?' + qs.toString() : '');
+        window.history.replaceState({}, '', url);
+      },
+
+      summarizeNotReady(rows) {
+        if (!rows || rows.length === 0) {
+          return 'The server reported the signal is not ready, but returned no details.';
+        }
+        const row = rows[0];
+        const failed = [];
+        for (const [k, v] of Object.entries(row)) {
+          if (k.startsWith('insufficient_') && v) failed.push(k);
+          if (k.endsWith('_ok') && v === false) failed.push(k);
+        }
+        if (failed.length === 0) {
+          return 'overall_ready is false — check the response payload for specifics.';
+        }
+        return 'Failed checks: ' + failed.join(', ');
+      },
+
+      async renderChart(data) {
+        const containerId = 'report-chart';
+        const el = document.getElementById(containerId);
+        if (!el) return;
+
+        // Dispose any prior ECharts instance attached to this element so
+        // switching reports / re-running never leaves an orphaned chart.
+        if (this.chart) { this.chart.dispose(); this.chart = null; }
+        const prior = (window.echarts && echarts.getInstanceByDom)
+          ? echarts.getInstanceByDom(el) : null;
+        if (prior) prior.dispose();
+
+        // Prefer a per-report chart module when one exists.  Each module
+        // registers itself under window.tsigma.charts.<camelCaseName> with
+        // init(containerId) + render(data) and manages its own ECharts
+        // instance.
+        const module = await this.loadChartModule();
+        if (module && typeof module.init === 'function' && typeof module.render === 'function') {
+          try {
+            module.init(containerId);
+            module.render(this.results);
+            return;
+          } catch (e) {
+            console.warn('Per-report chart module failed, falling back:', e);
+          }
+        }
+
+        // Generic fallback: bar chart using first column as category and the
+        // first varying numeric column as the value.
+        this.chart = echarts.init(el);
+        if (this.results.length === 0 || this.columns.length < 2) return;
+        const xKey = this.columns[0];
+        const yKey = this.firstNumericColumn() || this.columns[1];
+
+        this.chart.setOption({
+          backgroundColor: 'transparent',
+          textStyle: { color: '#9ca3af' },
+          tooltip: { trigger: 'axis' },
+          grid: { left: 60, right: 20, top: 20, bottom: 50 },
+          xAxis: {
+            type: 'category',
+            data: this.results.map(r => r[xKey]),
+            axisLine: { lineStyle: { color: '#374151' } },
+            axisLabel: { rotate: 45 },
+          },
+          yAxis: {
+            type: 'value',
+            axisLine: { lineStyle: { color: '#374151' } },
+            splitLine: { lineStyle: { color: '#1f2937' } },
+          },
+          series: [{
+            data: this.results.map(r => r[yKey]),
+            type: 'bar',
+            itemStyle: { color: '#3b82f6' },
+          }],
+        });
+        if (window.tsigma && window.tsigma.charts && window.tsigma.charts.resize) {
+          window.tsigma.charts.resize(this.chart);
+        } else {
+          window.addEventListener('resize', () => this.chart && this.chart.resize());
+        }
+      },
+
+      // ---- Per-report chart-module loader ---------------------------------
+      //
+      // Report name (kebab-case)  →  JS file name (snake_case)
+      // Report name (kebab-case)  →  registry key (camelCase)
+      //
+      // Most mappings are mechanical.  ``purdue-diagram`` is the sole alias
+      // (module file is historically ``pcd.js``).  Other aliases can be
+      // added here without touching the server.
+      _chartAliases: {
+        'purdue-diagram': { file: 'pcd', key: 'pcd' },
+      },
+
+      reportNameToFileName(name) {
+        const alias = this._chartAliases[name];
+        if (alias) return alias.file;
+        return name.replace(/-/g, '_');
+      },
+
+      reportNameToRegistryKey(name) {
+        const alias = this._chartAliases[name];
+        if (alias) return alias.key;
+        return name.split('-').map((p, i) =>
+          i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1)
+        ).join('');
+      },
+
+      async loadChartModule() {
+        const key = this.reportNameToRegistryKey(this.reportName);
+        if (window.tsigma && window.tsigma.charts && window.tsigma.charts[key]) {
+          return window.tsigma.charts[key];
+        }
+        const file = this.reportNameToFileName(this.reportName);
+        const src = '/static/js/charts/' + file + '.js';
+        // Avoid double-injecting if a prior attempt for this URL failed.
+        const existing = document.querySelector('script[data-tsigma-chart="' + file + '"]');
+        if (existing) return window.tsigma?.charts?.[key] || null;
+        return await new Promise((resolve) => {
+          const s = document.createElement('script');
+          s.src = src;
+          s.dataset.tsigmaChart = file;
+          s.onload = () => resolve(window.tsigma?.charts?.[key] || null);
+          // Missing or failed chart module is a soft miss — use the generic
+          // fallback.  Reports without a bespoke chart are common.
+          s.onerror = () => resolve(null);
+          document.head.appendChild(s);
+        });
+      },
+
+      firstNumericColumn() {
+        // Pick the first column (excluding column 0) whose values are mostly
+        // numeric and vary — skips broadcast summary columns that are
+        // identical on every row.
+        for (let i = 1; i < this.columns.length; i++) {
+          const k = this.columns[i];
+          const vals = this.results.map(r => r[k]).filter(v => typeof v === 'number');
+          if (vals.length === 0) continue;
+          const unique = new Set(vals);
+          if (unique.size > 1) return k;
+        }
+        return null;
+      },
+
+      formatCell(v) {
+        if (v === null || v === undefined) return '---';
+        if (typeof v === 'boolean') return v ? 'true' : 'false';
+        if (typeof v === 'number' && !Number.isInteger(v)) {
+          return Math.abs(v) >= 1000 ? v.toFixed(1) : v.toString();
+        }
+        return v;
+      },
+
+      async exportReport(format) {
+        let body;
+        try {
+          body = this.buildRequestBody();
+          body.format = format;
+        } catch (e) {
+          this.error = e.message;
+          return;
+        }
+        try {
+          const res = await fetch('/api/v1/reports/' + this.reportName + '/export?format=' + format, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) { this.error = 'Export failed.'; return; }
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = this.reportName + '.' + format;
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          this.error = 'Export failed: ' + e.message;
+        }
+      },
+    };
+  }
 </script>
 {% endblock %}
