@@ -6,9 +6,11 @@ Provides endpoints to list, execute, and export TSIGMA report plugins.
 
 import json
 import logging
+import typing
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.dependencies import require_access
@@ -18,6 +20,20 @@ from ...reports.registry import ReportRegistry, ReportResourceNotFoundError
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _params_cls_for(report_cls: type) -> type[BaseModel] | None:
+    """Extract the Pydantic params class declared by a ``Report[TParams]``.
+
+    Returns ``None`` if the report did not parameterise its base class with
+    a ``BaseModel`` subclass (e.g., a hypothetical report that takes raw
+    dict params and does its own validation).
+    """
+    for base in getattr(report_cls, "__orig_bases__", ()):
+        for arg in typing.get_args(base):
+            if isinstance(arg, type) and issubclass(arg, BaseModel):
+                return arg
+    return None
 
 
 @router.get("/reports")
@@ -42,6 +58,43 @@ async def list_reports(
         }
         for name, cls in reports.items()
     ]
+
+
+@router.get("/reports/{report_name}/schema")
+async def report_schema(
+    report_name: str,
+    _access=Depends(require_access("reports")),
+):
+    """
+    Return the JSON schema for a report's parameters.
+
+    Used by the UI to render a dynamic parameter form instead of the
+    previous fixed ``signal_id + start_date + end_date + phase_number``
+    shape which did not match most reports' actual param names or types.
+
+    Response shape::
+
+        {
+            "name": "arrival-on-red",
+            "schema": { ...Pydantic v2 JSON schema... }
+        }
+
+    ``schema`` is ``None`` when the report does not declare a Pydantic
+    params class — callers should fall back to an unstructured text
+    editor or skip the report.
+    """
+    try:
+        report_cls = ReportRegistry.get(report_name)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Report not found: {report_name}",
+        )
+
+    params_cls = _params_cls_for(report_cls)
+    if params_cls is None:
+        return {"name": report_name, "schema": None}
+    return {"name": report_name, "schema": params_cls.model_json_schema()}
 
 
 @router.post("/reports/{report_name}")
