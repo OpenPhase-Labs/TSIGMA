@@ -48,7 +48,8 @@ async def test_skips_when_table_not_partitioned():
     session = AsyncMock()
     session.execute = AsyncMock(return_value=_mock_rows([]))
 
-    with patch.object(mp.settings, "db_type", "mysql"), \
+    with patch.object(mp, "_MANAGED_TABLES", ("controller_event_log",)), \
+         patch.object(mp.settings, "db_type", "mysql"), \
          patch.object(mp.settings, "event_log_partition_interval_days", 1), \
          patch.object(mp.settings, "partition_lookahead_days", 7), \
          patch.object(mp.settings, "partition_retention_days", None):
@@ -79,7 +80,8 @@ async def test_creates_missing_future_partitions_mysql():
         MagicMock(),  # ADD partition for today+3
     ])
 
-    with patch.object(mp.settings, "db_type", "mysql"), \
+    with patch.object(mp, "_MANAGED_TABLES", ("controller_event_log",)), \
+         patch.object(mp.settings, "db_type", "mysql"), \
          patch.object(mp.settings, "event_log_partition_interval_days", 1), \
          patch.object(mp.settings, "partition_lookahead_days", 3), \
          patch.object(mp.settings, "partition_retention_days", None):
@@ -109,7 +111,8 @@ async def test_does_not_create_when_all_future_partitions_exist():
     session = AsyncMock()
     session.execute = AsyncMock(return_value=_mock_rows(existing_rows))
 
-    with patch.object(mp.settings, "db_type", "mysql"), \
+    with patch.object(mp, "_MANAGED_TABLES", ("controller_event_log",)), \
+         patch.object(mp.settings, "db_type", "mysql"), \
          patch.object(mp.settings, "event_log_partition_interval_days", 1), \
          patch.object(mp.settings, "partition_lookahead_days", 3), \
          patch.object(mp.settings, "partition_retention_days", None):
@@ -145,7 +148,8 @@ async def test_drops_old_partitions_when_retention_set_mysql():
         MagicMock(),  # DROP old partition
     ])
 
-    with patch.object(mp.settings, "db_type", "mysql"), \
+    with patch.object(mp, "_MANAGED_TABLES", ("controller_event_log",)), \
+         patch.object(mp.settings, "db_type", "mysql"), \
          patch.object(mp.settings, "event_log_partition_interval_days", 1), \
          patch.object(mp.settings, "partition_lookahead_days", 1), \
          patch.object(mp.settings, "partition_retention_days", 30):
@@ -169,7 +173,8 @@ async def test_oracle_is_inert_for_ensure_creates_but_can_drop():
     session = AsyncMock()
     session.execute = AsyncMock(return_value=_mock_rows(existing_rows))
 
-    with patch.object(mp.settings, "db_type", "oracle"), \
+    with patch.object(mp, "_MANAGED_TABLES", ("controller_event_log",)), \
+         patch.object(mp.settings, "db_type", "oracle"), \
          patch.object(mp.settings, "event_log_partition_interval_days", 1), \
          patch.object(mp.settings, "partition_lookahead_days", 5), \
          patch.object(mp.settings, "partition_retention_days", None):
@@ -177,6 +182,43 @@ async def test_oracle_is_inert_for_ensure_creates_but_can_drop():
 
     # Only the list query — Oracle's ensure_partition_sql returns [].
     assert session.execute.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_manages_both_event_tables_mysql():
+    """Both controller_event_log and roadside_event share the same window."""
+    from tsigma.scheduler.jobs import manage_partitions as mp
+
+    today = date.today()
+    helper = mp.DialectHelper("mysql")
+    # Neither table has tomorrow's partition yet.
+    existing_rows = [
+        (helper.partition_name(today, 1), "99999999"),
+    ]
+
+    session = AsyncMock()
+    # Sequence: list(cel), create(cel tomorrow), list(re), create(re tomorrow).
+    session.execute = AsyncMock(side_effect=[
+        _mock_rows(existing_rows),
+        MagicMock(),
+        _mock_rows(existing_rows),
+        MagicMock(),
+    ])
+
+    with patch.object(mp.settings, "db_type", "mysql"), \
+         patch.object(mp.settings, "event_log_partition_interval_days", 1), \
+         patch.object(mp.settings, "partition_lookahead_days", 1), \
+         patch.object(mp.settings, "partition_retention_days", None):
+        await mp.manage_partitions(session)
+
+    sqls = [str(c.args[0]) for c in session.execute.call_args_list]
+    # Both list queries and both ALTERs targeted their own table.
+    assert any("controller_event_log" in s and "PARTITIONS" in s for s in sqls)
+    assert any("roadside_event" in s and "PARTITIONS" in s for s in sqls)
+    assert any(
+        "ALTER TABLE controller_event_log ADD PARTITION" in s for s in sqls
+    )
+    assert any("ALTER TABLE roadside_event ADD PARTITION" in s for s in sqls)
 
 
 def test_parse_boundary_mysql_unix_timestamp():
