@@ -154,8 +154,10 @@ class HTTPPullMethod(PollingIngestionMethod):
         """
         http_config = self._build_config(signal_id, config)
 
-        # Load checkpoint for incremental query
-        checkpoint = await load_checkpoint(self.name, signal_id, session_factory)
+        # Load checkpoint for incremental query (controller-scoped).
+        checkpoint = await load_checkpoint(
+            self.name, "controller", signal_id, session_factory,
+        )
         since = checkpoint.last_event_timestamp if checkpoint else None
         url = self._build_url(http_config, since)
 
@@ -168,7 +170,8 @@ class HTTPPullMethod(PollingIngestionMethod):
                         error_msg = f"HTTP {response.status} from {http_config.host}"
                         logger.error("%s for signal %s", error_msg, signal_id)
                         await record_error(
-                            self.name, signal_id, session_factory, error_msg
+                            self.name, "controller", signal_id,
+                            session_factory, error_msg,
                         )
                         return
                     data = await response.read()
@@ -179,7 +182,9 @@ class HTTPPullMethod(PollingIngestionMethod):
                 http_config.port,
                 signal_id,
             )
-            await record_error(self.name, signal_id, session_factory, str(exc))
+            await record_error(
+                self.name, "controller", signal_id, session_factory, str(exc),
+            )
             return
 
         try:
@@ -191,7 +196,9 @@ class HTTPPullMethod(PollingIngestionMethod):
                 http_config.host,
                 signal_id,
             )
-            await record_error(self.name, signal_id, session_factory, str(exc))
+            await record_error(
+                self.name, "controller", signal_id, session_factory, str(exc),
+            )
             return
 
         await persist_events_with_drift_check(
@@ -202,6 +209,7 @@ class HTTPPullMethod(PollingIngestionMethod):
             latest = max(e.timestamp for e in events)
             await save_checkpoint(
                 self.name,
+                "controller",
                 signal_id,
                 session_factory,
                 last_event_timestamp=latest,

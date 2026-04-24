@@ -351,7 +351,8 @@ class TestListCheckpoints:
         from tsigma.api.v1.collection import list_checkpoints
 
         fake_cp = MagicMock()
-        fake_cp.signal_id = "SIG-001"
+        fake_cp.device_type = "controller"
+        fake_cp.device_id = "SIG-001"
         fake_cp.method = "ftp_pull"
         fake_cp.last_filename = "data_001.dat"
         fake_cp.last_file_mtime = None
@@ -374,7 +375,8 @@ class TestListCheckpoints:
 
         assert isinstance(result, list)
         assert len(result) == 1
-        assert result[0]["signal_id"] == "SIG-001"
+        assert result[0]["device_type"] == "controller"
+        assert result[0]["device_id"] == "SIG-001"
         assert result[0]["events_ingested"] == 100
 
     def test_list_checkpoints_filters_by_method(self):
@@ -615,7 +617,8 @@ class TestGetSignalCheckpoints:
         from tsigma.api.v1.collection import get_signal_checkpoints
 
         fake_cp = MagicMock()
-        fake_cp.signal_id = "SIG-042"
+        fake_cp.device_type = "controller"
+        fake_cp.device_id = "SIG-042"
         fake_cp.method = "ftp_pull"
         fake_cp.last_filename = "data_042.dat"
         fake_cp.last_file_mtime = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
@@ -637,7 +640,8 @@ class TestGetSignalCheckpoints:
         )
 
         assert len(result) == 1
-        assert result[0]["signal_id"] == "SIG-042"
+        assert result[0]["device_type"] == "controller"
+        assert result[0]["device_id"] == "SIG-042"
         assert result[0]["events_ingested"] == 500
         assert result[0]["last_filename"] == "data_042.dat"
         assert result[0]["last_file_mtime"] is not None

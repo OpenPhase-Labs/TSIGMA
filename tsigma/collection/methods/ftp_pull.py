@@ -564,8 +564,12 @@ class FTPPullMethod(PollingIngestionMethod):
         """
         now = datetime.now(timezone.utc)
         async with session_factory() as session:
+            # Controller-side FTP pull — device_type always "controller".
+            # A roadside-sensor FTP trace pull (legacy Wavetronix etc.)
+            # will run through a separate subclass / target.
             stmt = select(PollingCheckpoint).where(
-                PollingCheckpoint.signal_id == signal_id,
+                PollingCheckpoint.device_type == "controller",
+                PollingCheckpoint.device_id == signal_id,
                 PollingCheckpoint.method == self.name,
             )
             result = await session.execute(stmt)
@@ -573,7 +577,8 @@ class FTPPullMethod(PollingIngestionMethod):
 
             if checkpoint is None:
                 checkpoint = PollingCheckpoint(
-                    signal_id=signal_id,
+                    device_type="controller",
+                    device_id=signal_id,
                     method=self.name,
                 )
                 session.add(checkpoint)
@@ -1003,7 +1008,9 @@ class FTPPullMethod(PollingIngestionMethod):
                 ftp_config.effective_port,
                 signal_id,
             )
-            await record_error(self.name, signal_id, session_factory, str(exc))
+            await record_error(
+                self.name, "controller", signal_id, session_factory, str(exc),
+            )
             return
 
         try:
@@ -1017,7 +1024,9 @@ class FTPPullMethod(PollingIngestionMethod):
                 )
         except Exception as exc:
             logger.exception("Poll cycle failed for signal %s", signal_id)
-            await record_error(self.name, signal_id, session_factory, str(exc))
+            await record_error(
+                self.name, "controller", signal_id, session_factory, str(exc),
+            )
         finally:
             await client.disconnect()
 
@@ -1040,7 +1049,7 @@ class FTPPullMethod(PollingIngestionMethod):
             session_factory: Async session factory for DB writes.
         """
         checkpoint = await load_checkpoint(
-            self.name, signal_id, session_factory
+            self.name, "controller", signal_id, session_factory,
         )
 
         # List and filter remote files

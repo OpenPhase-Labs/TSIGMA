@@ -580,6 +580,7 @@ class TestSaveCheckpoint:
             mock_settings.checkpoint_future_tolerance_seconds = 300
             await sdk_save_checkpoint(
                 "http_pull",
+                "controller",
                 "SIG-NEW",
                 factory,
                 last_event_timestamp=last_event,
@@ -589,7 +590,8 @@ class TestSaveCheckpoint:
         # session.add should have been called with new checkpoint
         mock_session.add.assert_called_once()
         added_obj = mock_session.add.call_args[0][0]
-        assert added_obj.signal_id == "SIG-NEW"
+        assert added_obj.device_type == "controller"
+        assert added_obj.device_id == "SIG-NEW"
         assert added_obj.method == "http_pull"
         mock_session.flush.assert_awaited_once()
 
@@ -624,6 +626,7 @@ class TestSaveCheckpoint:
             mock_settings.checkpoint_future_tolerance_seconds = 300
             await sdk_save_checkpoint(
                 "http_pull",
+                "controller",
                 "SIG-EXIST",
                 factory,
                 last_event_timestamp=last_event,
@@ -672,6 +675,7 @@ class TestSaveCheckpoint:
             mock_settings.checkpoint_future_tolerance_seconds = 300
             await sdk_save_checkpoint(
                 "http_pull",
+                "controller",
                 "SIG-FUTURE",
                 factory,
                 last_event_timestamp=future_event,
