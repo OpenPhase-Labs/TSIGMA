@@ -184,6 +184,60 @@ class Corridor(Base):
     __table_args__ = {"schema": tsigma_schema("config")}
 
 
+class RoadsideSensorVendor(Base):
+    """
+    Roadside sensor vendors (Wavetronix, Iteris, FLIR, Houston Radar, etc.).
+
+    Reference table for the vendor column on ``roadside_sensor_model``.
+    Intentionally unseeded — deployments populate with the vendors they
+    actually field.
+    """
+
+    __tablename__ = "roadside_sensor_vendor"
+
+    vendor_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = {"schema": tsigma_schema("config")}
+
+
+class RoadsideSensorModel(Base):
+    """
+    Roadside sensor model catalogue (SmartSensor HD / Matrix, Vantage
+    Edge, TrafiCam, SpeedLane, Quanergy M8, etc.).
+
+    ``sensor_type`` drives the physical-technology category.
+    ``default_protocol`` is an initial hint for provisioning a sensor of
+    this model — per-sensor overrides live on ``roadside_sensor.protocol``.
+    """
+
+    __tablename__ = "roadside_sensor_model"
+
+    model_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    vendor_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("roadside_sensor_vendor.vendor_id"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    sensor_type: Mapped[str] = mapped_column(
+        Text, nullable=False,
+    )  # 'RADAR', 'LIDAR', 'VIDEO', 'MAGNETOMETER'
+    default_protocol: Mapped[Optional[str]] = mapped_column(
+        Text,
+    )  # 'TCP', 'HTTP', 'SERIAL', 'FTP', 'MQTT', 'NTCIP_SNMP'
+
+    __table_args__ = {"schema": tsigma_schema("config")}
+
+
 class EventCodeDefinition(Base):
     """
     Indiana Traffic Signal Hi-Resolution Data Logger event code definitions.

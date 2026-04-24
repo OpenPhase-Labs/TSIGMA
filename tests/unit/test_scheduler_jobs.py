@@ -100,10 +100,22 @@ class TestWatchdog:
         silent_result = MagicMock()
         silent_result.all.return_value = [silent_row]
 
-        stuck_result = MagicMock()
-        stuck_result.all.return_value = []
+        # Suppression lookup: no matching rule (count == 0).
+        suppression_none = MagicMock()
+        suppression_none.scalar.return_value = 0
 
-        session.execute = AsyncMock(side_effect=[silent_result, stuck_result])
+        # _check_silent_signals => query + 1 suppression lookup per row.
+        # Subsequent checks get empty results (no notify).
+        def _empty():
+            m = MagicMock()
+            m.all.return_value = []
+            m.scalar.return_value = 0
+            return m
+
+        session.execute = AsyncMock(side_effect=[
+            silent_result, suppression_none,
+            _empty(), _empty(), _empty(), _empty(), _empty(),
+        ])
 
         await watchdog(session)
 
@@ -118,9 +130,14 @@ class TestWatchdog:
         """Detector with >3600 ON events/hour  ->  triggers notification."""
         session = _mock_session()
 
+        def _empty():
+            m = MagicMock()
+            m.all.return_value = []
+            m.scalar.return_value = 0
+            return m
+
         # Silent signals check -- no results
-        silent_result = MagicMock()
-        silent_result.all.return_value = []
+        silent_result = _empty()
 
         # Stuck detectors check -- one stuck detector
         stuck_row = _row(
@@ -131,7 +148,14 @@ class TestWatchdog:
         stuck_result = MagicMock()
         stuck_result.all.return_value = [stuck_row]
 
-        session.execute = AsyncMock(side_effect=[silent_result, stuck_result])
+        # Suppression lookup: no matching rule.
+        suppression_none = MagicMock()
+        suppression_none.scalar.return_value = 0
+
+        session.execute = AsyncMock(side_effect=[
+            silent_result, stuck_result, suppression_none,
+            _empty(), _empty(), _empty(), _empty(), _empty(),
+        ])
 
         await watchdog(session)
 
