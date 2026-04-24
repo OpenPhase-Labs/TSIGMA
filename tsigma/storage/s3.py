@@ -21,7 +21,9 @@ class S3Backend(StorageBackend):
         secret_key: str | None = None,
     ) -> None:
         try:
-            import aiobotocore  # noqa: F401
+            # Import-as-presence-check for an optional dependency. The binding
+            # is intentionally unused — we only care that the import succeeds.
+            import aiobotocore  # noqa: F401  # presence check; removing this import would defeat the runtime guard
         except ImportError:
             raise ImportError(
                 "The 's3' storage backend requires aiobotocore. "

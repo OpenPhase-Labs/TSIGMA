@@ -45,7 +45,10 @@ _PROTO_DIR = str(Path(__file__).parent.parent / "decoders" / "proto")
 if _PROTO_DIR not in sys.path:
     sys.path.insert(0, _PROTO_DIR)
 
-from openphase.v1 import ingestion_pb2, ingestion_pb2_grpc  # noqa: E402
+from openphase.v1 import (  # noqa: E402  # generated proto modules require sys.path.insert above
+    ingestion_pb2,
+    ingestion_pb2_grpc,
+)
 
 _DEFAULT_DECODER = "openphase"
 _DEFAULT_PORT = 50051

@@ -98,7 +98,11 @@ select = ["E", "F", "I", "W"]
 # Blank-line rules (E302/E303/E305) are in ruff preview — enable just those.
 preview = true
 explicit-preview-rules = true
-extend-select = ["E302", "E303", "E305"]
+# RUF100 = unused noqa (catches stale suppressions whose underlying warning
+#         no longer fires — i.e., the suppression has outlived its reason).
+#         Combined with the pre-commit hook in `.pre-commit-config.yaml`, new
+#         bare or unjustified suppressions cannot be silently introduced.
+extend-select = ["E302", "E303", "E305", "RUF100"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,40 @@
+# Pre-commit hooks for TSIGMA.
+#
+# Install once per dev environment:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Hooks then run on every `git commit`. To run manually against all files:
+#   pre-commit run --all-files
+
+repos:
+  # ----------------------------------------------------------------------
+  # Ruff: lint + auto-fix. The `--no-fix` variant in CI catches anything
+  # the local hook auto-fixed but didn't get committed.
+  # ----------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # ----------------------------------------------------------------------
+  # Local: reject unjustified suppressions in newly-added lines.
+  #
+  # Bare `# noqa` (no error code) is always rejected — RUF100 already flags
+  # those at lint time, but this hook enforces it at commit time too.
+  #
+  # `# type: ignore`, `# pylint: disable`, etc. without an inline comment
+  # explaining WHY are rejected. The hook only checks lines added by this
+  # commit, so existing technical debt isn't blocked.
+  # ----------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: no-unjustified-suppressions
+        name: Reject unjustified lint/type suppressions in new lines
+        entry: scripts/check_no_unjustified_suppressions.py
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]

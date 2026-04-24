@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import tsigma.scheduler.jobs  # noqa: F401  -- triggers @register decorators
 from tsigma.scheduler.jobs.watchdog import STUCK_DETECTOR_THRESHOLD, watchdog
 
 # Import the registry first, then trigger job auto-registration via the
@@ -246,7 +245,7 @@ class TestAggregateJob:
     @pytest.mark.asyncio
     @patch("tsigma.scheduler.jobs.aggregate.db_facade")
     @patch("tsigma.scheduler.jobs.aggregate.settings")
-    async def test_aggregate_non_postgresql_uses_case(self, mock_settings, mock_facade):  # noqa: ARG002
+    async def test_aggregate_non_postgresql_uses_case(self, mock_settings, mock_facade):
         """Non-PostgreSQL aggregate SQL uses SUM(CASE ...) instead of FILTER."""
         mock_settings.aggregation_enabled = True
         mock_settings.aggregation_lookback_hours = 2
