@@ -43,23 +43,38 @@ class PollingIngestionMethod(BaseIngestionMethod):
     """
     Base class for polling ingestion methods.
 
-    Plugins that declare "schedule me" — the CollectorService calls
-    poll_once() on interval with per-signal config from the database.
+    Plugins that declare "schedule me" — ``CollectorService`` calls
+    ``poll_once()`` on interval with per-device config pulled from the
+    device source's backing table and a ``target`` that selects which
+    event table the decoded events land in.
     """
 
     execution_mode: ClassVar[ExecutionMode] = ExecutionMode.POLLING
 
     @abstractmethod
     async def poll_once(
-        self, signal_id: str, config: dict[str, Any], session_factory
+        self,
+        device_id: str,
+        config: dict[str, Any],
+        session_factory,
+        *,
+        target: Any = None,
     ) -> None:
         """
-        Execute one poll cycle for a single signal.
+        Execute one poll cycle for a single device.
 
         Args:
-            signal_id: Traffic signal identifier.
-            config: Collection config from signal_metadata JSONB.
+            device_id: Device identifier.  For controller devices this
+                is ``Signal.signal_id``; for sensor devices it is the
+                stringified ``RoadsideSensor.sensor_id``.
+            config: Collection config from the source's backing table
+                (e.g. ``signal_metadata['collection']`` for controllers).
             session_factory: Async session factory for DB writes.
+            target: ``IngestionTarget`` that determines where decoded
+                events are written (``controller_event_log`` /
+                ``roadside_event``) and which ``device_type`` is used
+                for checkpoint I/O.  ``None`` defaults to
+                ``ControllerTarget()`` for backward compatibility.
         """
         ...
 

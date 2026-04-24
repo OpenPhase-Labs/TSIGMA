@@ -187,6 +187,23 @@ def _mock_session_factory():
     return factory, mock_session
 
 
+def _make_mock_target() -> MagicMock:
+    """Build a mock ``IngestionTarget`` with async SDK methods.
+
+    Matches the ``IngestionTarget`` protocol: ``resolve_decoder`` is
+    synchronous; persistence/checkpoint methods are async.
+    """
+    target = MagicMock()
+    target.device_type = "controller"
+    target.load_checkpoint = AsyncMock(return_value=None)
+    target.save_checkpoint = AsyncMock()
+    target.record_error = AsyncMock()
+    target.persist = AsyncMock()
+    target.persist_with_drift_check = AsyncMock()
+    target.resolve_decoder = MagicMock()
+    return target
+
+
 # ---------------------------------------------------------------------------
 # FTPPullMethod — registration and construction
 # ---------------------------------------------------------------------------
@@ -286,10 +303,9 @@ class TestPollOnce:
         config = _make_config_dict()
         client = _mock_client()
         factory, _ = _mock_session_factory()
-        with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None):
-            await method.poll_once("SIG-001", config, factory)
+        target = _make_mock_target()
+        with patch.object(method, "_create_client", return_value=client):
+            await method.poll_once("SIG-001", config, factory, target=target)
         client.list_dir.assert_awaited_once_with("/")
 
     @pytest.mark.asyncio
@@ -305,16 +321,12 @@ class TestPollOnce:
         client = _mock_client(files=files)
         decoder = _mock_decoder()
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
         assert client.download.await_count == 2
 
     @pytest.mark.asyncio
@@ -333,11 +345,10 @@ class TestPollOnce:
 
         client = _mock_client(files=files)
         factory, _ = _mock_session_factory()
-        with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock,
-                   return_value=checkpoint):
-            await method.poll_once("SIG-001", config, factory)
+        target = _make_mock_target()
+        target.load_checkpoint.return_value = checkpoint
+        with patch.object(method, "_create_client", return_value=client):
+            await method.poll_once("SIG-001", config, factory, target=target)
         client.download.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -350,16 +361,12 @@ class TestPollOnce:
         client.download.return_value = b"\x00\x01\x02"
         decoder = _mock_decoder()
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
         decoder.decode_bytes.assert_called_once_with(b"\x00\x01\x02")
 
     @pytest.mark.asyncio
@@ -376,19 +383,15 @@ class TestPollOnce:
         files = [RemoteFile(name="events.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
         decoder = _mock_decoder(events=events)
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
-                          new_callable=AsyncMock), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock) as mock_persist:
-            await method.poll_once("SIG-001", config, factory)
+                          new_callable=AsyncMock):
+            await method.poll_once("SIG-001", config, factory, target=target)
 
-        mock_persist.assert_awaited_once()
-        call_args = mock_persist.call_args
+        target.persist_with_drift_check.assert_awaited_once()
+        call_args = target.persist_with_drift_check.call_args
         persisted_events = call_args[0][0]
         persisted_signal = call_args[0][1]
         assert len(persisted_events) == 2
@@ -405,16 +408,12 @@ class TestPollOnce:
         client = _mock_client(files=files)
         decoder = _mock_decoder()
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
         mock_save.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -430,16 +429,12 @@ class TestPollOnce:
         client.download.side_effect = [OSError("download failed"), b"\x00"]
         decoder = _mock_decoder()
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
         # One file failed, one succeeded — checkpoint should still be saved
         mock_save.assert_awaited_once()
         assert mock_save.call_args[1]["new_files"] == 1
@@ -455,16 +450,12 @@ class TestPollOnce:
         decoder = _mock_decoder()
         decoder.decode_bytes.side_effect = ValueError("corrupt data")
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
         # Decode failed — no files ingested, checkpoint not saved
         mock_save.assert_not_awaited()
 
@@ -475,10 +466,9 @@ class TestPollOnce:
         config = _make_config_dict()
         client = _mock_client(files=[])
         factory, _ = _mock_session_factory()
-        with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None):
-            await method.poll_once("SIG-001", config, factory)
+        target = _make_mock_target()
+        with patch.object(method, "_create_client", return_value=client):
+            await method.poll_once("SIG-001", config, factory, target=target)
         client.download.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -490,19 +480,13 @@ class TestPollOnce:
         files = [RemoteFile(name="events.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder) as mock_resolve, \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
-            await method.poll_once("SIG-001", config, factory)
-        mock_resolve.assert_called_once_with(
-            "events.dat", explicit_decoder="asc3",
-        )
+            await method.poll_once("SIG-001", config, factory, target=target)
+        target.resolve_decoder.assert_called_once_with(decoder_name="asc3")
 
     @pytest.mark.asyncio
     async def test_auto_detect_decoder(self):
@@ -513,19 +497,13 @@ class TestPollOnce:
         files = [RemoteFile(name="events.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder) as mock_resolve, \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
-            await method.poll_once("SIG-001", config, factory)
-        mock_resolve.assert_called_once_with(
-            "events.dat", explicit_decoder=None,
-        )
+            await method.poll_once("SIG-001", config, factory, target=target)
+        target.resolve_decoder.assert_called_once_with(filename="events.dat")
 
     @pytest.mark.asyncio
     async def test_no_decoder_found_raises(self):
@@ -535,18 +513,16 @@ class TestPollOnce:
         files = [RemoteFile(name="events.xyz", size=100, mtime=None)]
         client = _mock_client(files=files)
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.side_effect = ValueError(
+            "No decoder found for extension '.xyz'",
+        )
         with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.resolve_decoder_by_extension",
-                   side_effect=ValueError("No decoder found for extension '.xyz'")), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
             # _download_and_ingest catches per-file exceptions, so poll_once
             # does not raise — it just skips the file and saves no checkpoint
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
         mock_save.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -557,12 +533,11 @@ class TestPollOnce:
         client = _mock_client()
         client.connect.side_effect = ConnectionError("refused")
         factory, _ = _mock_session_factory()
-        with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.record_error",
-                   new_callable=AsyncMock) as mock_error:
-            await method.poll_once("SIG-001", config, factory)
+        target = _make_mock_target()
+        with patch.object(method, "_create_client", return_value=client):
+            await method.poll_once("SIG-001", config, factory, target=target)
         client.list_dir.assert_not_awaited()
-        mock_error.assert_awaited_once()
+        target.record_error.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_poll_once_dispatches_rotate_mode(self):
@@ -571,10 +546,11 @@ class TestPollOnce:
         config = _make_config_dict(mode="rotate")
         client = _mock_client()
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_poll_rotate",
                           new_callable=AsyncMock) as mock_rotate:
-            await method.poll_once("SIG-001", config, factory)
+            await method.poll_once("SIG-001", config, factory, target=target)
         mock_rotate.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -584,14 +560,11 @@ class TestPollOnce:
         config = _make_config_dict()
         client = _mock_client()
         factory, _ = _mock_session_factory()
-        with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock,
-                   side_effect=RuntimeError("db down")), \
-             patch(f"{_MOD}.record_error",
-                   new_callable=AsyncMock) as mock_error:
-            await method.poll_once("SIG-001", config, factory)
-        mock_error.assert_awaited_once()
+        target = _make_mock_target()
+        target.load_checkpoint.side_effect = RuntimeError("db down")
+        with patch.object(method, "_create_client", return_value=client):
+            await method.poll_once("SIG-001", config, factory, target=target)
+        target.record_error.assert_awaited_once()
         client.disconnect.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -601,10 +574,9 @@ class TestPollOnce:
         config = _make_config_dict()
         client = _mock_client(files=[])
         factory, _ = _mock_session_factory()
-        with patch.object(method, "_create_client", return_value=client), \
-             patch(f"{_MOD}.load_checkpoint",
-                   new_callable=AsyncMock, return_value=None):
-            await method.poll_once("SIG-001", config, factory)
+        target = _make_mock_target()
+        with patch.object(method, "_create_client", return_value=client):
+            await method.poll_once("SIG-001", config, factory, target=target)
         client.disconnect.assert_awaited_once()
 
 
@@ -1106,10 +1078,13 @@ class TestPollRotate:
         )
 
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         with patch.object(method, "_ingest_and_delete",
                           new_callable=AsyncMock) as mock_iad:
-            await method._poll_rotate(client, config, "SIG-001", factory)
+            await method._poll_rotate(
+                client, config, "SIG-001", factory, target,
+            )
         # Should have ingested the leftover
         mock_iad.assert_awaited_once()
         assert mock_iad.call_args[0][1] == leftover.name
@@ -1131,6 +1106,7 @@ class TestPollRotate:
         client.rename = AsyncMock()
 
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         with patch.object(method, "_snmp_stop_logging",
                           new_callable=AsyncMock) as mock_stop, \
@@ -1138,7 +1114,9 @@ class TestPollRotate:
                           new_callable=AsyncMock) as mock_start, \
              patch.object(method, "_ingest_and_delete",
                           new_callable=AsyncMock) as mock_iad:
-            await method._poll_rotate(client, config, "SIG-001", factory)
+            await method._poll_rotate(
+                client, config, "SIG-001", factory, target,
+            )
 
         # Rename was called
         client.rename.assert_awaited_once()
@@ -1162,10 +1140,13 @@ class TestPollRotate:
         client.list_dir = AsyncMock(side_effect=[[], []])
 
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         with patch.object(method, "_snmp_stop_logging",
                           new_callable=AsyncMock) as mock_stop:
-            await method._poll_rotate(client, config, "SIG-001", factory)
+            await method._poll_rotate(
+                client, config, "SIG-001", factory, target,
+            )
         mock_stop.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1189,6 +1170,7 @@ class TestPollRotate:
         )
 
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         with patch.object(method, "_snmp_stop_logging",
                           new_callable=AsyncMock), \
@@ -1196,7 +1178,9 @@ class TestPollRotate:
                           new_callable=AsyncMock), \
              patch.object(method, "_ingest_and_delete",
                           new_callable=AsyncMock) as mock_iad:
-            await method._poll_rotate(client, config, "SIG-001", factory)
+            await method._poll_rotate(
+                client, config, "SIG-001", factory, target,
+            )
         # Only one file was renamed successfully, so only one ingest
         assert mock_iad.await_count == 1
 
@@ -1215,10 +1199,13 @@ class TestPollRotate:
         client.rename = AsyncMock(side_effect=OSError("denied"))
 
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         with patch.object(method, "_snmp_stop_logging",
                           new_callable=AsyncMock) as mock_stop:
-            await method._poll_rotate(client, config, "SIG-001", factory)
+            await method._poll_rotate(
+                client, config, "SIG-001", factory, target,
+            )
         # No renames succeeded, so SNMP never called
         mock_stop.assert_not_awaited()
 
@@ -1237,13 +1224,16 @@ class TestPollRotate:
         client.rename = AsyncMock()
 
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         with patch.object(method, "_snmp_stop_logging",
                           new_callable=AsyncMock,
                           side_effect=RuntimeError("SNMP timeout")), \
              patch.object(method, "_ingest_and_delete",
                           new_callable=AsyncMock) as mock_iad:
-            await method._poll_rotate(client, config, "SIG-001", factory)
+            await method._poll_rotate(
+                client, config, "SIG-001", factory, target,
+            )
         # Ingest still happens despite SNMP failure
         mock_iad.assert_awaited_once()
 
@@ -1271,16 +1261,14 @@ class TestIngestAndDelete:
         ]
         decoder = _mock_decoder(events=events)
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch.object(method, "_save_checkpoint",
+        with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
             await method._ingest_and_delete(
                 client, "event.dat.tsigma.20260408T150000",
-                config, "SIG-001", factory,
+                config, "SIG-001", factory, target,
             )
         client.download.assert_awaited_once()
         client.delete.assert_awaited_once()
@@ -1297,11 +1285,12 @@ class TestIngestAndDelete:
         client.download = AsyncMock(side_effect=OSError("timeout"))
 
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
             await method._ingest_and_delete(
-                client, "event.dat", config, "SIG-001", factory,
+                client, "event.dat", config, "SIG-001", factory, target,
             )
         client.delete.assert_not_awaited()
         mock_save.assert_not_awaited()
@@ -1315,13 +1304,13 @@ class TestIngestAndDelete:
         client.download = AsyncMock(return_value=b"\xff")
 
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.side_effect = ValueError("bad")
 
-        with patch(f"{_MOD}.resolve_decoder_by_extension",
-                   side_effect=ValueError("bad")), \
-             patch.object(method, "_save_checkpoint",
+        with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
             await method._ingest_and_delete(
-                client, "event.dat", config, "SIG-001", factory,
+                client, "event.dat", config, "SIG-001", factory, target,
             )
         client.delete.assert_not_awaited()
         mock_save.assert_not_awaited()
@@ -1339,16 +1328,14 @@ class TestIngestAndDelete:
                          event_code=1, event_param=0),
         ])
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
+        target.persist_with_drift_check.side_effect = RuntimeError("db error")
 
-        with patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock,
-                   side_effect=RuntimeError("db error")), \
-             patch.object(method, "_save_checkpoint",
+        with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
             await method._ingest_and_delete(
-                client, "event.dat", config, "SIG-001", factory,
+                client, "event.dat", config, "SIG-001", factory, target,
             )
         client.delete.assert_not_awaited()
         mock_save.assert_not_awaited()
@@ -1367,15 +1354,13 @@ class TestIngestAndDelete:
                          event_code=1, event_param=0),
         ])
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock), \
-             patch.object(method, "_save_checkpoint",
+        with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
             await method._ingest_and_delete(
-                client, "event.dat", config, "SIG-001", factory,
+                client, "event.dat", config, "SIG-001", factory, target,
             )
         # Checkpoint saved despite delete failure (idempotent upsert will dedup)
         mock_save.assert_awaited_once()
@@ -1547,68 +1532,52 @@ class TestSNMPHelpers:
 
 
 class TestSaveCheckpoint:
-    """Tests for _save_checkpoint method."""
+    """Tests for _save_checkpoint method (delegates to ``target``)."""
 
     @pytest.mark.asyncio
-    async def test_creates_new_checkpoint(self):
-        """Test _save_checkpoint creates a new checkpoint row when none exists."""
+    async def test_delegates_to_target_with_all_kwargs(self):
+        """_save_checkpoint forwards every field to ``target.save_checkpoint``."""
         method = FTPPullMethod()
-        factory, mock_session = _mock_session_factory()
-
-        # The real PollingCheckpoint ORM model has default=0 that only fires
-        # on flush, not in-memory. Pre-set the defaults that _save_checkpoint
-        # expects to += against by intercepting session.add.
-        original_add = mock_session.add
-
-        def patched_add(obj):
-            # Set numeric defaults that the ORM would provide on flush
-            if hasattr(obj, "events_ingested") and obj.events_ingested is None:
-                obj.events_ingested = 0
-            if hasattr(obj, "files_ingested") and obj.files_ingested is None:
-                obj.files_ingested = 0
-            if hasattr(obj, "consecutive_silent_cycles") and obj.consecutive_silent_cycles is None:
-                obj.consecutive_silent_cycles = 0
-            if hasattr(obj, "consecutive_errors") and obj.consecutive_errors is None:
-                obj.consecutive_errors = 0
-            return original_add(obj)
-
-        mock_session.add = patched_add
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         await method._save_checkpoint(
-            "SIG-001", factory,
+            target, "SIG-001", factory,
             last_filename="event.dat",
             files_hash="abc123",
             new_events=10,
             new_files=1,
         )
-        mock_session.flush.assert_awaited_once()
+        target.save_checkpoint.assert_awaited_once_with(
+            method.name, "SIG-001", factory,
+            last_filename="event.dat",
+            last_file_mtime=None,
+            files_hash="abc123",
+            events_ingested=10,
+            files_ingested=1,
+        )
 
     @pytest.mark.asyncio
-    async def test_updates_existing_checkpoint(self):
-        """Test _save_checkpoint updates an existing checkpoint row."""
+    async def test_delegates_with_subset_of_kwargs(self):
+        """_save_checkpoint still calls target when only a subset is supplied."""
         method = FTPPullMethod()
-        factory, mock_session = _mock_session_factory()
-
-        existing = MagicMock()
-        existing.events_ingested = 50
-        existing.files_ingested = 5
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = existing
-        mock_session.execute = AsyncMock(return_value=result_mock)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
 
         await method._save_checkpoint(
-            "SIG-001", factory,
+            target, "SIG-001", factory,
             last_filename="event2.dat",
             new_events=10,
             new_files=1,
         )
-        # Should NOT add a new row
-        mock_session.add.assert_not_called()
-        # Should update fields on existing
-        assert existing.last_filename == "event2.dat"
-        assert existing.consecutive_errors == 0
-        assert existing.last_error is None
-        mock_session.flush.assert_awaited_once()
+        target.save_checkpoint.assert_awaited_once_with(
+            method.name, "SIG-001", factory,
+            last_filename="event2.dat",
+            last_file_mtime=None,
+            files_hash=None,
+            events_ingested=10,
+            files_ingested=1,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1735,15 +1704,13 @@ class TestDownloadAndIngest:
                          event_code=1, event_param=0),
         ])
         factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
 
-        with patch(f"{_MOD}.resolve_decoder_by_extension",
-                   return_value=decoder), \
-             patch(f"{_MOD}.persist_events_with_drift_check",
-                   new_callable=AsyncMock):
-            _total_events, total_files, newest_name, newest_mtime = \
-                await method._download_and_ingest(
-                    client, files, config, "SIG-001", factory, None,
-                )
+        _total_events, total_files, newest_name, newest_mtime = \
+            await method._download_and_ingest(
+                client, files, config, "SIG-001", factory, None, target,
+            )
         assert total_files == 2
         assert newest_mtime == t2
         assert newest_name == "b.dat"

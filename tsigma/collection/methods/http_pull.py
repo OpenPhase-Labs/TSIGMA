@@ -27,13 +27,7 @@ import aiohttp
 from pydantic import BaseModel
 
 from ..registry import IngestionMethodRegistry, PollingIngestionMethod
-from ..sdk import (
-    load_checkpoint,
-    persist_events_with_drift_check,
-    record_error,
-    resolve_decoder_by_name,
-    save_checkpoint,
-)
+from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
 
@@ -138,25 +132,36 @@ class HTTPPullMethod(PollingIngestionMethod):
         return True
 
     async def poll_once(
-        self, signal_id: str, config: dict[str, Any], session_factory
+        self,
+        device_id: str,
+        config: dict[str, Any],
+        session_factory,
+        *,
+        target: Optional[IngestionTarget] = None,
     ) -> None:
         """
-        Execute one poll cycle for a single signal.
+        Execute one poll cycle for a single device.
 
-        Connects to the controller HTTP API, fetches event XML,
-        decodes it, and persists events to the database. Uses
-        the persistent checkpoint for incremental collection.
+        Connects to the device's HTTP API, fetches event XML, decodes
+        it, and persists events via the supplied ``target``.  Uses the
+        target's persistent checkpoint for incremental collection.
 
         Args:
-            signal_id: Traffic signal identifier.
-            config: Collection config dict from signal_metadata JSONB.
+            device_id: Device identifier (signal_id for controllers).
+            config: Collection config dict from the device's backing
+                row.
             session_factory: Async session factory for DB writes.
+            target: Destination for decoded events and checkpoints;
+                defaults to ``ControllerTarget()`` for back-compat.
         """
-        http_config = self._build_config(signal_id, config)
+        if target is None:
+            target = ControllerTarget()
 
-        # Load checkpoint for incremental query (controller-scoped).
-        checkpoint = await load_checkpoint(
-            self.name, "controller", signal_id, session_factory,
+        http_config = self._build_config(device_id, config)
+
+        # Load checkpoint for incremental query.
+        checkpoint = await target.load_checkpoint(
+            self.name, device_id, session_factory,
         )
         since = checkpoint.last_event_timestamp if checkpoint else None
         url = self._build_url(http_config, since)
@@ -168,56 +173,56 @@ class HTTPPullMethod(PollingIngestionMethod):
                 async with session.get(url) as response:
                     if response.status != 200:
                         error_msg = f"HTTP {response.status} from {http_config.host}"
-                        logger.error("%s for signal %s", error_msg, signal_id)
-                        await record_error(
-                            self.name, "controller", signal_id,
-                            session_factory, error_msg,
+                        logger.error("%s for device %s", error_msg, device_id)
+                        await target.record_error(
+                            self.name, device_id, session_factory, error_msg,
                         )
                         return
                     data = await response.read()
         except Exception as exc:
             logger.error(
-                "Connection failed to http://%s:%d for signal %s",
+                "Connection failed to http://%s:%d for device %s",
                 http_config.host,
                 http_config.port,
-                signal_id,
+                device_id,
             )
-            await record_error(
-                self.name, "controller", signal_id, session_factory, str(exc),
+            await target.record_error(
+                self.name, device_id, session_factory, str(exc),
             )
             return
 
         try:
-            decoder = resolve_decoder_by_name(http_config.decoder or _DEFAULT_DECODER)
+            decoder = target.resolve_decoder(
+                decoder_name=http_config.decoder or _DEFAULT_DECODER,
+            )
             events = decoder.decode_bytes(data)
         except Exception as exc:
             logger.exception(
-                "Failed to decode response from %s for signal %s",
+                "Failed to decode response from %s for device %s",
                 http_config.host,
-                signal_id,
+                device_id,
             )
-            await record_error(
-                self.name, "controller", signal_id, session_factory, str(exc),
+            await target.record_error(
+                self.name, device_id, session_factory, str(exc),
             )
             return
 
-        await persist_events_with_drift_check(
-            events, signal_id, session_factory
+        await target.persist_with_drift_check(
+            events, device_id, session_factory,
         )
 
         if events:
             latest = max(e.timestamp for e in events)
-            await save_checkpoint(
+            await target.save_checkpoint(
                 self.name,
-                "controller",
-                signal_id,
+                device_id,
                 session_factory,
                 last_event_timestamp=latest,
                 events_ingested=len(events),
             )
             logger.info(
-                "Collected %d events from %s for signal %s",
+                "Collected %d events from %s for device %s",
                 len(events),
                 http_config.host,
-                signal_id,
+                device_id,
             )

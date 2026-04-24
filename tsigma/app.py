@@ -139,8 +139,18 @@ async def lifespan(app: FastAPI):
 
     if settings.enable_collector:
         from .collection.service import CollectorService
+        from .collection.sources import SignalDeviceSource
+        from .collection.targets import ControllerTarget
 
-        collector = CollectorService(facade._session_factory, settings)
+        controller_source = SignalDeviceSource(
+            poll_interval_seconds=settings.collector_poll_interval,
+            target=ControllerTarget(),
+        )
+        collector = CollectorService(
+            facade._session_factory,
+            settings,
+            sources=[controller_source],
+        )
         await collector.start()
         app.state.collector = collector
 
