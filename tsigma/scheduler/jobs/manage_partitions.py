@@ -3,15 +3,26 @@ Event-log partition management for MS-SQL / Oracle / MySQL.
 
 PostgreSQL deployments use TimescaleDB (see ``compress_chunks`` + the
 ``event_log_partition_interval_days`` setting piped into
-``create_hypertable``).  For every other dialect the
-``controller_event_log`` table must be partitioned at the schema level and
-kept fresh: this job keeps a rolling window of future partitions ahead of
-``today`` so inserts never hit the default range, and optionally drops
-partitions older than ``partition_retention_days``.
+``create_hypertable``).  For every other dialect the partitioned event
+tables must be managed at the schema level and kept fresh: this job
+keeps a rolling window of future partitions ahead of ``today`` so
+inserts never hit the default range, and optionally drops partitions
+older than ``partition_retention_days``.
 
-Runs once per day at 02:00.  The job is inert until the table is actually
-partitioned at the schema level — if ``list_partitions_sql`` returns no
-rows, the job logs a one-line skip and exits.
+Two tables share the same cadence:
+
+  - ``controller_event_log`` — Indiana Hi-Res records from the cabinet
+    controller.
+  - ``roadside_event``       — per-detection records from radar / LiDAR
+    / video sensors at the roadway edge.
+
+Both use ``event_log_partition_interval_days`` as their chunk cadence so
+a single lookahead/retention policy covers both streams.
+
+Runs once per day at 02:00.  The job is inert on a per-table basis: if
+a given table is not partitioned at the schema level yet,
+``list_partitions_sql`` returns no rows and that table is skipped while
+the other continues.
 """
 
 import logging
@@ -26,7 +37,9 @@ from tsigma.scheduler.registry import JobRegistry
 
 logger = logging.getLogger(__name__)
 
-_EVENT_LOG_TABLE = "controller_event_log"
+# Partitioned event-stream tables kept in sync with the rolling window.
+# Both use the same chunk cadence (event_log_partition_interval_days).
+_MANAGED_TABLES = ("controller_event_log", "roadside_event")
 
 
 @JobRegistry.register(
@@ -48,46 +61,73 @@ async def manage_partitions(session: AsyncSession) -> None:
     interval = int(settings.event_log_partition_interval_days)
     lookahead = int(settings.partition_lookahead_days)
     retention = settings.partition_retention_days
+    retention_int = int(retention) if retention is not None else None
 
-    existing = await _existing_partitions(session, dialect)
-    if existing is None:
-        logger.info(
-            "manage_partitions: %s does not support partition listing "
-            "(db_type=%s)", _EVENT_LOG_TABLE, settings.db_type,
+    total_created = 0
+    total_dropped = 0
+    for table in _MANAGED_TABLES:
+        created, dropped = await _manage_table(
+            session, dialect, table, interval, lookahead, retention_int,
         )
-        return
-    if not existing:
-        logger.info(
-            "manage_partitions: %s is not partitioned — skipping (enable "
-            "partitioning at table creation then re-run)",
-            _EVENT_LOG_TABLE,
-        )
-        return
-
-    created = await _ensure_future_partitions(
-        session, dialect, existing, interval, lookahead,
-    )
-    dropped = 0
-    if retention is not None:
-        dropped = await _drop_old_partitions(
-            session, dialect, existing, int(retention),
-        )
+        total_created += created
+        total_dropped += dropped
 
     logger.info(
         "manage_partitions complete: %d partition(s) created, %d dropped "
-        "(interval=%dd, lookahead=%dd, retention=%s)",
-        created, dropped, interval, lookahead,
+        "across %d table(s) (interval=%dd, lookahead=%dd, retention=%s)",
+        total_created, total_dropped, len(_MANAGED_TABLES),
+        interval, lookahead,
         f"{retention}d" if retention is not None else "none",
     )
 
 
+async def _manage_table(
+    session: AsyncSession,
+    dialect: DialectHelper,
+    table: str,
+    interval_days: int,
+    lookahead_days: int,
+    retention_days: int | None,
+) -> tuple[int, int]:
+    """Extend / prune the rolling window for a single partitioned table.
+
+    Returns ``(created, dropped)``.  Skips the table (returning
+    ``(0, 0)``) if the dialect does not expose partition listing or the
+    table has not been partitioned yet.
+    """
+    existing = await _existing_partitions(session, dialect, table)
+    if existing is None:
+        logger.info(
+            "manage_partitions: %s does not support partition listing "
+            "(db_type=%s)", table, settings.db_type,
+        )
+        return 0, 0
+    if not existing:
+        logger.info(
+            "manage_partitions: %s is not partitioned — skipping (enable "
+            "partitioning at table creation then re-run)",
+            table,
+        )
+        return 0, 0
+
+    created = await _ensure_future_partitions(
+        session, dialect, table, existing, interval_days, lookahead_days,
+    )
+    dropped = 0
+    if retention_days is not None:
+        dropped = await _drop_old_partitions(
+            session, dialect, table, existing, retention_days,
+        )
+    return created, dropped
+
+
 async def _existing_partitions(
-    session: AsyncSession, dialect: DialectHelper,
+    session: AsyncSession, dialect: DialectHelper, table: str,
 ) -> list[tuple[str, str]] | None:
     """Return ``[(partition_name, boundary_iso), ...]`` or ``None`` if the
     dialect does not expose partition introspection.
     """
-    sql = dialect.list_partitions_sql(_EVENT_LOG_TABLE)
+    sql = dialect.list_partitions_sql(table)
     if sql is None:
         return None
     result = await session.execute(text(sql))
@@ -97,6 +137,7 @@ async def _existing_partitions(
 async def _ensure_future_partitions(
     session: AsyncSession,
     dialect: DialectHelper,
+    table: str,
     existing: list[tuple[str, str]],
     interval_days: int,
     lookahead_days: int,
@@ -115,14 +156,17 @@ async def _ensure_future_partitions(
         if name in existing_names:
             continue
         statements = dialect.ensure_partition_sql(
-            _EVENT_LOG_TABLE, start, interval_days,
+            table, start, interval_days,
         )
         if not statements:
             # Oracle INTERVAL / PostgreSQL — no manual action needed.
             continue
         for stmt in statements:
             await session.execute(text(stmt))
-        logger.info("Created partition %s for %s", name, start.isoformat())
+        logger.info(
+            "Created partition %s on %s for %s",
+            name, table, start.isoformat(),
+        )
         created += 1
     return created
 
@@ -130,6 +174,7 @@ async def _ensure_future_partitions(
 async def _drop_old_partitions(
     session: AsyncSession,
     dialect: DialectHelper,
+    table: str,
     existing: list[tuple[str, str]],
     retention_days: int,
 ) -> int:
@@ -148,11 +193,11 @@ async def _drop_old_partitions(
         # MS-SQL identifies the partition to drop by its boundary value;
         # Oracle/MySQL use the partition name.
         target = boundary_iso if dialect.db_type == "mssql" else name
-        for stmt in dialect.drop_partition_sql(_EVENT_LOG_TABLE, target):
+        for stmt in dialect.drop_partition_sql(table, target):
             await session.execute(text(stmt))
         logger.info(
-            "Dropped partition %s (boundary %s, cutoff %s)",
-            name, boundary.isoformat(), cutoff.isoformat(),
+            "Dropped partition %s on %s (boundary %s, cutoff %s)",
+            name, table, boundary.isoformat(), cutoff.isoformat(),
         )
         dropped += 1
     return dropped

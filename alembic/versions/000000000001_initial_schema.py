@@ -1108,6 +1108,27 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     _create_roadside_sensor_tables()
 
+    # ------------------------------------------------------------------
+    # Roadside event stream — per-detection records from the sensors
+    # above.  Parallel to ``controller_event_log``: same partitioning
+    # shape and chunk cadence, populated by the roadside ingestion
+    # pipeline rather than the Indiana Hi-Res controller feed.
+    # See ``tsigma/models/roadside_event.py``.
+    # ------------------------------------------------------------------
+    if dialect_name == "postgresql":
+        _create_roadside_event_postgresql(chunk_days)
+    elif dialect_name == "mssql":
+        _create_roadside_event_mssql(chunk_days)
+    elif dialect_name == "oracle":
+        _create_roadside_event_oracle(chunk_days)
+    elif dialect_name == "mysql":
+        _create_roadside_event_mysql(chunk_days)
+    else:
+        raise RuntimeError(
+            f"roadside_event migration: unsupported dialect "
+            f"{dialect_name!r} — supported: postgresql, mssql, oracle, mysql"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Dialect-specific CREATE TABLE for controller_event_log
@@ -1325,6 +1346,239 @@ def _create_event_log_mysql(chunk_days: int) -> None:
         )
     logger.info(
         "controller_event_log partitioned by UNIX_TIMESTAMP(event_time) "
+        "(partition cadence: %d day(s))", chunk_days,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dialect-specific CREATE TABLE for roadside_event
+#
+# Parallel to controller_event_log — radar / LiDAR / video sensors emit
+# per-detection records that never flow through the cabinet controller.
+# Same partitioning shape (TimescaleDB chunk on PG, native partitioning
+# elsewhere) and the same chunk cadence (event_log_partition_interval_days).
+# ---------------------------------------------------------------------------
+
+
+def _create_roadside_event_postgresql(chunk_days: int) -> None:
+    """PostgreSQL: standard table + optional TimescaleDB hypertable."""
+    insp = sa.inspect(op.get_bind())
+    if not insp.has_table("roadside_event"):
+        op.create_table(
+            "roadside_event",
+            sa.Column("signal_id", sa.Text, primary_key=True),
+            sa.Column(
+                "sensor_id",
+                postgresql.UUID(as_uuid=True),
+                primary_key=True,
+            ),
+            sa.Column(
+                "event_time",
+                postgresql.TIMESTAMP(timezone=True),
+                primary_key=True,
+            ),
+            sa.Column("event_type", sa.SmallInteger, primary_key=True),
+            sa.Column("mph", sa.Integer, nullable=True),
+            sa.Column("kph", sa.Integer, nullable=True),
+            sa.Column("length_feet", sa.Integer, nullable=True),
+            sa.Column("vehicle_class", sa.SmallInteger, nullable=True),
+            sa.Column("lane_number", sa.SmallInteger, nullable=True),
+            sa.Column("direction_id", sa.SmallInteger, nullable=True),
+            sa.Column("occupancy_pct", sa.Numeric(5, 2), nullable=True),
+            sa.Column("queue_length_feet", sa.Numeric(8, 2), nullable=True),
+            sa.Column("vendor_metadata", postgresql.JSONB, nullable=True),
+        )
+    existing = _existing_index_names("roadside_event")
+    if "idx_re_sensor_time" not in existing:
+        op.create_index(
+            "idx_re_sensor_time",
+            "roadside_event",
+            [sa.text("sensor_id"), sa.text("event_time DESC")],
+        )
+    if "idx_re_signal_time" not in existing:
+        op.create_index(
+            "idx_re_signal_time",
+            "roadside_event",
+            [sa.text("signal_id"), sa.text("event_time DESC")],
+        )
+    if "idx_re_event_type_time" not in existing:
+        op.create_index(
+            "idx_re_event_type_time",
+            "roadside_event",
+            [sa.text("event_type"), sa.text("event_time DESC")],
+        )
+    op.execute(
+        "DO $$ BEGIN "
+        "  PERFORM create_hypertable("
+        "    'roadside_event', 'event_time', "
+        f"    chunk_time_interval => INTERVAL '{chunk_days} days', "
+        "    migrate_data => true, if_not_exists => true"
+        "  ); "
+        "EXCEPTION WHEN undefined_function THEN "
+        "  RAISE NOTICE 'TimescaleDB not available — skipping hypertable creation'; "
+        "END $$;"
+    )
+
+
+def _create_roadside_event_mssql(chunk_days: int) -> None:
+    """MS-SQL: partition function + scheme, table ON scheme."""
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.partition_functions "
+        "WHERE name = 'pf_roadside_event_event_time') "
+        "CREATE PARTITION FUNCTION pf_roadside_event_event_time (DATETIME2) "
+        f"AS RANGE RIGHT FOR VALUES ('{_EVENT_LOG_INITIAL_ANCHOR}')"
+    )
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.partition_schemes "
+        "WHERE name = 'ps_roadside_event_event_time') "
+        "CREATE PARTITION SCHEME ps_roadside_event_event_time "
+        "AS PARTITION pf_roadside_event_event_time ALL TO ([PRIMARY])"
+    )
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.tables "
+        "WHERE name = 'roadside_event') "
+        "CREATE TABLE roadside_event ("
+        "  signal_id NVARCHAR(64) NOT NULL, "
+        "  sensor_id UNIQUEIDENTIFIER NOT NULL, "
+        "  event_time DATETIME2 NOT NULL, "
+        "  event_type SMALLINT NOT NULL, "
+        "  mph INT NULL, "
+        "  kph INT NULL, "
+        "  length_feet INT NULL, "
+        "  vehicle_class SMALLINT NULL, "
+        "  lane_number SMALLINT NULL, "
+        "  direction_id SMALLINT NULL, "
+        "  occupancy_pct DECIMAL(5,2) NULL, "
+        "  queue_length_feet DECIMAL(8,2) NULL, "
+        "  vendor_metadata NVARCHAR(MAX) NULL, "
+        "  CONSTRAINT pk_roadside_event PRIMARY KEY CLUSTERED "
+        "    (event_time, signal_id, sensor_id, event_type) "
+        "    ON ps_roadside_event_event_time(event_time) "
+        ")"
+    )
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.indexes "
+        "WHERE name = 'idx_re_sensor_time' "
+        "  AND object_id = OBJECT_ID('roadside_event')) "
+        "CREATE INDEX idx_re_sensor_time "
+        "ON roadside_event (sensor_id, event_time DESC) "
+        "ON ps_roadside_event_event_time(event_time)"
+    )
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.indexes "
+        "WHERE name = 'idx_re_signal_time' "
+        "  AND object_id = OBJECT_ID('roadside_event')) "
+        "CREATE INDEX idx_re_signal_time "
+        "ON roadside_event (signal_id, event_time DESC) "
+        "ON ps_roadside_event_event_time(event_time)"
+    )
+    op.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.indexes "
+        "WHERE name = 'idx_re_event_type_time' "
+        "  AND object_id = OBJECT_ID('roadside_event')) "
+        "CREATE INDEX idx_re_event_type_time "
+        "ON roadside_event (event_type, event_time DESC) "
+        "ON ps_roadside_event_event_time(event_time)"
+    )
+    logger.info(
+        "roadside_event partitioned on ps_roadside_event_event_time "
+        "(partition cadence: %d day(s))", chunk_days,
+    )
+
+
+def _create_roadside_event_oracle(chunk_days: int) -> None:
+    """Oracle: INTERVAL partitioning — DB auto-creates partitions."""
+    insp = sa.inspect(op.get_bind())
+    if not insp.has_table("roadside_event"):
+        op.execute(
+            "CREATE TABLE roadside_event ("
+            "  signal_id VARCHAR2(64) NOT NULL, "
+            "  sensor_id RAW(16) NOT NULL, "
+            "  event_time TIMESTAMP WITH TIME ZONE NOT NULL, "
+            "  event_type NUMBER(5) NOT NULL, "
+            "  mph INTEGER NULL, "
+            "  kph INTEGER NULL, "
+            "  length_feet INTEGER NULL, "
+            "  vehicle_class NUMBER(5) NULL, "
+            "  lane_number NUMBER(5) NULL, "
+            "  direction_id NUMBER(5) NULL, "
+            "  occupancy_pct NUMBER(5,2) NULL, "
+            "  queue_length_feet NUMBER(8,2) NULL, "
+            "  vendor_metadata CLOB NULL, "
+            "  CONSTRAINT pk_roadside_event PRIMARY KEY "
+            "    (signal_id, sensor_id, event_time, event_type) "
+            ") "
+            "PARTITION BY RANGE (event_time) "
+            f"INTERVAL (NUMTODSINTERVAL({chunk_days}, 'DAY')) "
+            "(PARTITION p_initial VALUES LESS THAN "
+            f" (TIMESTAMP '{_EVENT_LOG_INITIAL_ANCHOR}'))"
+        )
+    existing = _existing_index_names("roadside_event")
+    if "idx_re_sensor_time" not in existing:
+        op.create_index(
+            "idx_re_sensor_time",
+            "roadside_event",
+            [sa.text("sensor_id"), sa.text("event_time DESC")],
+        )
+    if "idx_re_signal_time" not in existing:
+        op.create_index(
+            "idx_re_signal_time",
+            "roadside_event",
+            [sa.text("signal_id"), sa.text("event_time DESC")],
+        )
+    if "idx_re_event_type_time" not in existing:
+        op.create_index(
+            "idx_re_event_type_time",
+            "roadside_event",
+            [sa.text("event_type"), sa.text("event_time DESC")],
+        )
+
+
+def _create_roadside_event_mysql(chunk_days: int) -> None:
+    """MySQL: RANGE partitioning by UNIX_TIMESTAMP(event_time)."""
+    op.execute(
+        "CREATE TABLE IF NOT EXISTS roadside_event ("
+        "  signal_id VARCHAR(64) NOT NULL, "
+        "  sensor_id CHAR(36) NOT NULL, "
+        "  event_time DATETIME(6) NOT NULL, "
+        "  event_type SMALLINT NOT NULL, "
+        "  mph INT NULL, "
+        "  kph INT NULL, "
+        "  length_feet INT NULL, "
+        "  vehicle_class SMALLINT NULL, "
+        "  lane_number SMALLINT NULL, "
+        "  direction_id SMALLINT NULL, "
+        "  occupancy_pct DECIMAL(5,2) NULL, "
+        "  queue_length_feet DECIMAL(8,2) NULL, "
+        "  vendor_metadata JSON NULL, "
+        "  PRIMARY KEY (signal_id, sensor_id, event_time, event_type) "
+        ") ENGINE=InnoDB "
+        "PARTITION BY RANGE (UNIX_TIMESTAMP(event_time)) ("
+        "  PARTITION p_initial VALUES LESS THAN "
+        f" (UNIX_TIMESTAMP('{_EVENT_LOG_INITIAL_ANCHOR}'))"
+        ")"
+    )
+    existing = _existing_index_names("roadside_event")
+    if "idx_re_sensor_time" not in existing:
+        op.create_index(
+            "idx_re_sensor_time",
+            "roadside_event",
+            [sa.text("sensor_id"), sa.text("event_time DESC")],
+        )
+    if "idx_re_signal_time" not in existing:
+        op.create_index(
+            "idx_re_signal_time",
+            "roadside_event",
+            [sa.text("signal_id"), sa.text("event_time DESC")],
+        )
+    if "idx_re_event_type_time" not in existing:
+        op.create_index(
+            "idx_re_event_type_time",
+            "roadside_event",
+            [sa.text("event_type"), sa.text("event_time DESC")],
+        )
+    logger.info(
+        "roadside_event partitioned by UNIX_TIMESTAMP(event_time) "
         "(partition cadence: %d day(s))", chunk_days,
     )
 
@@ -1573,6 +1827,12 @@ def _create_roadside_sensor_tables() -> None:
 
 
 def downgrade() -> None:
+    # Roadside event stream (partitioned / hypertable — same drop pattern
+    # as controller_event_log: plain DROP TABLE is enough because the
+    # partition function / scheme (MS-SQL) and hypertable metadata
+    # (TimescaleDB) are tied to the table.
+    op.execute("DROP TABLE IF EXISTS roadside_event")
+
     # Roadside sensor tables — audit tables first (no FK dependents),
     # then the lane mapping, then the sensor, then the reference tables
     # (no dependents remain after the main tables are dropped).

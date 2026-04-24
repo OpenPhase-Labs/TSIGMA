@@ -55,6 +55,13 @@ from .reference import (
     RoadsideSensorModel,
     RoadsideSensorVendor,
 )
+from .roadside_event import (
+    ROADSIDE_EVENT_TYPE_CLASSIFICATION,
+    ROADSIDE_EVENT_TYPE_OCCUPANCY,
+    ROADSIDE_EVENT_TYPE_QUEUE,
+    ROADSIDE_EVENT_TYPE_SPEED,
+    RoadsideEvent,
+)
 from .roadside_sensor import RoadsideSensor, RoadsideSensorLane
 from .route import Route, RouteDistance, RoutePhase, RouteSignal
 from .signal import Signal, SignalAudit
@@ -82,6 +89,11 @@ __all__ = [
     "RoadsideSensorLane",
     "RoadsideSensorAudit",
     "RoadsideSensorLaneAudit",
+    "RoadsideEvent",
+    "ROADSIDE_EVENT_TYPE_SPEED",
+    "ROADSIDE_EVENT_TYPE_CLASSIFICATION",
+    "ROADSIDE_EVENT_TYPE_QUEUE",
+    "ROADSIDE_EVENT_TYPE_OCCUPANCY",
     # Routes
     "Route",
     "RouteSignal",
