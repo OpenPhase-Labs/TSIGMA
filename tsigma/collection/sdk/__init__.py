@@ -23,8 +23,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from ...config import settings
 from ...models.checkpoint import PollingCheckpoint
 from ...models.event import ControllerEventLog
+from ...models.roadside_event import RoadsideEvent
+from ...models.roadside_sensor import RoadsideSensor, RoadsideSensorLane
 from ...notifications.registry import WARNING, notify
-from ..decoders.base import DecoderRegistry
+from ..decoders.base import DecodedEvent, DecoderRegistry, SensorDetection
 
 logger = logging.getLogger(__name__)
 
@@ -147,70 +149,78 @@ async def persist_events_with_drift_check(
 ) -> None:
     """Write decoded events to the database with clock-drift detection.
 
-    Detects future-dated events (controller clock drift), logs a warning,
-    and sends a notification via the notification system.  Events are
-    always ingested — data is never discarded.
+    Dispatches on the element type of ``events``:
 
-    Use this for polling plugins (HTTP, FTP) that manage checkpoint
-    watermarks.
+    * ``DecodedEvent`` (controllers)  -> drift check + ``controller_event_log``
+    * ``SensorDetection`` (roadside)  -> no drift check in v1 (sensors
+      emit at detection time, no per-controller checkpoint to poison);
+      straight to ``roadside_event``
 
-    Args:
-        events: List of ``DecodedEvent`` objects.
-        signal_id: Traffic signal identifier.
-        session_factory: Async session factory for DB writes.
-        source_label: Label used in notification messages (e.g.
-            ``"signal"`` for HTTP, ``"signal"`` for FTP).
+    Duplicates within a batch (re-ingested files, overlapping polls)
+    are absorbed by ``ON CONFLICT DO NOTHING`` against each table's PK.
+    Events are always ingested — future-dated events are flagged but
+    not discarded.
     """
     if not events:
         return
 
-    # Detect future-dated events
+    # Drift check only applies to controller-shaped events.  Sensor
+    # detections are stamped by the radar at detection-time and don't
+    # flow through a checkpoint, so drift capping has no home to bite.
+    if isinstance(events[0], DecodedEvent):
+        await _warn_on_drift(events, signal_id, source_label=source_label)
+
+    await _upsert_events(events, signal_id, session_factory)
+
+
+async def _warn_on_drift(events, signal_id: str, *, source_label: str) -> None:
+    """Log + notify on future-dated events beyond the tolerance window."""
     now = datetime.now(timezone.utc)
     tolerance = timedelta(
         seconds=settings.checkpoint_future_tolerance_seconds,
     )
     future_cutoff = now + tolerance
     future_events = [e for e in events if e.timestamp > future_cutoff]
-    if future_events:
-        max_future = max(e.timestamp for e in future_events)
-        drift = max_future - now
-        logger.warning(
-            "Signal %s: %d/%d events have future timestamps "
-            "(max drift: %s, latest: %s)",
-            signal_id,
-            len(future_events),
-            len(events),
-            drift,
-            max_future.isoformat(),
-        )
-        await notify(
-            subject=f"Clock drift detected: {source_label} {signal_id}",
-            message=(
-                f"Signal {signal_id} produced {len(future_events)} of "
-                f"{len(events)} events with future timestamps.\n"
-                f"Max drift: {drift} "
-                f"(latest event: {max_future.isoformat()}).\n"
-                f"Server time: {now.isoformat()}\n\n"
-                f"Events have been ingested but the checkpoint has been "
-                f"capped at server_time + "
-                f"{settings.checkpoint_future_tolerance_seconds}s."
-            ),
-            severity=WARNING,
-            metadata={
-                "signal_id": signal_id,
-                "future_event_count": len(future_events),
-                "total_event_count": len(events),
-                "max_drift_seconds": drift.total_seconds(),
-                "latest_event_time": max_future.isoformat(),
-                "alert_type": "clock_drift",
-            },
-        )
+    if not future_events:
+        return
 
-    await _upsert_events(events, signal_id, session_factory)
+    max_future = max(e.timestamp for e in future_events)
+    drift = max_future - now
+    logger.warning(
+        "Signal %s: %d/%d events have future timestamps "
+        "(max drift: %s, latest: %s)",
+        signal_id,
+        len(future_events),
+        len(events),
+        drift,
+        max_future.isoformat(),
+    )
+    await notify(
+        subject=f"Clock drift detected: {source_label} {signal_id}",
+        message=(
+            f"Signal {signal_id} produced {len(future_events)} of "
+            f"{len(events)} events with future timestamps.\n"
+            f"Max drift: {drift} "
+            f"(latest event: {max_future.isoformat()}).\n"
+            f"Server time: {now.isoformat()}\n\n"
+            f"Events have been ingested but the checkpoint has been "
+            f"capped at server_time + "
+            f"{settings.checkpoint_future_tolerance_seconds}s."
+        ),
+        severity=WARNING,
+        metadata={
+            "signal_id": signal_id,
+            "future_event_count": len(future_events),
+            "total_event_count": len(events),
+            "max_drift_seconds": drift.total_seconds(),
+            "latest_event_time": max_future.isoformat(),
+            "alert_type": "clock_drift",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
-# Idempotent insert helper
+# Idempotent insert helper — type-dispatched
 # ---------------------------------------------------------------------------
 
 
@@ -221,16 +231,58 @@ async def _upsert_events(
 ) -> None:
     """Bulk-insert events with ON CONFLICT DO NOTHING.
 
-    The composite PK ``(signal_id, event_time, event_code, event_param)``
-    on ``controller_event_log`` makes each event naturally unique.
-    Duplicates from overlapping polls or re-ingested files are silently
-    skipped — zero data loss, zero duplicates.
+    Dispatches on the element type of ``events`` — the events
+    themselves carry their destination:
+
+    * ``DecodedEvent``      -> ``controller_event_log`` (PK
+      signal_id + event_time + event_code + event_param)
+    * ``SensorDetection``   -> ``roadside_event`` (PK
+      signal_id + sensor_id + event_time + event_type), with
+      ``vendor_tag`` resolved to an internal ``sensor_id`` UUID via
+      ``roadside_sensor_lane.vendor_lane_id`` en route
+
+    Mixing types in a single call is rejected — decoders emit one type
+    at a time, and mixed batches almost certainly indicate an upstream
+    bug worth surfacing loudly.
 
     Args:
-        events: List of ``DecodedEvent`` objects.
-        signal_id: Traffic signal identifier.
+        events: Homogeneous list of ``DecodedEvent`` or ``SensorDetection``.
+        signal_id: Controller signal identifier (used for the controller
+            path; ignored for the sensor path, which derives signal_id
+            from the sensor's own config via ``roadside_sensor.signal_id``).
         session_factory: Async session factory for DB writes.
     """
+    if not events:
+        return
+
+    first = events[0]
+    if isinstance(first, DecodedEvent):
+        if not all(isinstance(e, DecodedEvent) for e in events):
+            raise TypeError(
+                "_upsert_events: mixed event types in batch; decoders must "
+                "emit homogeneous lists (all DecodedEvent OR all SensorDetection)",
+            )
+        await _upsert_controller_events(events, signal_id, session_factory)
+    elif isinstance(first, SensorDetection):
+        if not all(isinstance(e, SensorDetection) for e in events):
+            raise TypeError(
+                "_upsert_events: mixed event types in batch; decoders must "
+                "emit homogeneous lists (all DecodedEvent OR all SensorDetection)",
+            )
+        await _upsert_sensor_detections(events, session_factory)
+    else:
+        raise TypeError(
+            f"_upsert_events: unknown event type {type(first).__name__!r}; "
+            "expected DecodedEvent or SensorDetection",
+        )
+
+
+async def _upsert_controller_events(
+    events, signal_id: str, session_factory,
+) -> None:
+    """Bulk INSERT controller event-log rows (the original 4.x-style path)."""
+    if not events:
+        return
     rows = [
         {
             "signal_id": signal_id,
@@ -240,11 +292,85 @@ async def _upsert_events(
         }
         for e in events
     ]
-
     stmt = pg_insert(ControllerEventLog).values(rows).on_conflict_do_nothing(
         index_elements=["signal_id", "event_time", "event_code", "event_param"],
     )
+    async with session_factory() as session:
+        await session.execute(stmt)
+        await session.flush()
 
+
+async def _upsert_sensor_detections(events, session_factory) -> None:
+    """Bulk INSERT sensor detections after resolving vendor_tag -> sensor UUID.
+
+    The vendor wire protocol carries a human-readable tag (Wavetronix'
+    6-character ASCII) that TSIGMA maps to its internal ``sensor_id``
+    UUID and the owning ``signal_id`` via a single JOIN on
+    ``roadside_sensor_lane`` + ``roadside_sensor``.  One lookup per
+    batch, not per event — the mapping is slow-moving config, not
+    per-detection data.
+
+    Events whose ``vendor_tag`` doesn't resolve are dropped with a
+    warning; the likely cause is a sensor emitting before the operator
+    has registered it in ``roadside_sensor_lane``.
+    """
+    if not events:
+        return
+    unique_tags = {e.vendor_tag for e in events}
+    lookup_stmt = (
+        select(
+            RoadsideSensorLane.vendor_lane_id,
+            RoadsideSensorLane.sensor_id,
+            RoadsideSensor.signal_id,
+        )
+        .join(RoadsideSensor, RoadsideSensor.sensor_id == RoadsideSensorLane.sensor_id)
+        .where(RoadsideSensorLane.vendor_lane_id.in_(unique_tags))
+    )
+    async with session_factory() as session:
+        result = await session.execute(lookup_stmt)
+        resolved = {
+            row.vendor_lane_id: (row.sensor_id, row.signal_id)
+            for row in result
+        }
+
+    unresolved = unique_tags - resolved.keys()
+    if unresolved:
+        dropped_count = sum(1 for e in events if e.vendor_tag in unresolved)
+        logger.warning(
+            "_upsert_sensor_detections: dropped %d event(s) with "
+            "unregistered vendor_tag(s) %s — operator must add matching "
+            "roadside_sensor_lane.vendor_lane_id rows",
+            dropped_count,
+            sorted(unresolved),
+        )
+
+    rows = []
+    for e in events:
+        mapping = resolved.get(e.vendor_tag)
+        if mapping is None:
+            continue
+        sensor_uuid, sig_id = mapping
+        rows.append({
+            "signal_id": sig_id,
+            "sensor_id": sensor_uuid,
+            "event_time": e.timestamp,
+            "event_type": e.event_type,
+            "mph": e.mph,
+            "kph": e.kph,
+            "length_feet": e.length_feet,
+            "vehicle_class": e.vehicle_class,
+            "lane_number": e.lane_number,
+            "direction_id": e.direction_id,
+            "occupancy_pct": e.occupancy_pct,
+            "queue_length_feet": e.queue_length_feet,
+        })
+
+    if not rows:
+        return
+
+    stmt = pg_insert(RoadsideEvent).values(rows).on_conflict_do_nothing(
+        index_elements=["signal_id", "sensor_id", "event_time", "event_type"],
+    )
     async with session_factory() as session:
         await session.execute(stmt)
         await session.flush()
