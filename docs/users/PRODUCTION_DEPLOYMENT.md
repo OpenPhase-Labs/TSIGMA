@@ -40,7 +40,7 @@ grep -r "cdn\|unpkg\|jsdelivr" tsigma/templates/
 docker build -t tsigma:latest .
 ```
 
-**Run**:
+**Run** (single-container deployment with API + collector + listeners + scheduler):
 ```bash
 docker run -d \
   -p 8080:8080 \
@@ -49,9 +49,15 @@ docker run -d \
   -e TSIGMA_PG_DATABASE=tsigma \
   -e TSIGMA_AUTH_MODE=oidc \
   -e TSIGMA_OIDC_TENANT_ID=gdot-tenant \
+  -e TSIGMA_ENABLE_API=true \
+  -e TSIGMA_ENABLE_COLLECTOR=true \
+  -e TSIGMA_ENABLE_LISTENERS=true \
+  -e TSIGMA_ENABLE_SCHEDULER=true \
   --name tsigma \
   tsigma:latest
 ```
+
+**Multi-container deployment** (independent failure domains for listeners): see [DEPLOYMENT.md — Large Deployment](DEPLOYMENT.md#docker-compose-large-deployment--split-components) and [LISTENERS.md](../developers/LISTENERS.md). Each listener type runs as its own container, started from the same image with different env flags.
 
 **All assets bundled in image** - No external network access required
 

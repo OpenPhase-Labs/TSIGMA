@@ -154,6 +154,44 @@ async def lifespan(app: FastAPI):
         await collector.start()
         app.state.collector = collector
 
+    # Listener subsystem boots when the umbrella flag or any per-method
+    # flag is set.  Same image, different env per container — small DOTs
+    # set enable_listeners alongside enable_collector in one process;
+    # large DOTs run a dedicated container per listener type.
+    _listener_per_method_flags = (
+        settings.enable_tcp_listener,
+        settings.enable_udp_listener,
+        settings.enable_grpc_listener,
+        settings.enable_mqtt_listener,
+        settings.enable_nats_listener,
+        settings.enable_directory_watch,
+    )
+    if settings.enable_listeners or any(_listener_per_method_flags):
+        from .collection.listener_service import ListenerService
+        from .collection.sources import (
+            RoadsideSensorDeviceSource,
+            SignalDeviceSource,
+        )
+        from .collection.targets import ControllerTarget, RoadsideTarget
+
+        listener_sources = [
+            SignalDeviceSource(
+                poll_interval_seconds=settings.collector_poll_interval,
+                target=ControllerTarget(),
+            ),
+            RoadsideSensorDeviceSource(
+                poll_interval_seconds=settings.sensor_poll_interval,
+                target=RoadsideTarget(),
+            ),
+        ]
+        listener_service = ListenerService(
+            facade._session_factory,
+            settings,
+            sources=listener_sources,
+        )
+        await listener_service.start()
+        app.state.listener_service = listener_service
+
     if settings.enable_scheduler:
         from .scheduler.service import SchedulerService
 
@@ -175,10 +213,14 @@ async def lifespan(app: FastAPI):
     if settings.validation_enabled and hasattr(app.state, "validation_service"):
         await app.state.validation_service.stop()
 
-    # Shutdown — scheduler stops next (kills running jobs),
-    # then collector unregisters from JobRegistry
+    # Shutdown — scheduler stops next (kills running jobs), then listeners
+    # release their long-lived connections, then collector unregisters
+    # from JobRegistry.
     if settings.enable_scheduler and hasattr(app.state, "scheduler"):
         await app.state.scheduler.stop()
+
+    if hasattr(app.state, "listener_service"):
+        await app.state.listener_service.stop()
 
     if settings.enable_collector and hasattr(app.state, "collector"):
         await app.state.collector.stop()

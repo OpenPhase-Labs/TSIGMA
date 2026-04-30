@@ -84,19 +84,37 @@ class ListenerIngestionMethod(BaseIngestionMethod):
     Base class for push/listener ingestion methods.
 
     Long-lived async servers that receive data pushed by external
-    devices. CollectorService manages start/stop lifecycle.
+    devices.  ``ListenerService`` manages start/stop lifecycle.
     """
 
     execution_mode: ClassVar[ExecutionMode] = ExecutionMode.LISTENER
 
     @abstractmethod
-    async def start(self, config: dict[str, Any], session_factory) -> None:
+    async def start(
+        self,
+        config: dict[str, Any],
+        session_factory,
+        *,
+        target: Any = None,
+        devices: Any = None,
+    ) -> None:
         """
         Start listening for incoming data.
 
         Args:
-            config: Listener config (port, bind address, etc.).
+            config: Layer-2 server config (bind, broker URL, credentials,
+                instance discriminator, etc.) — sourced from process env.
             session_factory: Async session factory for DB writes.
+            target: ``IngestionTarget`` selecting which event table
+                decoded events land in (controller_event_log /
+                roadside_event) and which ``device_type`` is used for
+                checkpoint I/O.  ``None`` defaults to ``ControllerTarget``
+                for backward compatibility.
+            devices: Iterable of ``(device_id, per_device_config)`` pairs
+                this listener instance should handle, pre-filtered by
+                method + instance.  Listeners use this for routing
+                (NATS subjects, MQTT topics, TCP source-IP maps) and to
+                short-circuit when zero devices match.
         """
         ...
 
@@ -110,21 +128,32 @@ class EventDrivenIngestionMethod(BaseIngestionMethod):
     """
     Base class for event-driven ingestion methods.
 
-    Watches for external events (e.g., filesystem changes) and
-    ingests data when triggered. CollectorService manages
-    start/stop lifecycle.
+    Watches for external events (e.g., filesystem changes) and ingests
+    data when triggered.  ``ListenerService`` manages start/stop
+    lifecycle (same orchestrator as listeners — both have the same
+    long-lived ``start()`` / ``stop()`` shape).
     """
 
     execution_mode: ClassVar[ExecutionMode] = ExecutionMode.EVENT_DRIVEN
 
     @abstractmethod
-    async def start(self, config: dict[str, Any], session_factory) -> None:
+    async def start(
+        self,
+        config: dict[str, Any],
+        session_factory,
+        *,
+        target: Any = None,
+        devices: Any = None,
+    ) -> None:
         """
         Start watching for events.
 
         Args:
-            config: Watcher config (directory path, patterns, etc.).
+            config: Layer-2 watcher config (paths, glob patterns, etc.).
             session_factory: Async session factory for DB writes.
+            target: ``IngestionTarget`` selecting destination event table.
+            devices: Iterable of ``(device_id, per_device_config)`` pairs
+                that should be served by this watcher instance.
         """
         ...
 

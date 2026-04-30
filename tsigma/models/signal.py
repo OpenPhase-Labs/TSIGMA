@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Index, Text, func
+from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Index, Integer, Text, func
 from sqlalchemy.dialects.postgresql import INET, JSONB, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -49,6 +49,15 @@ class Signal(Base, TimestampMixin):
         ForeignKey("controller_type.controller_type_id"),
     )
     ip_address: Mapped[Optional[str]] = mapped_column(INET)
+    # First-class network port for FTP/HTTP/TCP/UDP/gRPC reachability.
+    # Listener source-IP routing reads ip_address (B-tree indexed); polling
+    # transports read host = ip_address with port from this column.
+    port: Mapped[Optional[int]] = mapped_column(Integer)
+    # First-class transport identifier (ftp, ftps, sftp, http, https, tcp,
+    # udp, grpc, mqtt, nats).  Per-device protocol-specific routing
+    # (remote_dir, topic, subject, instance, decoder) lives in
+    # signal_metadata.collection JSONB.
+    protocol: Mapped[Optional[str]] = mapped_column(Text)
     note: Mapped[Optional[str]] = mapped_column(Text)
     signal_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSONB)
     enabled: Mapped[bool] = mapped_column(
@@ -61,6 +70,11 @@ class Signal(Base, TimestampMixin):
         Index("idx_signal_corridor", "corridor_id"),
         Index("idx_signal_controller_type", "controller_type_id"),
         Index("idx_signal_metadata", "metadata", postgresql_using="gin"),
+        # B-tree on ip_address for source-IP lookups by TCP/UDP listeners.
+        Index(
+            "idx_signal_ip_address", "ip_address",
+            postgresql_where="ip_address IS NOT NULL",
+        ),
         {"schema": tsigma_schema("config")},
     )
 

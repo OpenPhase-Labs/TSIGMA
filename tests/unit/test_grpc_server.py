@@ -1,13 +1,14 @@
 """
 Unit tests for gRPC server ingestion method plugin.
 
-Tests registration, health checks, server lifecycle, RPC handling
-(PublishUpdate / PublishBatch / StreamBatches), and TLS path.
+Covers the new contract: Layer-2 server config in ``config`` dict,
+device validation against the registered set passed via ``devices``,
+event persistence through the ``IngestionTarget``.
 """
 
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -19,28 +20,46 @@ _PROTO_DIR = str(
 if _PROTO_DIR not in sys.path:
     sys.path.insert(0, _PROTO_DIR)
 
-from openphase.v1 import common_pb2, ihr_events_pb2  # noqa: E402  # imports must follow sys.path.insert above
+from openphase.v1 import common_pb2, ihr_events_pb2  # noqa: E402
 
-from tsigma.collection.decoders.base import DecodedEvent  # noqa: E402  # see sys.path.insert above
-from tsigma.collection.methods.grpc_server import (  # noqa: E402  # see sys.path.insert above
+from tsigma.collection.decoders.base import DecodedEvent  # noqa: E402
+from tsigma.collection.methods.grpc_server import (  # noqa: E402
     GRPCServerConfig,
     GRPCServerMethod,
     _IngestionServicer,
 )
-from tsigma.collection.registry import IngestionMethodRegistry  # noqa: E402  # see sys.path.insert above
+from tsigma.collection.registry import IngestionMethodRegistry  # noqa: E402
+from tsigma.collection.targets import (  # noqa: E402
+    ControllerTarget,
+    RoadsideTarget,
+)
+
+
+def _make_servicer(
+    decoder=None,
+    target=None,
+    registered=None,
+    session_factory=None,
+):
+    """Build an _IngestionServicer with sensible defaults for tests."""
+    return _IngestionServicer(
+        decoder=decoder if decoder is not None else MagicMock(),
+        session_factory=(
+            session_factory if session_factory is not None else AsyncMock()
+        ),
+        target=target if target is not None else ControllerTarget(),
+        registered_device_ids=(
+            registered if registered is not None else {"INT-001"}
+        ),
+    )
 
 
 class TestGRPCServerRegistration:
-    """Tests for registry integration."""
-
     def test_registered(self):
-        cls = IngestionMethodRegistry.get("grpc_server")
-        assert cls is GRPCServerMethod
+        assert IngestionMethodRegistry.get("grpc_server") is GRPCServerMethod
 
 
 class TestGRPCServerHealthCheck:
-    """Tests for health_check behavior."""
-
     @pytest.mark.asyncio
     async def test_health_check_when_not_started(self):
         method = GRPCServerMethod()
@@ -54,8 +73,6 @@ class TestGRPCServerHealthCheck:
 
 
 class TestGRPCServerConfig:
-    """Tests for config validation defaults."""
-
     def test_defaults(self):
         cfg = GRPCServerConfig()
         assert cfg.port == 50051
@@ -63,26 +80,29 @@ class TestGRPCServerConfig:
         assert cfg.decoder == "openphase"
         assert cfg.tls_cert_file is None
         assert cfg.tls_key_file is None
-        assert cfg.max_message_size_bytes == 4 * 1024 * 1024
+        assert cfg.max_message_size == 4 * 1024 * 1024
 
     def test_overrides(self):
-        cfg = GRPCServerConfig(port=12345, decoder="auto", max_message_size_bytes=10_000)
+        cfg = GRPCServerConfig(
+            port=12345, decoder="auto", max_message_size=10_000,
+        )
         assert cfg.port == 12345
         assert cfg.decoder == "auto"
-        assert cfg.max_message_size_bytes == 10_000
+        assert cfg.max_message_size == 10_000
 
 
 class TestIngestionServicerPublishBatch:
-    """Tests for PublishBatch RPC handler."""
-
     @pytest.mark.asyncio
-    async def test_publish_batch_persists_events(self):
+    async def test_publish_batch_persists_via_target(self):
         decoder = MagicMock()
         decoder.decode_bytes.return_value = [
             DecodedEvent(timestamp=None, event_code=82, event_param=5),
         ]
-        session_factory = AsyncMock()
-        servicer = _IngestionServicer(decoder, session_factory)
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock()
+        servicer = _make_servicer(
+            decoder=decoder, target=target, registered={"INT-001"},
+        )
 
         batch = common_pb2.CompactEventBatch(
             intersection_id="INT-001",
@@ -93,27 +113,36 @@ class TestIngestionServicerPublishBatch:
         evt.code = ihr_events_pb2.EVENT_DETECTOR_ON
         evt.param = 5
 
-        with patch(
-            "tsigma.collection.methods.grpc_server.persist_events_with_drift_check",
-            new_callable=AsyncMock,
-        ) as persist:
-            ack = await servicer.PublishBatch(batch, MagicMock())
-
+        ack = await servicer.PublishBatch(batch, MagicMock())
         assert ack.events_accepted == 1
         assert ack.error == ""
-        persist.assert_called_once()
-        # signal_id is intersection_id from the batch
-        assert persist.call_args[0][1] == "INT-001"
+        target.persist_with_drift_check.assert_awaited_once()
+        assert target.persist_with_drift_check.call_args[0][1] == "INT-001"
+
+    @pytest.mark.asyncio
+    async def test_publish_batch_rejects_unregistered_device(self):
+        decoder = MagicMock()
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock()
+        servicer = _make_servicer(
+            decoder=decoder, target=target, registered={"INT-001"},
+        )
+
+        batch = common_pb2.CompactEventBatch(intersection_id="UNKNOWN-002")
+        ack = await servicer.PublishBatch(batch, MagicMock())
+
+        assert ack.events_accepted == 0
+        assert "unregistered" in ack.error
+        target.persist_with_drift_check.assert_not_called()
+        decoder.decode_bytes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_publish_batch_decode_failure_returns_error(self):
         decoder = MagicMock()
         decoder.decode_bytes.side_effect = ValueError("bad bytes")
-        session_factory = AsyncMock()
-        servicer = _IngestionServicer(decoder, session_factory)
+        servicer = _make_servicer(decoder=decoder, registered={"INT-002"})
 
         batch = common_pb2.CompactEventBatch(intersection_id="INT-002")
-
         ack = await servicer.PublishBatch(batch, MagicMock())
 
         assert ack.events_accepted == 0
@@ -125,77 +154,81 @@ class TestIngestionServicerPublishBatch:
         decoder.decode_bytes.return_value = [
             DecodedEvent(timestamp=None, event_code=82, event_param=5),
         ]
-        session_factory = AsyncMock()
-        servicer = _IngestionServicer(decoder, session_factory)
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock(
+            side_effect=RuntimeError("db down"),
+        )
+        servicer = _make_servicer(
+            decoder=decoder, target=target, registered={"INT-003"},
+        )
 
         batch = common_pb2.CompactEventBatch(intersection_id="INT-003")
-
-        with patch(
-            "tsigma.collection.methods.grpc_server.persist_events_with_drift_check",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("db down"),
-        ):
-            ack = await servicer.PublishBatch(batch, MagicMock())
+        ack = await servicer.PublishBatch(batch, MagicMock())
 
         assert ack.events_accepted == 0
         assert "db down" in ack.error
 
 
 class TestIngestionServicerPublishUpdate:
-    """Tests for PublishUpdate RPC handler."""
-
     @pytest.mark.asyncio
-    async def test_publish_update_persists_events(self):
+    async def test_publish_update_persists_via_target(self):
         decoder = MagicMock()
         decoder.decode_bytes.return_value = [
             DecodedEvent(timestamp=None, event_code=1, event_param=2),
         ]
-        session_factory = AsyncMock()
-        servicer = _IngestionServicer(decoder, session_factory)
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock()
+        servicer = _make_servicer(
+            decoder=decoder, target=target, registered={"INT-042"},
+        )
 
         atspm = ihr_events_pb2.AtspmEvent(
-            code=ihr_events_pb2.EVENT_PHASE_BEGIN_GREEN, param=2
+            code=ihr_events_pb2.EVENT_PHASE_BEGIN_GREEN, param=2,
         )
-        update = common_pb2.IntersectionUpdate(intersection_id="INT-042", event=atspm)
+        update = common_pb2.IntersectionUpdate(
+            intersection_id="INT-042", event=atspm,
+        )
 
-        with patch(
-            "tsigma.collection.methods.grpc_server.persist_events_with_drift_check",
-            new_callable=AsyncMock,
-        ) as persist:
-            ack = await servicer.PublishUpdate(update, MagicMock())
-
+        ack = await servicer.PublishUpdate(update, MagicMock())
         assert ack.events_accepted == 1
         assert ack.error == ""
-        persist.assert_called_once()
-        assert persist.call_args[0][1] == "INT-042"
+        target.persist_with_drift_check.assert_awaited_once()
+        assert target.persist_with_drift_check.call_args[0][1] == "INT-042"
+
+    @pytest.mark.asyncio
+    async def test_publish_update_rejects_unregistered(self):
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock()
+        servicer = _make_servicer(target=target, registered={"INT-042"})
+
+        update = common_pb2.IntersectionUpdate(intersection_id="UNKNOWN")
+        ack = await servicer.PublishUpdate(update, MagicMock())
+
+        assert ack.events_accepted == 0
+        assert "unregistered" in ack.error
+        target.persist_with_drift_check.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_publish_update_no_events_returns_zero(self):
         decoder = MagicMock()
         decoder.decode_bytes.return_value = []
-        session_factory = AsyncMock()
-        servicer = _IngestionServicer(decoder, session_factory)
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock()
+        servicer = _make_servicer(
+            decoder=decoder, target=target, registered={"INT-empty"},
+        )
 
         update = common_pb2.IntersectionUpdate(intersection_id="INT-empty")
-
-        with patch(
-            "tsigma.collection.methods.grpc_server.persist_events_with_drift_check",
-            new_callable=AsyncMock,
-        ) as persist:
-            ack = await servicer.PublishUpdate(update, MagicMock())
+        ack = await servicer.PublishUpdate(update, MagicMock())
 
         assert ack.events_accepted == 0
-        persist.assert_not_called()
+        target.persist_with_drift_check.assert_not_called()
 
 
 class TestIngestionServicerStreamBatches:
-    """Tests for StreamBatches client-streaming RPC."""
-
     @pytest.mark.asyncio
     async def test_stream_batches_sums_accepted_events(self):
         decoder = MagicMock()
-        # Two batches in the stream, decoder returns 2 events for the first,
-        # 3 for the second.
         decoder.decode_bytes.side_effect = [
             [DecodedEvent(timestamp=None, event_code=82, event_param=1),
              DecodedEvent(timestamp=None, event_code=82, event_param=2)],
@@ -203,8 +236,11 @@ class TestIngestionServicerStreamBatches:
              DecodedEvent(timestamp=None, event_code=82, event_param=4),
              DecodedEvent(timestamp=None, event_code=82, event_param=5)],
         ]
-        session_factory = AsyncMock()
-        servicer = _IngestionServicer(decoder, session_factory)
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock()
+        servicer = _make_servicer(
+            decoder=decoder, target=target, registered={"INT-A", "INT-B"},
+        )
 
         b1 = common_pb2.CompactEventBatch(intersection_id="INT-A")
         b2 = common_pb2.CompactEventBatch(intersection_id="INT-B")
@@ -213,27 +249,26 @@ class TestIngestionServicerStreamBatches:
             yield b1
             yield b2
 
-        with patch(
-            "tsigma.collection.methods.grpc_server.persist_events_with_drift_check",
-            new_callable=AsyncMock,
-        ) as persist:
-            ack = await servicer.StreamBatches(request_iter(), MagicMock())
+        ack = await servicer.StreamBatches(request_iter(), MagicMock())
 
         assert ack.events_accepted == 5
         assert ack.error == ""
-        assert persist.await_count == 2
+        assert target.persist_with_drift_check.await_count == 2
 
     @pytest.mark.asyncio
     async def test_stream_batches_continues_after_per_batch_failure(self):
         decoder = MagicMock()
-        # First batch decodes fine, second blows up; third decodes fine.
         decoder.decode_bytes.side_effect = [
             [DecodedEvent(timestamp=None, event_code=82, event_param=1)],
             ValueError("bad batch"),
             [DecodedEvent(timestamp=None, event_code=82, event_param=2)],
         ]
-        session_factory = AsyncMock()
-        servicer = _IngestionServicer(decoder, session_factory)
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock()
+        servicer = _make_servicer(
+            decoder=decoder, target=target,
+            registered={"INT-A", "INT-B", "INT-C"},
+        )
 
         b1 = common_pb2.CompactEventBatch(intersection_id="INT-A")
         b2 = common_pb2.CompactEventBatch(intersection_id="INT-B")
@@ -244,38 +279,90 @@ class TestIngestionServicerStreamBatches:
             yield b2
             yield b3
 
-        with patch(
-            "tsigma.collection.methods.grpc_server.persist_events_with_drift_check",
-            new_callable=AsyncMock,
-        ):
-            ack = await servicer.StreamBatches(request_iter(), MagicMock())
-
-        # First and third batches succeed; total = 2 accepted.
+        ack = await servicer.StreamBatches(request_iter(), MagicMock())
         assert ack.events_accepted == 2
+
+    @pytest.mark.asyncio
+    async def test_stream_batches_skips_unregistered(self):
+        decoder = MagicMock()
+        decoder.decode_bytes.return_value = [
+            DecodedEvent(timestamp=None, event_code=82, event_param=1),
+        ]
+        target = ControllerTarget()
+        target.persist_with_drift_check = AsyncMock()
+        servicer = _make_servicer(
+            decoder=decoder, target=target, registered={"INT-A"},
+        )
+
+        b1 = common_pb2.CompactEventBatch(intersection_id="INT-A")
+        b2 = common_pb2.CompactEventBatch(intersection_id="INT-UNKNOWN")
+
+        async def request_iter():
+            yield b1
+            yield b2
+
+        ack = await servicer.StreamBatches(request_iter(), MagicMock())
+        # Unregistered batch is skipped; only b1 contributes events.
+        assert ack.events_accepted == 1
 
 
 class TestGRPCServerLifecycle:
-    """Tests for start() and stop()."""
-
     @pytest.mark.asyncio
     async def test_stop_when_never_started(self):
         method = GRPCServerMethod()
-        # Should not raise.
         await method.stop()
         assert method._server is None
 
     @pytest.mark.asyncio
     async def test_start_insecure_then_stop(self):
-        """Start an actual gRPC server on an ephemeral port, then stop it."""
+        """Start a real server on an ephemeral port with one device, then stop."""
         method = GRPCServerMethod()
-        session_factory = AsyncMock()
-
-        await method.start({"port": 0}, session_factory)
+        await method.start(
+            {"port": 0},
+            AsyncMock(),
+            target=ControllerTarget(),
+            devices=[("INT-001", {})],
+        )
         try:
             assert method._server is not None
             assert await method.health_check() is True
         finally:
             await method.stop()
-
         assert method._server is None
         assert await method.health_check() is False
+
+    @pytest.mark.asyncio
+    async def test_start_with_roadside_target(self):
+        """Roadside target plumbs through to the servicer."""
+        method = GRPCServerMethod()
+        target = RoadsideTarget()
+        await method.start(
+            {"port": 0},
+            AsyncMock(),
+            target=target,
+            devices=[("SENSOR-A", {})],
+        )
+        try:
+            assert method._server is not None
+        finally:
+            await method.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_with_no_devices_warns(self, caplog):
+        """Starting with empty devices list logs a warning but boots."""
+        import logging
+        method = GRPCServerMethod()
+        with caplog.at_level(
+            logging.WARNING, logger="tsigma.collection.methods.grpc_server",
+        ):
+            await method.start(
+                {"port": 0},
+                AsyncMock(),
+                target=ControllerTarget(),
+                devices=[],
+            )
+        try:
+            assert method._server is not None
+            assert "no registered" in caplog.text.lower()
+        finally:
+            await method.stop()

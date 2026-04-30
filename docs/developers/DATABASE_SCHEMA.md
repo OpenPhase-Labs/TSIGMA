@@ -626,6 +626,13 @@ SELECT add_continuous_aggregate_policy('cagg_phase_termination',
 -- =============================================================================
 
 -- Signals
+--
+-- The network triple (ip_address, port, protocol) lives in dedicated columns,
+-- not in metadata JSONB.  This is intentional: source-IP lookup for inbound
+-- TCP/UDP listener traffic resolves through a B-tree index hit on ip_address,
+-- not a JSONB scan.  Protocol-specific routing (FTP remote_dir, MQTT topic,
+-- NATS subject, listener instance discriminator, decoder choice) stays in
+-- metadata.collection JSONB.  See ARCHITECTURE.md §7 and LISTENERS.md.
 CREATE TABLE signal (
     signal_id           TEXT PRIMARY KEY,
     primary_street      TEXT NOT NULL,
@@ -637,8 +644,10 @@ CREATE TABLE signal (
     corridor_id         UUID,
     controller_type_id  UUID,
     ip_address          INET,
+    port                INTEGER,        -- First-class network port (FTP/HTTP/TCP/UDP/gRPC)
+    protocol            TEXT,           -- First-class transport (ftp, ftps, sftp, http, https, tcp, udp, grpc, mqtt, nats)
     note                TEXT,
-    metadata            JSONB,  -- Flexible key-value pairs (location_type, custom fields, etc.)
+    metadata            JSONB,          -- Per-device collection.* config (method, decoder, topic/subject/remote_dir, instance, ...)
     enabled             BOOLEAN DEFAULT TRUE,
     start_date          DATE,
     created_at          TIMESTAMPTZ DEFAULT NOW(),
@@ -649,6 +658,9 @@ CREATE INDEX idx_signal_region ON signal (region_id);
 CREATE INDEX idx_signal_corridor ON signal (corridor_id);
 CREATE INDEX idx_signal_controller_type ON signal (controller_type_id);
 CREATE INDEX idx_signal_metadata ON signal USING GIN (metadata);
+
+-- B-tree on ip_address for source-IP lookups by TCP/UDP listeners.
+CREATE INDEX idx_signal_ip_address ON signal (ip_address) WHERE ip_address IS NOT NULL;
 
 -- Signal Audit History
 -- Tracks all changes to signal configuration over time
@@ -744,6 +756,72 @@ CREATE TABLE detector (
 );
 
 CREATE INDEX idx_detector_approach ON detector (approach_id);
+
+-- =============================================================================
+-- ROADSIDE SENSORS - Radar / LiDAR / video at the roadway edge
+-- =============================================================================
+-- Cabinet-connected detection (loops, video-over-SDLC) lives in the detector
+-- table.  Roadside sensors are a parallel ingestion source that pushes per-vehicle
+-- speed / classification / queue records over vendor protocols (TCP, HTTP, FTP,
+-- serial dumps).  They feed into roadside_event, not controller_event_log.
+--
+-- The full schema (lane mapping, capabilities, vendor model lookup) lives in
+-- tsigma/models/roadside_sensor.py.  The columns shown here are the ones load-
+-- bearing for ingestion: the network triple and the JSONB collection config.
+-- The network triple is structurally identical to signal: dedicated columns for
+-- ip_address / port / protocol with a B-tree index on ip_address; vendor-specific
+-- routing in the metadata JSONB.  This lets a single TCP listener serve both
+-- controllers and sensors via the DeviceSource abstraction.
+
+CREATE TABLE roadside_sensor (
+    sensor_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    model_id            UUID NOT NULL REFERENCES roadside_sensor_model(model_id),
+    signal_id           TEXT NOT NULL REFERENCES signal(signal_id),
+    device_name         TEXT NOT NULL,
+    serial_number       TEXT,
+    firmware_version    TEXT,
+    install_date        TIMESTAMPTZ,
+
+    -- Location + mounting
+    latitude            DECIMAL(10, 7),
+    longitude           DECIMAL(10, 7),
+    mounting_height_feet DECIMAL,
+    azimuth_degrees     DECIMAL,
+
+    -- Network triple (first-class, for source-IP routing by TCP/UDP listeners)
+    ip_address          INET,
+    port                INTEGER,
+    protocol            TEXT,
+    username            TEXT,
+    password            TEXT,        -- Encrypted at rest via crypto.py SENSITIVE_FIELDS
+
+    -- Capabilities (what event types this sensor emits)
+    emits_speed         BOOLEAN NOT NULL DEFAULT FALSE,
+    emits_classification BOOLEAN NOT NULL DEFAULT FALSE,
+    emits_queue_length  BOOLEAN NOT NULL DEFAULT FALSE,
+    emits_occupancy     BOOLEAN NOT NULL DEFAULT FALSE,
+
+    is_active           BOOLEAN NOT NULL DEFAULT TRUE,
+    last_seen_at        TIMESTAMPTZ,
+
+    -- Vendor-specific config (detection zones, sensitivity, filters, listener
+    -- routing — collection.method, collection.decoder, collection.subject /
+    -- collection.topic / collection.instance, etc.)
+    metadata            JSONB,
+
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_roadside_sensor_signal ON roadside_sensor (signal_id);
+CREATE INDEX idx_roadside_sensor_model ON roadside_sensor (model_id);
+CREATE INDEX idx_roadside_sensor_active ON roadside_sensor (is_active);
+
+-- B-tree on ip_address for source-IP lookups by TCP/UDP listeners — symmetrical
+-- with idx_signal_ip_address so the same listener code path resolves either
+-- device class through its DeviceSource.
+CREATE INDEX idx_roadside_sensor_ip_address
+    ON roadside_sensor (ip_address) WHERE ip_address IS NOT NULL;
 
 -- Controller Types
 CREATE TABLE controller_type (

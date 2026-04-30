@@ -123,6 +123,13 @@ class RoadsideSensor(Base, TimestampMixin):
         Index("idx_roadside_sensor_signal", "signal_id"),
         Index("idx_roadside_sensor_model", "model_id"),
         Index("idx_roadside_sensor_active", "is_active"),
+        # B-tree on ip_address for source-IP lookups by TCP/UDP listeners.
+        # Symmetrical with idx_signal_ip_address so the same listener path
+        # resolves either device class through its DeviceSource.
+        Index(
+            "idx_roadside_sensor_ip_address", "ip_address",
+            postgresql_where="ip_address IS NOT NULL",
+        ),
         {"schema": tsigma_schema("config")},
     )
 

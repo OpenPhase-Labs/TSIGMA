@@ -35,6 +35,62 @@ class Settings(BaseSettings):
     enable_collector: bool = True
     enable_scheduler: bool = True
 
+    # Listener subsystem.  ``enable_listeners`` is the umbrella flag;
+    # any per-method flag below also boots the ListenerService and
+    # narrows it to that one type.  An umbrella alone boots every
+    # registered listener type that has at least one configured device.
+    enable_listeners: bool = False
+    enable_tcp_listener: bool = False
+    enable_udp_listener: bool = False
+    enable_grpc_listener: bool = False
+    enable_mqtt_listener: bool = False
+    enable_nats_listener: bool = False
+    enable_directory_watch: bool = False
+
+    # Listener Layer-2 — TCP server
+    tcp_bind_host: str = "0.0.0.0"
+    tcp_bind_port: int = 10088
+    tcp_max_connections: int = 2000
+    tcp_idle_timeout: int = 300
+    tcp_read_buffer_size: int = 65536
+    tcp_decoder: str = ""               # Empty = per-device collection.decoder
+
+    # Listener Layer-2 — UDP server
+    udp_bind_host: str = "0.0.0.0"
+    udp_bind_port: int = 10088
+    udp_max_packet_size: int = 4096
+    udp_decoder: str = ""
+
+    # Listener Layer-2 — gRPC server
+    grpc_bind_host: str = "0.0.0.0"
+    grpc_bind_port: int = 50051
+    grpc_tls_cert_file: str = ""
+    grpc_tls_key_file: str = ""
+    grpc_max_message_size: int = 4194304
+
+    # Listener Layer-2 — MQTT
+    mqtt_broker_url: str = ""
+    mqtt_client_id: str = "tsigma-listener"
+    mqtt_username: str = ""
+    mqtt_username_file: str = ""
+    mqtt_password: str = ""
+    mqtt_password_file: str = ""
+    mqtt_keepalive: int = 60
+    mqtt_tls: bool = False
+    mqtt_instance: str = "default"      # Discriminator for multi-broker DOTs
+
+    # Listener Layer-2 — NATS
+    nats_url: str = ""
+    nats_credentials_file: str = ""
+    nats_tls: bool = False
+    nats_max_reconnects: int = -1
+    nats_instance: str = "default"
+
+    # Listener Layer-2 — Directory watch
+    directory_watch_paths: str = ""     # Comma-separated absolute paths
+    directory_watch_patterns: str = "*" # Comma-separated glob patterns
+    directory_watch_decoder: str = "auto"
+
     # Event-log partition tuning (configurable at app init).
     # Used by TimescaleDB (chunk_time_interval) on PostgreSQL and by the
     # partition-management job for MS-SQL / Oracle / MySQL.  Integer days,

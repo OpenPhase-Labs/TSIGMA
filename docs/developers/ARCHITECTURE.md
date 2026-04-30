@@ -202,13 +202,27 @@ All SQL queries go through SQLAlchemy 2.0, which provides database-agnostic quer
 
 ### Deployment Model
 
-A single `tsigma` process runs all components by default. Components are enabled via environment variables, allowing the same image to serve any deployment size.
+A single `tsigma` process runs all components by default. Components are enabled via environment variables, allowing the same image to serve any deployment size — from a single container hosting everything, to a fleet of single-purpose containers.
 
 ```env
-TSIGMA_ENABLE_API=true        # REST API, GraphQL, Web UI
-TSIGMA_ENABLE_COLLECTOR=true  # Controller polling and ingestion
-TSIGMA_ENABLE_SCHEDULER=true  # View refresh and watchdog jobs
+TSIGMA_ENABLE_API=true            # REST API, GraphQL, Web UI
+TSIGMA_ENABLE_COLLECTOR=true      # Polling ingestion methods (ftp_pull, http_pull)
+TSIGMA_ENABLE_LISTENERS=true      # Listener + event-driven ingestion (umbrella)
+TSIGMA_ENABLE_SCHEDULER=true      # View refresh and watchdog jobs
 ```
+
+The umbrella `TSIGMA_ENABLE_LISTENERS=true` flag boots every listener-type that has at least one signal or sensor configured for it. For multi-process deployments where each listener type runs in its own container, per-method flags select exactly one type:
+
+```env
+TSIGMA_ENABLE_TCP_LISTENER=true     # TCP server (push)
+TSIGMA_ENABLE_UDP_LISTENER=true     # UDP server (push)
+TSIGMA_ENABLE_MQTT_LISTENER=true    # MQTT broker subscription
+TSIGMA_ENABLE_NATS_LISTENER=true    # NATS subject subscription
+TSIGMA_ENABLE_GRPC_LISTENER=true    # gRPC server (push)
+TSIGMA_ENABLE_DIRECTORY_WATCH=true  # Filesystem event watcher
+```
+
+Per-method flags imply the umbrella; a process with any of them set boots that listener type and skips the rest.
 
 ### Small Deployment (< 2,000 signals)
 
@@ -218,11 +232,13 @@ TSIGMA_ENABLE_SCHEDULER=true  # View refresh and watchdog jobs
 │                                                             │
 │   TSIGMA_ENABLE_API=true                                    │
 │   TSIGMA_ENABLE_COLLECTOR=true                              │
+│   TSIGMA_ENABLE_LISTENERS=true                              │
 │   TSIGMA_ENABLE_SCHEDULER=true                              │
 │                                                             │
 │   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────┐    │
 │   │ Web UI  │  │  REST   │  │ GraphQL │  │  Collector  │    │
-│   │ (Jinja2)│  │   API   │  │   API   │  │  Scheduler  │    │
+│   │ (Jinja2)│  │   API   │  │   API   │  │  Listeners  │    │
+│   │         │  │         │  │         │  │  Scheduler  │    │
 │   └─────────┘  └─────────┘  └─────────┘  └─────────────┘    │
 └─────────────────────────────────────────────────────────────┘
                           │
@@ -238,22 +254,23 @@ TSIGMA_ENABLE_SCHEDULER=true  # View refresh and watchdog jobs
 ┌──────────────────────────────────────────────────────────────┐
 │                        Load Balancer                         │
 └──────────────────────────────────────────────────────────────┘
-     │              │              │
-     ▼              ▼              ▼
-┌──────────┐ ┌──────────┐ ┌──────────────┐
-│  API #1  │ │  API #2  │ │  Collector   │
-│  :8000   │ │  :8000   │ │  Scheduler   │
-└──────────┘ └──────────┘ └──────────────┘
-     │              │              │
-     └──────────────┼──────────────┘
+     │              │              │              │              │
+     ▼              ▼              ▼              ▼              ▼
+┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐
+│  API #1  │ │  API #2  │ │ Collector  │ │  MQTT      │ │  NATS      │
+│  :8000   │ │  :8000   │ │ (FTP/HTTP) │ │  Listener  │ │  Listener  │
+└──────────┘ └──────────┘ └────────────┘ └────────────┘ └────────────┘
+     │              │              │              │              │
+     └──────────────┼──────────────┴──────────────┴──────────────┘
                     │
                     ▼
-           ┌──────────────┐
-           │   Database   │
-           └──────────────┘
+           ┌──────────────┐    ┌──────────────┐
+           │  Scheduler   │    │   Database   │
+           │ (singleton)  │───▶│              │
+           └──────────────┘    └──────────────┘
 ```
 
-Only one instance should run the scheduler (to avoid duplicate view refreshes).
+Listener processes scale and fail independently of polling and the API. Each listener type that the DOT actually uses gets its own container; types with no configured signals never need to be deployed. Only one instance should run the scheduler (to avoid duplicate view refreshes).
 
 > **Database:** TSIGMA is database-agnostic via SQLAlchemy. Supported: PostgreSQL (+ TimescaleDB), MS-SQL, Oracle, MySQL. **PostgreSQL + TimescaleDB is the reference architecture** -- it enables continuous aggregates, hypertable compression, and time-series optimizations that other backends lack.
 
@@ -267,11 +284,12 @@ The FastAPI lifespan manager (`tsigma/app.py`) initializes components in order:
 4. Seed default admin user and system settings
 5. Initialize and mount the active auth provider
 6. Initialize notification providers
-7. Start `CollectorService` (if enabled)
-8. Start `SchedulerService` (if enabled)
-9. Start `ValidationService` (if enabled)
+7. Start `CollectorService` (if `TSIGMA_ENABLE_COLLECTOR`)
+8. Start `ListenerService` (if `TSIGMA_ENABLE_LISTENERS` or any `TSIGMA_ENABLE_*_LISTENER`)
+9. Start `SchedulerService` (if `TSIGMA_ENABLE_SCHEDULER`)
+10. Start `ValidationService` (if `TSIGMA_VALIDATION_ENABLED`)
 
-Shutdown reverses the order: validation stops first, then scheduler, then collector, then Valkey, then database.
+Shutdown reverses the order: validation stops first, then scheduler, then listeners, then collector, then Valkey, then database.
 
 ---
 
@@ -313,9 +331,12 @@ tsigma/
 │   ├── db.py                     # DatabaseFacade, DialectHelper (PostgreSQL, MS-SQL, Oracle, MySQL)
 │   └── init.py                   # First-run setup (tables, TimescaleDB hypertables, indexes)
 │
-├── collection/                   # Data collection (enabled via TSIGMA_ENABLE_COLLECTOR)
+├── collection/                   # Data collection (enabled via TSIGMA_ENABLE_COLLECTOR / TSIGMA_ENABLE_LISTENERS)
 │   ├── registry.py               # BaseIngestionMethod, PollingIngestionMethod, etc.
 │   ├── service.py                # CollectorService — orchestrates polling methods
+│   ├── listener_service.py       # ListenerService — orchestrates listener + event-driven methods
+│   ├── sources/                  # DeviceSource abstraction (SignalDeviceSource, RoadsideSensorDeviceSource)
+│   ├── targets/                  # IngestionTarget abstraction (ControllerTarget, RoadsideSensorTarget)
 │   ├── sdk/                      # Plugin SDK (checkpoint, persistence, decoder resolution)
 │   │
 │   ├── methods/                  # Ingestion method plugins (self-registering)
@@ -323,6 +344,9 @@ tsigma/
 │   │   ├── http_pull.py          # HTTP poller (Intelight MaxTime XML) — registers as "http_pull"
 │   │   ├── tcp_server.py         # TCP listener (push mode) — registers as "tcp_server"
 │   │   ├── udp_server.py         # UDP listener (push mode) — registers as "udp_server"
+│   │   ├── grpc_server.py        # gRPC listener (push mode) — registers as "grpc_server"
+│   │   ├── mqtt_listener.py      # MQTT broker subscription — registers as "mqtt_listener"
+│   │   ├── nats_listener.py      # NATS subject subscription — registers as "nats_listener"
 │   │   └── directory_watch.py    # Directory watcher (event-driven) — registers as "directory_watch"
 │   │
 │   └── decoders/                 # Protocol decoders (separate plugin registry)
@@ -437,22 +461,24 @@ tsigma/
            Ingestion Architecture (Plugin-based)
            =====================================
 
-                  collector/
-                      │
-          ┌───────────┼───────────┐
-          │           │           │
-      registry/    base.py   service.py
-                      │
-          ┌───────────┴───────────┐
-          │                       │
-    methods/                  decoders/
-    (plugins)                 (plugins)
-       │                          │
-   ┌───┴────┐               ┌────┴────┐
-   │        │               │         │
- ftp_pull  http_pull      asc3     siemens
- tcp_srv   udp_server     peek     maxtime
- dir_watch ...            csv       auto
+                       collection/
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+  registry.py         service.py        listener_service.py
+   (base + modes)     (polling)         (listener + event-driven)
+                            │
+                ┌───────────┼───────────┐
+                │           │           │
+           sources/      methods/     decoders/
+        (DeviceSource)   (plugins)    (plugins)
+                            │
+            ┌───────────────┴───────────────┐
+            │                               │
+       PollingMethods                  ListenerMethods + EventDriven
+       ftp_pull, http_pull             tcp_server, udp_server,
+                                       grpc_server, mqtt_listener,
+                                       nats_listener, directory_watch
 ```
 
 ---
@@ -463,7 +489,9 @@ tsigma/
 |-------|---------------|-----------------|
 | `models/` | Table definitions only | Nothing in tsigma |
 | `database/` | Connection, session, dialect helpers | `models/` |
-| `collection/` | Ingestion orchestration (registry, service, SDK) | `models/`, `database/` |
+| `collection/` | Ingestion orchestration (`CollectorService` polling + `ListenerService` listener/event-driven, registry, SDK) | `models/`, `database/` |
+| `collection/sources/` | `DeviceSource` abstraction (SignalDeviceSource, RoadsideSensorDeviceSource) — encapsulates which device class a service operates on | `models/`, `database/` |
+| `collection/targets/` | `IngestionTarget` abstraction — selects which event table decoded events land in | `models/`, `database/` |
 | `collection/methods/` | Ingestion method plugins (self-registering) | `collection/` (registry, SDK), `models/` |
 | `collection/decoders/` | Protocol decoder plugins (self-registering, separate registry) | `models/` |
 | `validation/` | Post-ingestion event validation (registry, service, SDK) | `models/`, `database/` |
@@ -486,7 +514,7 @@ TSIGMA uses the same **self-registering plugin pattern** across all seven subsys
 
 | Subsystem | Registry | Base Class | Plugins |
 |-----------|----------|------------|---------|
-| Ingestion methods | `IngestionMethodRegistry` | `BaseIngestionMethod` | ftp_pull, http_pull, tcp_server, udp_server, directory_watch |
+| Ingestion methods | `IngestionMethodRegistry` | `BaseIngestionMethod` | ftp_pull, http_pull, tcp_server, udp_server, grpc_server, mqtt_listener, nats_listener, directory_watch |
 | Decoders | `DecoderRegistry` | `BaseDecoder` | asc3, siemens, peek, maxtime, csv, auto |
 | Validators | `ValidationRegistry` | `BaseValidator` | schema_range (Layer 1) |
 | Reports | `ReportRegistry` | `BaseReport` | 22 report implementations |
@@ -580,22 +608,64 @@ class EventDrivenIngestionMethod(BaseIngestionMethod):
     async def stop(self) -> None: ...
 ```
 
-### Per-Signal Configuration
+### Orchestration Services
 
-Each signal stores its own collection config in the `signal_metadata` JSONB column:
+Two services drive the three execution modes:
+
+| Service | Modes Driven | Lifecycle | Enabled By |
+|---------|-------------|-----------|------------|
+| `CollectorService` | `POLLING` | One interval job per `(method × DeviceSource)` pair via `JobRegistry` | `TSIGMA_ENABLE_COLLECTOR` |
+| `ListenerService` | `LISTENER`, `EVENT_DRIVEN` | One long-lived `start()` per enabled method per `DeviceSource`; `stop()` on shutdown | `TSIGMA_ENABLE_LISTENERS` (umbrella) or per-method `TSIGMA_ENABLE_*_LISTENER` |
+
+Both services share the same `DeviceSource` abstraction (`SignalDeviceSource`, `RoadsideSensorDeviceSource`), so the same listener type can serve controllers, sensors, or both depending on which sources are passed in. Polling and push transports both decode into the same `controller_event_log` / `roadside_event` tables — analytics never sees which transport ingested an event.
+
+### Configuration Layers
+
+Listener configuration splits into three layers — *what to boot* (env), *server connection* (env), and *device routing* (per-device JSONB):
+
+| Layer | Where | Scope | Examples |
+|-------|-------|-------|----------|
+| 1 — Lifecycle gate | `config.py` env vars | Process | `TSIGMA_ENABLE_LISTENERS=true`, `TSIGMA_ENABLE_NATS_LISTENER=true` |
+| 2 — Server connection | `config.py` env vars | Listener instance (one per type per process) | `TSIGMA_NATS_URL=…`, `TSIGMA_MQTT_BROKER_URL=…`, `TSIGMA_TCP_BIND_PORT=10088` |
+| 3 — Device routing/decoder | `signal.metadata.collection` / `roadside_sensor.metadata.collection` JSONB | Per device | `subject`, `topic`, `decoder`, `instance` |
+
+### Per-Device Configuration
+
+Each signal stores its own collection config in the `signal_metadata` JSONB column. Roadside sensors use the same shape on `roadside_sensor.metadata.collection`. Server-level fields (broker URL, bind port, credentials) live in env vars, *not* per-device JSONB:
 
 ```json
+// FTP-polled signal — JSONB carries protocol-specific bits
 {
   "collection": {
     "method": "ftp_pull",
-    "protocol": "ftps",
-    "username": "admin",
-    "password": "***",
     "remote_dir": "/logs",
     "decoder": "asc3"
   }
 }
+
+// NATS-pushed signal — JSONB carries subject + decoder; broker URL is env
+{
+  "collection": {
+    "method": "nats_listener",
+    "subject": "signals.gdot-0142.events",
+    "decoder": "openphase"
+  }
+}
+
+// MQTT-pushed signal on a non-default broker (multi-broker DOT)
+{
+  "collection": {
+    "method": "mqtt_listener",
+    "instance": "cloud",
+    "topic": "tenant/gdot/0143/events",
+    "decoder": "openphase"
+  }
+}
 ```
+
+The first-class network triple — `ip_address`, `port`, `protocol` — lives in dedicated columns on both `signal` and `roadside_sensor`. Source-IP lookup for inbound TCP/UDP packets is a B-tree index hit on `ip_address`, not a JSONB scan.
+
+The optional `instance` field discriminates between multiple servers of the same listener type (e.g. an internal MQTT broker and a vendor cloud broker). Each listener container sets `TSIGMA_MQTT_INSTANCE=internal` or `=cloud` and only subscribes to signals whose `collection.instance` matches. Single-broker DOTs omit the field entirely.
 
 This allows different signals to use different methods, protocols, and decoders.
 

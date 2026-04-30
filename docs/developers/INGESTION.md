@@ -38,12 +38,13 @@ TSIGMA connects to the controller and retrieves data on a schedule.
 
 #### Push/Listener Methods (ListenerIngestionMethod)
 
-External devices push data to TSIGMA. These run as long-lived async servers.
+External devices push data to TSIGMA. These run as long-lived async servers driven by `ListenerService`.
 
 | Module | Protocol | Dependencies | Use Case |
 |--------|----------|--------------|----------|
 | `udp_server.py` | UDP listener | asyncio (built-in) | Wavetronics speed sensors (port 10088) |
 | `tcp_server.py` | TCP listener | asyncio (built-in) | Legacy Wavetronics speed sensors (port 10088) |
+| `grpc_server.py` | gRPC | grpcio | Modern controllers / OpenPhase devices pushing protobuf events |
 | `nats_listener.py` | NATS | nats-py | Real-time event streaming via NATS subjects |
 | `mqtt_listener.py` | MQTT | aiomqtt | Real-time event streaming via MQTT topics |
 
@@ -64,6 +65,7 @@ TSIGMA watches local directories for files dropped by external processes.
 | UDP listener | `udp_server.py` | Wavetronics speed data |
 | TCP listener | `tcp_server.py` | Legacy Wavetronics alternative |
 | CSV file import | `directory_watch.py` | Watch directory for dropped files |
+| N/A (new) | `grpc_server.py` | Push protobuf events from OpenPhase / modern controllers |
 | N/A (new) | `nats_listener.py` | Real-time NATS streaming |
 | N/A (new) | `mqtt_listener.py` | Real-time MQTT streaming |
 | WCF remote trigger | `POST /api/v1/signals/{id}/poll` | REST API endpoint (not a plugin) |
@@ -403,7 +405,7 @@ class PollingIngestionMethod(BaseIngestionMethod):
 
 ### ListenerIngestionMethod (Push)
 
-External devices push data to TSIGMA. Long-lived async servers with start/stop lifecycle managed by CollectorService.
+External devices push data to TSIGMA. Long-lived async servers with start/stop lifecycle managed by `ListenerService`.
 
 ```python
 class ListenerIngestionMethod(BaseIngestionMethod):
@@ -420,11 +422,11 @@ class ListenerIngestionMethod(BaseIngestionMethod):
         ...
 ```
 
-**Implementations:** `udp_server.py`, `tcp_server.py`, `nats_listener.py`, `mqtt_listener.py`
+**Implementations:** `udp_server.py`, `tcp_server.py`, `grpc_server.py`, `nats_listener.py`, `mqtt_listener.py`
 
 ### EventDrivenIngestionMethod (Watch)
 
-TSIGMA watches local directories for files dropped by external processes. Uses filesystem events, not polling intervals.
+TSIGMA watches local directories for files dropped by external processes. Uses filesystem events, not polling intervals. Lifecycle managed by `ListenerService` (same orchestrator as listeners — both are long-lived `start()`/`stop()` shapes).
 
 ```python
 class EventDrivenIngestionMethod(BaseIngestionMethod):
@@ -442,6 +444,34 @@ class EventDrivenIngestionMethod(BaseIngestionMethod):
 ```
 
 **Implementations:** `directory_watch.py`
+
+## Orchestration Services
+
+Two services drive the three execution modes. Both are gated by env flags on the lifespan startup sequence in `app.py` (see [ARCHITECTURE.md §4](ARCHITECTURE.md#4-system-architecture)).
+
+| Service | Modes | Lifecycle | Enable Flag |
+|---------|-------|-----------|-------------|
+| `CollectorService` | `POLLING` | Registers one interval job per `(method × DeviceSource)` pair with `JobRegistry`; jobs fire on each method's poll interval | `TSIGMA_ENABLE_COLLECTOR=true` |
+| `ListenerService` | `LISTENER`, `EVENT_DRIVEN` | Calls each method's `start(config, session_factory)` once at boot; `stop()` on shutdown | `TSIGMA_ENABLE_LISTENERS=true` (umbrella) or per-method `TSIGMA_ENABLE_*_LISTENER=true` |
+
+### Why split
+
+- **Different lifecycle shapes.** Polling = scheduled `poll_once()` per device. Listener/event-driven = one long-lived `start()` per method that internally fans out to all matching devices.
+- **Independent scaling.** A listener-heavy DOT (push-mode controllers via NATS/MQTT) can run dedicated listener containers without booting a polling loop. A polling-only DOT (legacy FTP/HTTP fleet) skips listeners entirely.
+- **Independent failure domains.** A misbehaving MQTT broker can't stall the FTP polling loop, and an FTP server hang can't drop a long-lived NATS subscription.
+
+### Boot logic
+
+`ListenerService.start()` walks `IngestionMethodRegistry.get_listener_methods()` plus `get_event_driven_methods()`. For each registered method:
+
+1. Check the per-method flag (`TSIGMA_ENABLE_TCP_LISTENER`, etc.). If unset and the umbrella flag is unset, skip.
+2. Read Layer-2 server config from settings (broker URL, bind port, credentials, optional `instance` discriminator).
+3. Query the configured `DeviceSource` for devices using this method (`signal.metadata.collection.method = name AND collection.instance = TSIGMA_*_INSTANCE`).
+4. Call `method.start(config, session_factory)`. Each plugin's `start()` is responsible for opening its connection / binding its port and wiring up subscriptions for the matched devices.
+
+A listener type with zero matching devices skips `start()` entirely — no orphan broker connections.
+
+For the complete config-layer breakdown and per-method config matrix (TCP, UDP, gRPC, MQTT, NATS, directory_watch), see [LISTENERS.md](LISTENERS.md).
 
 ## On-Demand Poll API (WCF Compatibility)
 
@@ -642,16 +672,19 @@ class AutoDecoder(BaseDecoder):
         raise ValueError("No decoder found for the provided data")
 ```
 
-## Signal Configuration for Protocols
+## Signal / Sensor Configuration for Protocols
 
-Per-signal collection configuration is stored in the `signal_metadata` JSONB column on the `signal` table. The `CollectorService` reads the `collection` key to determine method, credentials, and decoder.
+Per-device collection configuration lives in JSONB metadata: `signal.metadata.collection` for traffic signal controllers, `roadside_sensor.metadata.collection` for radar / LiDAR / video sensors. `CollectorService` (polling) and `ListenerService` (listener + event-driven) both read the `collection` key to determine method, decoder, and any device-specific routing fields.
+
+The first-class network triple — `ip_address`, `port`, `protocol` — is stored in dedicated table columns on both `signal` and `roadside_sensor`, **not** in JSONB. Source-IP lookup for inbound TCP/UDP packets resolves through a B-tree index hit. Credentials referenced by polling methods (FTP/SFTP/HTTP) live in JSONB and are encrypted at rest via `crypto.py`.
+
+Server-level connection details for listeners (broker URL, bind port, TLS material, broker credentials) come from environment variables on the listener process itself — not from per-device JSONB. See [LISTENERS.md](LISTENERS.md) for the complete config-layer breakdown.
 
 ```python
 # signal_metadata JSONB example: FTP pull with explicit decoder
 {
     "collection": {
         "method": "ftp_pull",
-        "protocol": "sftp",
         "remote_dir": "/logs",
         "decoder": "asc3",
         "username": "atspm",
@@ -660,12 +693,33 @@ Per-signal collection configuration is stored in the `signal_metadata` JSONB col
 }
 
 # signal_metadata JSONB example: NATS listener
+# Broker URL comes from TSIGMA_NATS_URL on the listener process — not duplicated here.
 {
     "collection": {
         "method": "nats_listener",
-        "url": "nats://localhost:4222",
         "subject": "signals.1001.events",
         "decoder": "openphase",
+    }
+}
+
+# signal_metadata JSONB example: MQTT listener on the "cloud" broker (multi-broker DOT)
+# `instance` selects which listener container owns this signal when multiple
+# MQTT containers run with different TSIGMA_MQTT_INSTANCE / TSIGMA_MQTT_BROKER_URL.
+{
+    "collection": {
+        "method": "mqtt_listener",
+        "instance": "cloud",
+        "topic": "tenant/gdot/0143/events",
+        "decoder": "openphase",
+    }
+}
+
+# signal_metadata JSONB example: TCP listener — source-IP lookup resolves
+# via the signal.ip_address column, not JSONB.
+{
+    "collection": {
+        "method": "tcp_server",
+        "decoder": "wavetronix_advance",
     }
 }
 ```

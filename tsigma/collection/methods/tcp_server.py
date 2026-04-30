@@ -3,24 +3,30 @@ TCP listener ingestion method.
 
 Receives speed sensor data pushed over TCP from legacy Wavetronics
 devices (port 10088). Devices connect, send a complete data payload,
-and close the connection. Decoded events are persisted to the database.
+and close the connection. Decoded events are persisted through the
+ingestion target (controller_event_log for signals,
+roadside_event for sensors).
 
-Uses a device_map to resolve source IP addresses to signal IDs.
+Source IP routing: the orchestrator passes a ``devices`` list of
+``(device_id, per_device_config)`` pairs at start.  The listener builds
+an in-memory IP→device_id map from each device's first-class
+``host`` field (mirrored from the table's ``ip_address`` column).
 Connections from unmapped IPs are logged and discarded.
 
-This is a ListenerIngestionMethod — the CollectorService manages
+This is a ListenerIngestionMethod — the ListenerService manages
 start/stop lifecycle. The server runs as a long-lived asyncio TCP
 server accepting concurrent connections.
 """
 
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ..registry import IngestionMethodRegistry, ListenerIngestionMethod
-from ..sdk import persist_events, resolve_decoder_by_name
+from ..sdk import resolve_decoder_by_name
+from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
 
@@ -28,18 +34,7 @@ _DEFAULT_DECODER = "auto"
 
 
 class TCPServerConfig(BaseModel):
-    """
-    Configuration for the TCP server ingestion method.
-
-    Args:
-        bind_address: Network interface to bind to.
-        port: TCP port to listen on.
-        decoder: Explicit decoder name, or None for auto-detect.
-        max_connections: Maximum simultaneous connections.
-        read_timeout_seconds: Per-connection read timeout.
-        buffer_size: Read buffer size in bytes.
-        device_map: Mapping of source IP to signal ID.
-    """
+    """Layer-2 server config for the TCP listener."""
 
     bind_address: str = "0.0.0.0"
     port: int = 10088
@@ -47,20 +42,16 @@ class TCPServerConfig(BaseModel):
     max_connections: int = 100
     read_timeout_seconds: int = 30
     buffer_size: int = 65536
-    device_map: dict[str, str] = Field(default_factory=dict)
 
 
 @IngestionMethodRegistry.register("tcp_server")
 class TCPServerMethod(ListenerIngestionMethod):
     """
-    TCP listener ingestion method for Wavetronics speed sensors.
+    TCP listener for push-mode roadway sensors and modern controllers.
 
-    A listener plugin: the CollectorService calls start() once and
-    stop() on shutdown. Accepts TCP connections from external devices,
-    decodes pushed data, and persists events to the database.
-
-    Source IPs are resolved to signal IDs via the device_map config.
-    Connections from unmapped IPs are logged as warnings and dropped.
+    Source IPs are resolved to a device_id by looking up the inbound
+    peer IP against the device map built from the orchestrator's
+    ``devices`` list.  Connections from unmapped IPs are dropped.
     """
 
     name = "tcp_server"
@@ -69,20 +60,14 @@ class TCPServerMethod(ListenerIngestionMethod):
         self._server: Optional[asyncio.Server] = None
         self._session_factory = None
         self._config: Optional[TCPServerConfig] = None
+        self._target: IngestionTarget = ControllerTarget()
+        # IP -> (device_id, per_device_config) map built from devices=
+        self._device_map: dict[str, tuple[str, dict[str, Any]]] = {}
         self._active_connections: int = 0
         self._connection_semaphore: Optional[asyncio.Semaphore] = None
 
     @staticmethod
     def _build_config(raw: dict[str, Any]) -> TCPServerConfig:
-        """
-        Build TCPServerConfig from a raw config dict.
-
-        Args:
-            raw: Listener config dict.
-
-        Returns:
-            TCPServerConfig instance.
-        """
         return TCPServerConfig(
             bind_address=raw.get("bind_address", "0.0.0.0"),
             port=raw.get("port", 10088),
@@ -90,54 +75,68 @@ class TCPServerMethod(ListenerIngestionMethod):
             max_connections=raw.get("max_connections", 100),
             read_timeout_seconds=raw.get("read_timeout_seconds", 30),
             buffer_size=raw.get("buffer_size", 65536),
-            device_map=raw.get("device_map", {}),
         )
 
-    def _resolve_decoder(self, config: TCPServerConfig):
-        """
-        Get a decoder instance for the configured decoder.
+    @staticmethod
+    def _build_device_map(
+        devices: Iterable[tuple[str, dict[str, Any]]],
+    ) -> dict[str, tuple[str, dict[str, Any]]]:
+        """Map peer IP -> (device_id, per-device config).
 
-        Args:
-            config: TCP server configuration.
-
-        Returns:
-            Decoder instance.
+        The device's first-class ``host`` field (mirrored from the
+        ``ip_address`` column by the DeviceSource) is the key.  Devices
+        without a host field are skipped — TCP routing has no fallback
+        when the device hasn't declared its IP.
         """
-        return resolve_decoder_by_name(config.decoder or _DEFAULT_DECODER)
+        out: dict[str, tuple[str, dict[str, Any]]] = {}
+        for device_id, config in devices:
+            host = config.get("host")
+            if not host:
+                logger.warning(
+                    "TCP: device %s has no ip_address — cannot route, skipping",
+                    device_id,
+                )
+                continue
+            out[host] = (device_id, config)
+        return out
+
+    def _resolve_decoder(
+        self, per_device: dict[str, Any], server: TCPServerConfig,
+    ):
+        """Per-device decoder takes precedence over the server default."""
+        name = (
+            per_device.get("decoder")
+            or server.decoder
+            or _DEFAULT_DECODER
+        )
+        return resolve_decoder_by_name(name)
 
     async def health_check(self) -> bool:
-        """
-        Check if the TCP server is running and accepting connections.
-
-        Returns:
-            True if the server is serving, False otherwise.
-        """
         return self._server is not None and self._server.is_serving()
 
-    async def start(self, config: dict[str, Any], session_factory) -> None:
-        """
-        Start the TCP listener server.
-
-        Creates an asyncio TCP server bound to the configured address
-        and port. Each incoming connection is handled in a separate
-        coroutine with concurrency limited by max_connections.
-
-        Args:
-            config: Listener config (port, bind address, device_map, etc.).
-            session_factory: Async session factory for DB writes.
-        """
+    async def start(
+        self,
+        config: dict[str, Any],
+        session_factory,
+        *,
+        target: Any = None,
+        devices: Any = None,
+    ) -> None:
+        """Bind the TCP listener and build the IP→device routing map."""
         self._config = self._build_config(config)
         self._session_factory = session_factory
+        self._target = target if target is not None else ControllerTarget()
+        self._device_map = self._build_device_map(devices or [])
         self._connection_semaphore = asyncio.Semaphore(
             self._config.max_connections
         )
 
-        if not self._config.device_map:
+        if not self._device_map:
             logger.warning(
-                "TCP server has empty device_map — "
-                "all connections will be rejected. "
-                "IP-based authentication is the only option "
-                "for legacy Wavetronics devices.",
+                "TCP server has no resolvable devices — all connections "
+                "will be rejected. Configure %s devices with method=tcp_server "
+                "and an ip_address before starting.",
+                self._target.device_type,
             )
 
         self._server = await asyncio.start_server(
@@ -147,18 +146,14 @@ class TCPServerMethod(ListenerIngestionMethod):
         )
 
         logger.info(
-            "TCP server listening on %s:%d",
+            "TCP server (%s) listening on %s:%d — %d device(s) routable",
+            self._target.device_type,
             self._config.bind_address,
             self._config.port,
+            len(self._device_map),
         )
 
     async def stop(self) -> None:
-        """
-        Stop the TCP listener server.
-
-        Stops accepting new connections, waits up to 10 seconds for
-        in-flight connections to finish, then closes the server.
-        """
         if self._server is None:
             return
 
@@ -185,21 +180,9 @@ class TCPServerMethod(ListenerIngestionMethod):
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """
-        Handle a single inbound TCP connection.
-
-        Reads the full payload from the device, resolves the source IP
-        to a signal ID via device_map, decodes the data, and persists
-        events. Errors on individual connections do not affect the server.
-
-        Args:
-            reader: Asyncio stream reader for the connection.
-            writer: Asyncio stream writer for the connection.
-        """
         peer = writer.get_extra_info("peername")
         peer_ip = peer[0] if peer else "unknown"
 
-        # Enforce max connections
         if not self._connection_semaphore.acquire_nowait():
             logger.warning(
                 "TCP connection rejected from %s: max connections reached",
@@ -212,7 +195,7 @@ class TCPServerMethod(ListenerIngestionMethod):
         self._active_connections += 1
 
         try:
-            await self._process_connection(reader, writer, peer_ip)
+            await self._process_connection(reader, peer_ip)
         except Exception:
             logger.exception(
                 "Unhandled error on TCP connection from %s", peer_ip
@@ -226,28 +209,21 @@ class TCPServerMethod(ListenerIngestionMethod):
     async def _process_connection(
         self,
         reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
         peer_ip: str,
     ) -> None:
-        """
-        Read, decode, and persist data from a single TCP connection.
-
-        Args:
-            reader: Asyncio stream reader for the connection.
-            writer: Asyncio stream writer for the connection.
-            peer_ip: Remote IP address of the device.
-        """
-        # Resolve source IP to signal ID
-        signal_id = self._config.device_map.get(peer_ip)
-        if signal_id is None:
+        resolved = self._device_map.get(peer_ip)
+        if resolved is None:
             logger.warning(
                 "TCP connection from unmapped IP %s — skipping", peer_ip
             )
             return
 
-        logger.debug("TCP connection accepted from %s (signal %s)", peer_ip, signal_id)
+        device_id, per_device = resolved
+        logger.debug(
+            "TCP connection accepted from %s (%s %s)",
+            peer_ip, self._target.device_type, device_id,
+        )
 
-        # Read full payload with timeout
         try:
             data = await asyncio.wait_for(
                 self._read_payload(reader),
@@ -255,53 +231,37 @@ class TCPServerMethod(ListenerIngestionMethod):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "TCP read timeout from %s for signal %s", peer_ip, signal_id
+                "TCP read timeout from %s for %s %s",
+                peer_ip, self._target.device_type, device_id,
             )
             return
 
         if not data:
             logger.debug(
-                "TCP connection from %s closed with no data (signal %s)",
-                peer_ip,
-                signal_id,
+                "TCP connection from %s closed with no data (%s %s)",
+                peer_ip, self._target.device_type, device_id,
             )
             return
 
-        # Decode payload
         try:
-            decoder = self._resolve_decoder(self._config)
+            decoder = self._resolve_decoder(per_device, self._config)
             events = decoder.decode_bytes(data)
         except Exception:
             logger.exception(
-                "Failed to decode TCP payload from %s for signal %s",
-                peer_ip,
-                signal_id,
+                "Failed to decode TCP payload from %s for %s %s",
+                peer_ip, self._target.device_type, device_id,
             )
             return
 
-        # Persist events
-        await persist_events(events, signal_id, self._session_factory)
+        await self._target.persist(events, device_id, self._session_factory)
 
         if events:
             logger.info(
-                "Collected %d events from %s for signal %s",
-                len(events),
-                peer_ip,
-                signal_id,
+                "Collected %d events from %s for %s %s",
+                len(events), peer_ip,
+                self._target.device_type, device_id,
             )
 
     async def _read_payload(self, reader: asyncio.StreamReader) -> bytes:
-        """
-        Read a complete payload from the connection.
-
-        Wavetronics devices send a complete data blob and then close
-        the connection. Reads until EOF up to the configured buffer size.
-
-        Args:
-            reader: Asyncio stream reader for the connection.
-
-        Returns:
-            Raw bytes received from the device.
-        """
-        data = await reader.read(self._config.buffer_size)
-        return data
+        """Wavetronics devices send one blob then close — read until EOF."""
+        return await reader.read(self._config.buffer_size)

@@ -3,16 +3,17 @@ Device sources — classes of devices that share a polling cadence and
 ingestion target.
 
 ``SignalDeviceSource`` queries the ``signal`` table and routes to a
-``ControllerTarget``; a future ``RoadsideSensorDeviceSource`` will
-query ``roadside_sensor`` and route to a ``RoadsideTarget``.
-``CollectorService`` iterates registered sources and schedules one
-poll-cycle job per ``(transport_method × source)`` pair at the
-source's configured interval.
+``ControllerTarget``; ``RoadsideSensorDeviceSource`` queries
+``roadside_sensor`` and routes to a ``RoadsideTarget``.
+``CollectorService`` (polling) and ``ListenerService`` (listener +
+event-driven) both iterate registered sources to dispatch each method
+against every device class it serves.
 
 See ``base.DeviceSource`` for the protocol contract.
 """
 
 from .base import DeviceSource
+from .sensor import RoadsideSensorDeviceSource
 from .signal import SignalDeviceSource
 
-__all__ = ["DeviceSource", "SignalDeviceSource"]
+__all__ = ["DeviceSource", "RoadsideSensorDeviceSource", "SignalDeviceSource"]

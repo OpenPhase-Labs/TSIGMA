@@ -13,5 +13,6 @@ See ``base.IngestionTarget`` for the protocol contract.
 
 from .base import IngestionTarget
 from .controller import ControllerTarget
+from .roadside import RoadsideTarget
 
-__all__ = ["ControllerTarget", "IngestionTarget"]
+__all__ = ["ControllerTarget", "IngestionTarget", "RoadsideTarget"]
