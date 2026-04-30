@@ -2,17 +2,29 @@
 Directory watch ingestion method.
 
 Watches local directories for CSV/dat files dropped by external
-processes (e.g., manual uploads, third-party tools, controller
-download utilities). Processes files on arrival and persists
-decoded events to the database.
+processes (manual uploads, third-party tools, controller download
+utilities).  Processes files on arrival and persists decoded events
+through the ingestion target (controller_event_log for signals,
+roadside_event for sensors).
 
-Uses the watchdog library for filesystem monitoring. Files that
-arrive while TSIGMA is stopped are picked up on startup via an
-initial directory scan.
+Layer-2 server config (paths to watch, glob patterns, default decoder)
+comes from process env vars via ``ListenerService``.  Per-device routing
+(decoder override, signal_id override, processed/error subdirs, recursive
+flag) comes from each device's ``metadata.collection`` JSONB and is
+passed in via the ``devices`` argument from the orchestrator.
 
-This is an EventDrivenIngestionMethod — the CollectorService
-manages start/stop lifecycle. File events trigger processing
-asynchronously via the running event loop.
+A device's ``signal_id`` is the orchestrator-supplied ``device_id``
+unless overridden in its JSONB.  When no per-device config exists for
+a watch path, files in that path resolve their device via filename
+convention: everything before the first underscore is treated as the
+device_id (``gdot-0142_20260415_events.dat`` → ``gdot-0142``).
+
+Uses the watchdog library for filesystem monitoring.  Files that arrive
+while TSIGMA is stopped are picked up on startup via an initial
+directory scan.
+
+This is an EventDrivenIngestionMethod — the ListenerService manages
+start/stop lifecycle.
 """
 
 import asyncio
@@ -22,18 +34,15 @@ import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel, Field
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from ..decoders.base import DecoderRegistry
-from ..registry import (
-    EventDrivenIngestionMethod,
-    IngestionMethodRegistry,
-)
-from ..sdk import persist_events
+from ..registry import EventDrivenIngestionMethod, IngestionMethodRegistry
+from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
 
@@ -46,27 +55,14 @@ _WRITE_SETTLE_SECONDS = 0.5
 _RETRY_DELAY_SECONDS = 1.0
 
 
-class DirectoryWatchConfig(BaseModel):
-    """
-    Configuration for the directory watch ingestion method.
+class DirectoryWatchServerConfig(BaseModel):
+    """Layer-2 server config for the directory watcher."""
 
-    Args:
-        watch_dir: Directory path to watch (required).
-        file_patterns: Glob patterns for files to process.
-        decoder: Explicit decoder name, or None to infer from extension.
-        signal_id: Explicit signal ID, or None to infer from filename.
-        move_after_processing: Move processed files to a subdirectory.
-        processed_subdir: Subdirectory name for successfully processed files.
-        error_subdir: Subdirectory name for files that failed processing.
-        recursive: Watch subdirectories.
-    """
-
-    watch_dir: str
-    file_patterns: list[str] = Field(
-        default_factory=lambda: ["*.dat", "*.csv", "*.DAT", "*.CSV"]
+    paths: list[str]
+    patterns: list[str] = Field(
+        default_factory=lambda: ["*.dat", "*.csv", "*.DAT", "*.CSV"],
     )
-    decoder: Optional[str] = None
-    signal_id: Optional[str] = None
+    decoder: str = "auto"
     move_after_processing: bool = True
     processed_subdir: str = "processed"
     error_subdir: str = "errors"
@@ -74,379 +70,261 @@ class DirectoryWatchConfig(BaseModel):
 
 
 class _FileEventHandler(FileSystemEventHandler):
-    """
-    Watchdog event handler that bridges filesystem events to async processing.
-
-    Receives CREATE and MOVED_TO events from the watchdog observer thread
-    and schedules async file processing on the main event loop.
-    """
+    """Bridges synchronous watchdog callbacks to async file processing."""
 
     def __init__(
         self,
-        config: DirectoryWatchConfig,
-        session_factory,
+        watch_root: str,
+        cfg: DirectoryWatchServerConfig,
         loop: asyncio.AbstractEventLoop,
         method: "DirectoryWatchMethod",
     ) -> None:
         super().__init__()
-        self._config = config
-        self._session_factory = session_factory
+        self._watch_root = watch_root
+        self._cfg = cfg
         self._loop = loop
         self._method = method
 
     def on_created(self, event: FileSystemEvent) -> None:
-        """Handle file creation events."""
         if event.is_directory:
             return
-        self._schedule_processing(event.src_path)
+        self._schedule(event.src_path)
 
     def on_moved(self, event: FileSystemEvent) -> None:
-        """Handle file move/rename events (MOVED_TO)."""
         if event.is_directory:
             return
-        self._schedule_processing(event.dest_path)
+        self._schedule(event.dest_path)
 
-    def _schedule_processing(self, file_path: str) -> None:
-        """
-        Schedule async file processing on the event loop.
-
-        Args:
-            file_path: Absolute path to the new/moved file.
-        """
+    def _schedule(self, file_path: str) -> None:
         filename = os.path.basename(file_path)
         if not self._matches_patterns(filename):
             return
-
         asyncio.run_coroutine_threadsafe(
-            self._method._process_file(
-                file_path, self._config, self._session_factory
-            ),
+            self._method._process_file(file_path, self._watch_root),
             self._loop,
         )
 
     def _matches_patterns(self, filename: str) -> bool:
-        """
-        Check if filename matches any of the configured patterns.
-
-        Args:
-            filename: Name of the file (without directory).
-
-        Returns:
-            True if the file matches at least one pattern.
-        """
-        for pattern in self._config.file_patterns:
-            if fnmatch.fnmatch(filename, pattern):
-                return True
-        return False
+        return any(
+            fnmatch.fnmatch(filename, p) for p in self._cfg.patterns
+        )
 
 
 @IngestionMethodRegistry.register("directory_watch")
 class DirectoryWatchMethod(EventDrivenIngestionMethod):
-    """
-    Directory watch ingestion method.
-
-    An event-driven plugin: the CollectorService calls start() once
-    at startup and stop() at shutdown. Filesystem events trigger
-    asynchronous file processing via the watchdog library.
-
-    On start, performs an initial scan of the watched directory
-    to pick up files that arrived while TSIGMA was stopped.
-    """
+    """Watches one or more directories and processes matching files."""
 
     name = "directory_watch"
 
     def __init__(self) -> None:
-        self._observer: Optional[Observer] = None
+        self._observers: list[Observer] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._cfg: Optional[DirectoryWatchServerConfig] = None
+        self._target: IngestionTarget = ControllerTarget()
+        self._session_factory = None
+        # device_id -> per-device collection.* dict (decoder override etc.)
+        self._device_overrides: dict[str, dict[str, Any]] = {}
 
     @staticmethod
-    def _build_config(raw: dict[str, Any]) -> DirectoryWatchConfig:
-        """
-        Build DirectoryWatchConfig from a raw config dict.
-
-        Args:
-            raw: Config dict from the collection configuration.
-
-        Returns:
-            DirectoryWatchConfig instance.
-
-        Raises:
-            ValueError: If watch_dir is not provided.
-        """
-        watch_dir = raw.get("watch_dir")
-        if not watch_dir:
-            raise ValueError("directory_watch config requires 'watch_dir'")
-
-        # Resolve watch_dir to an absolute path to prevent traversal
-        resolved_watch = Path(watch_dir).resolve()
-
-        processed_subdir = raw.get("processed_subdir", "processed")
-        error_subdir = raw.get("error_subdir", "errors")
-
-        # Validate subdirs don't escape the watch directory
-        for label, subdir in [
-            ("processed_subdir", processed_subdir),
-            ("error_subdir", error_subdir),
-        ]:
-            sub_resolved = (resolved_watch / subdir).resolve()
-            if not sub_resolved.is_relative_to(resolved_watch):
-                raise ValueError(
-                    f"{label} {subdir!r} escapes watch_dir"
-                )
-
-        return DirectoryWatchConfig(
-            watch_dir=str(resolved_watch),
-            file_patterns=raw.get(
-                "file_patterns", ["*.dat", "*.csv", "*.DAT", "*.CSV"]
-            ),
-            decoder=raw.get("decoder"),
-            signal_id=raw.get("signal_id"),
+    def _build_server_config(raw: dict[str, Any]) -> DirectoryWatchServerConfig:
+        paths = raw.get("paths") or []
+        if not paths:
+            raise ValueError(
+                "directory_watch config requires at least one path "
+                "(set TSIGMA_DIRECTORY_WATCH_PATHS)",
+            )
+        # Resolve all paths to absolute up front to prevent traversal.
+        resolved = [str(Path(p).resolve()) for p in paths]
+        return DirectoryWatchServerConfig(
+            paths=resolved,
+            patterns=raw.get("patterns") or [
+                "*.dat", "*.csv", "*.DAT", "*.CSV",
+            ],
+            decoder=raw.get("decoder") or "auto",
             move_after_processing=raw.get("move_after_processing", True),
-            processed_subdir=processed_subdir,
-            error_subdir=error_subdir,
-            recursive=raw.get("recursive", False),
+            processed_subdir=raw.get("processed_subdir", "processed"),
+            error_subdir=raw.get("error_subdir", "errors"),
+            recursive=bool(raw.get("recursive", False)),
         )
 
-    async def start(self, config: dict[str, Any], session_factory) -> None:
-        """
-        Start watching for filesystem events.
+    @staticmethod
+    def _build_device_overrides(
+        devices: Iterable[tuple[str, dict[str, Any]]],
+    ) -> dict[str, dict[str, Any]]:
+        return {device_id: dict(config) for device_id, config in devices}
 
-        Creates the watchdog Observer, schedules the event handler,
-        starts the observer thread, and performs an initial scan of
-        the directory for any existing files.
-
-        Args:
-            config: Watcher config (directory path, patterns, etc.).
-            session_factory: Async session factory for DB writes.
-        """
-        watch_config = self._build_config(config)
-        watch_dir = Path(watch_config.watch_dir)
-
-        if not watch_dir.is_dir():
-            raise FileNotFoundError(
-                f"Watch directory does not exist: {watch_config.watch_dir}"
-            )
-
+    async def start(
+        self,
+        config: dict[str, Any],
+        session_factory,
+        *,
+        target: Any = None,
+        devices: Any = None,
+    ) -> None:
+        self._cfg = self._build_server_config(config)
+        self._session_factory = session_factory
+        self._target = target if target is not None else ControllerTarget()
+        self._device_overrides = self._build_device_overrides(devices or [])
         self._loop = asyncio.get_running_loop()
 
-        handler = _FileEventHandler(
-            watch_config, session_factory, self._loop, self
-        )
+        for raw_path in self._cfg.paths:
+            watch_dir = Path(raw_path)
+            if not watch_dir.is_dir():
+                logger.error(
+                    "Directory watch path does not exist: %s — skipping",
+                    raw_path,
+                )
+                continue
 
-        self._observer = Observer()
-        self._observer.schedule(
-            handler, str(watch_dir), recursive=watch_config.recursive
-        )
-        self._observer.start()
+            handler = _FileEventHandler(
+                str(watch_dir), self._cfg, self._loop, self,
+            )
+            observer = Observer()
+            observer.schedule(
+                handler, str(watch_dir), recursive=self._cfg.recursive,
+            )
+            observer.start()
+            self._observers.append(observer)
 
-        logger.info(
-            "Started directory watcher on %s (recursive=%s, patterns=%s)",
-            watch_config.watch_dir,
-            watch_config.recursive,
-            watch_config.file_patterns,
-        )
+            logger.info(
+                "Started directory watcher (%s) on %s "
+                "(recursive=%s, patterns=%s)",
+                self._target.device_type,
+                raw_path, self._cfg.recursive, self._cfg.patterns,
+            )
 
-        # Startup scan — process files that arrived while TSIGMA was stopped
-        await self._startup_scan(watch_config, session_factory)
+            await self._startup_scan(str(watch_dir))
 
     async def stop(self) -> None:
-        """Stop watching and release resources."""
-        if self._observer is not None:
-            self._observer.stop()
-            self._observer.join(timeout=5.0)
-            self._observer = None
+        for observer in self._observers:
+            try:
+                observer.stop()
+                observer.join(timeout=5.0)
+            except Exception:
+                logger.exception("Error stopping directory watcher")
+        self._observers.clear()
+        if self._cfg is not None:
             logger.info("Stopped directory watcher")
 
     async def health_check(self) -> bool:
-        """
-        Check if the directory watcher is healthy.
-
-        Returns:
-            True if the observer thread is alive, False otherwise.
-        """
-        if self._observer is None:
+        if not self._observers:
             return False
-        return self._observer.is_alive()
+        return all(o.is_alive() for o in self._observers)
 
-    async def _startup_scan(
-        self, config: DirectoryWatchConfig, session_factory
-    ) -> None:
-        """
-        Scan the watched directory for existing files on startup.
-
-        Processes any files matching the configured patterns that
-        are already present in the directory. This ensures files
-        that arrived while TSIGMA was stopped are not missed.
-
-        Args:
-            config: Directory watch configuration.
-            session_factory: Async session factory for DB writes.
-        """
-        watch_dir = Path(config.watch_dir)
-        existing_files: list[Path] = []
-
-        for pattern in config.file_patterns:
-            if config.recursive:
-                existing_files.extend(watch_dir.rglob(pattern))
+    async def _startup_scan(self, watch_dir: str) -> None:
+        """Pick up files that arrived while TSIGMA was stopped."""
+        wd = Path(watch_dir)
+        existing: list[Path] = []
+        for pattern in self._cfg.patterns:
+            if self._cfg.recursive:
+                existing.extend(wd.rglob(pattern))
             else:
-                existing_files.extend(watch_dir.glob(pattern))
+                existing.extend(wd.glob(pattern))
 
-        # Deduplicate (patterns may overlap) and sort by modification time
         seen: set[str] = set()
-        unique_files: list[Path] = []
-        for fp in existing_files:
-            resolved = str(fp.resolve())
-            if resolved not in seen:
-                seen.add(resolved)
-                unique_files.append(fp)
-        unique_files.sort(key=lambda p: p.stat().st_mtime)
+        unique: list[Path] = []
+        for fp in existing:
+            r = str(fp.resolve())
+            if r not in seen:
+                seen.add(r)
+                unique.append(fp)
+        unique.sort(key=lambda p: p.stat().st_mtime)
 
-        if unique_files:
+        if unique:
             logger.info(
                 "Startup scan found %d existing files in %s",
-                len(unique_files),
-                config.watch_dir,
+                len(unique), watch_dir,
             )
-            for fp in unique_files:
-                await self._process_file(str(fp), config, session_factory)
+            for fp in unique:
+                await self._process_file(str(fp), watch_dir)
 
-    async def _process_file(
-        self,
-        file_path: str,
-        config: DirectoryWatchConfig,
-        session_factory,
-    ) -> None:
-        """
-        Process a single file: decode events and persist to DB.
-
-        Waits briefly for the file write to complete, reads the
-        file, resolves the decoder, decodes events, persists them,
-        and moves the file to the processed or error subdirectory.
-
-        Args:
-            file_path: Absolute path to the file to process.
-            config: Directory watch configuration.
-            session_factory: Async session factory for DB writes.
-        """
-        # Wait for the file write to settle
+    async def _process_file(self, file_path: str, watch_dir: str) -> None:
+        """Decode events from one file and persist via the target."""
+        # Wait for the file write to settle.
         await asyncio.sleep(_WRITE_SETTLE_SECONDS)
 
-        file_path_obj = Path(file_path)
-        filename = file_path_obj.name
+        fp = Path(file_path)
+        filename = fp.name
 
-        if not file_path_obj.exists():
+        if not fp.exists():
             logger.debug("File no longer exists, skipping: %s", filename)
             return
 
-        # Resolve signal_id
-        signal_id = self._resolve_signal_id(filename, config)
-        if signal_id is None:
+        device_id = self._resolve_device_id(filename)
+        if device_id is None:
             logger.warning(
-                "Cannot determine signal_id for file %s, skipping", filename
+                "Cannot determine %s device_id for file %s, skipping",
+                self._target.device_type, filename,
             )
-            self._move_to_error(file_path_obj, config)
+            self._move_to_error(fp, watch_dir)
             return
 
-        # Read file contents with retry for locked files
-        data = await self._read_file_with_retry(file_path_obj)
+        data = await self._read_file_with_retry(fp)
         if data is None:
             logger.error("Unable to read file %s (file locked)", filename)
-            self._move_to_error(file_path_obj, config)
+            self._move_to_error(fp, watch_dir)
             return
 
-        # Decode
         try:
-            decoder = self._resolve_decoder(filename, config)
+            decoder = self._resolve_decoder(filename, device_id)
             events = decoder.decode_bytes(data)
         except Exception:
             logger.exception(
-                "Failed to decode file %s for signal %s", filename, signal_id
+                "Failed to decode file %s for %s %s",
+                filename, self._target.device_type, device_id,
             )
-            self._move_to_error(file_path_obj, config)
+            self._move_to_error(fp, watch_dir)
             return
 
-        # Persist
         try:
-            await persist_events(events, signal_id, session_factory)
+            await self._target.persist(
+                events, device_id, self._session_factory,
+            )
         except Exception:
             logger.exception(
-                "Failed to persist events from %s for signal %s",
-                filename,
-                signal_id,
+                "Failed to persist events from %s for %s %s",
+                filename, self._target.device_type, device_id,
             )
-            self._move_to_error(file_path_obj, config)
+            self._move_to_error(fp, watch_dir)
             return
 
         logger.info(
-            "Processed %s: %d events for signal %s",
-            filename,
-            len(events),
-            signal_id,
+            "Processed %s: %d events for %s %s",
+            filename, len(events),
+            self._target.device_type, device_id,
         )
 
-        # Move to processed subdirectory
-        if config.move_after_processing:
-            self._move_to_processed(file_path_obj, config)
+        if self._cfg.move_after_processing:
+            self._move_to_processed(fp, watch_dir)
 
-    @staticmethod
-    def _resolve_signal_id(
-        filename: str, config: DirectoryWatchConfig
-    ) -> Optional[str]:
+    def _resolve_device_id(self, filename: str) -> Optional[str]:
+        """Filename convention: everything before the first underscore.
+
+        e.g. ``gdot-0142_20260415_events.dat`` → ``gdot-0142``.  If the
+        resolved id is registered in ``devices``, we use it; otherwise
+        we still return it (the caller will route to the target's
+        upsert which will reject unknown ids if applicable).
         """
-        Determine the signal_id for a file.
-
-        If signal_id is set in config, use it. Otherwise, extract
-        from filename: everything before the first underscore.
-
-        Args:
-            filename: Name of the file (without directory).
-            config: Directory watch configuration.
-
-        Returns:
-            Signal ID string, or None if it cannot be determined.
-        """
-        if config.signal_id:
-            return config.signal_id
-
-        # Convention: filename starts with signal_id before first underscore
-        # e.g., "gdot-0142_20240115_events.dat" -> "gdot-0142"
         stem = Path(filename).stem
         if "_" in stem:
             return stem.split("_", 1)[0]
-
         return None
 
-    @staticmethod
-    def _resolve_decoder(filename: str, config: DirectoryWatchConfig):
-        """
-        Get a decoder instance for the given filename.
-
-        Uses the explicit decoder from config if set. Otherwise,
-        infers from the file extension using the extension-to-decoder
-        map, falling back to DecoderRegistry extension lookup.
-
-        Args:
-            filename: Name of the file to decode.
-            config: Directory watch configuration.
-
-        Returns:
-            Decoder instance.
-
-        Raises:
-            ValueError: If no decoder can be found.
-        """
-        if config.decoder:
-            cls = DecoderRegistry.get(config.decoder)
+    def _resolve_decoder(self, filename: str, device_id: str):
+        """Per-device decoder override > server default > extension lookup."""
+        per_device = self._device_overrides.get(device_id, {})
+        explicit = per_device.get("decoder") or (
+            self._cfg.decoder if self._cfg.decoder != "auto" else None
+        )
+        if explicit:
+            cls = DecoderRegistry.get(explicit)
             return cls()
 
         ext = Path(filename).suffix.lower()
-
-        # Check explicit extension map first
         if ext in _EXTENSION_DECODER_MAP:
             cls = DecoderRegistry.get(_EXTENSION_DECODER_MAP[ext])
             return cls()
 
-        # Fall back to registry extension lookup
         candidates = DecoderRegistry.get_for_extension(ext)
         if not candidates:
             raise ValueError(f"No decoder found for extension '{ext}'")
@@ -454,15 +332,6 @@ class DirectoryWatchMethod(EventDrivenIngestionMethod):
 
     @staticmethod
     async def _read_file_with_retry(file_path: Path) -> Optional[bytes]:
-        """
-        Read file contents, retrying once if the file is locked.
-
-        Args:
-            file_path: Path to the file.
-
-        Returns:
-            File contents as bytes, or None if the file is inaccessible.
-        """
         for attempt in range(2):
             try:
                 return file_path.read_bytes()
@@ -470,56 +339,30 @@ class DirectoryWatchMethod(EventDrivenIngestionMethod):
                 if attempt == 0:
                     logger.debug(
                         "File locked, retrying in %.1fs: %s",
-                        _RETRY_DELAY_SECONDS,
-                        file_path.name,
+                        _RETRY_DELAY_SECONDS, file_path.name,
                     )
                     await asyncio.sleep(_RETRY_DELAY_SECONDS)
         return None
 
+    def _move_to_processed(self, file_path: Path, watch_dir: str) -> None:
+        self._move(file_path, watch_dir, self._cfg.processed_subdir, "processed")
+
+    def _move_to_error(self, file_path: Path, watch_dir: str) -> None:
+        self._move(file_path, watch_dir, self._cfg.error_subdir, "errors")
+
     @staticmethod
-    def _move_to_processed(
-        file_path: Path, config: DirectoryWatchConfig
+    def _move(
+        file_path: Path, watch_dir: str, subdir: str, label: str,
     ) -> None:
-        """
-        Move a successfully processed file to the processed subdirectory.
-
-        Adds a UTC timestamp prefix to the filename to avoid collisions.
-
-        Args:
-            file_path: Path to the processed file.
-            config: Directory watch configuration.
-        """
-        dest_dir = Path(config.watch_dir) / config.processed_subdir
+        dest_dir = Path(watch_dir) / subdir
         dest_dir.mkdir(parents=True, exist_ok=True)
-
-        timestamp_prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_")
+        timestamp_prefix = datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S_",
+        )
         dest_path = dest_dir / f"{timestamp_prefix}{file_path.name}"
-
         try:
             shutil.move(str(file_path), str(dest_path))
         except Exception:
-            logger.exception("Failed to move %s to processed", file_path.name)
-
-    @staticmethod
-    def _move_to_error(
-        file_path: Path, config: DirectoryWatchConfig
-    ) -> None:
-        """
-        Move a failed file to the error subdirectory.
-
-        Adds a UTC timestamp prefix to the filename to avoid collisions.
-
-        Args:
-            file_path: Path to the failed file.
-            config: Directory watch configuration.
-        """
-        dest_dir = Path(config.watch_dir) / config.error_subdir
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        timestamp_prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_")
-        dest_path = dest_dir / f"{timestamp_prefix}{file_path.name}"
-
-        try:
-            shutil.move(str(file_path), str(dest_path))
-        except Exception:
-            logger.exception("Failed to move %s to errors", file_path.name)
+            logger.exception(
+                "Failed to move %s to %s", file_path.name, label,
+            )

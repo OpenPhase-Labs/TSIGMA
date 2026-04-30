@@ -1,9 +1,10 @@
 """
 Unit tests for directory watch ingestion method plugin.
 
-Tests configuration, registry registration, health checks,
-file pattern matching, and file processing pipeline.
-All filesystem and watchdog interactions are mocked.
+Covers the new contract: Layer-2 server config (paths, patterns,
+decoder default) sourced from process env via ``ListenerService``;
+per-device decoder overrides come from the orchestrator ``devices``
+argument; events persisted through the ``IngestionTarget``.
 """
 
 from pathlib import Path
@@ -13,8 +14,8 @@ import pytest
 
 from tsigma.collection.decoders.base import DecodedEvent
 from tsigma.collection.methods.directory_watch import (
-    DirectoryWatchConfig,
     DirectoryWatchMethod,
+    DirectoryWatchServerConfig,
     _FileEventHandler,
 )
 from tsigma.collection.registry import (
@@ -22,857 +23,582 @@ from tsigma.collection.registry import (
     ExecutionMode,
     IngestionMethodRegistry,
 )
+from tsigma.collection.targets import ControllerTarget
 
-# Module path prefix for patching imports used in directory_watch.py
 _MOD = "tsigma.collection.methods.directory_watch"
 
 
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Registry
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 class TestRegistration:
-    """Tests for registry self-registration."""
-
     def test_registered(self):
-        """IngestionMethodRegistry.get('directory_watch') returns the class."""
-        cls = IngestionMethodRegistry.get("directory_watch")
-        assert cls is DirectoryWatchMethod
+        assert IngestionMethodRegistry.get("directory_watch") is DirectoryWatchMethod
 
     def test_execution_mode(self):
-        """DirectoryWatchMethod has EVENT_DRIVEN execution mode."""
         assert DirectoryWatchMethod.execution_mode is ExecutionMode.EVENT_DRIVEN
 
     def test_is_event_driven_subclass(self):
-        """DirectoryWatchMethod is an EventDrivenIngestionMethod."""
         assert issubclass(DirectoryWatchMethod, EventDrivenIngestionMethod)
 
     def test_name(self):
-        """DirectoryWatchMethod.name is 'directory_watch'."""
         assert DirectoryWatchMethod.name == "directory_watch"
 
 
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Health Check
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 class TestHealthCheck:
-    """Tests for DirectoryWatchMethod.health_check()."""
-
     @pytest.mark.asyncio
     async def test_health_check_not_running(self):
-        """health_check returns False when observer is None (not started)."""
         method = DirectoryWatchMethod()
         assert await method.health_check() is False
 
     @pytest.mark.asyncio
     async def test_health_check_observer_alive(self):
-        """health_check returns True when observer thread is alive."""
         method = DirectoryWatchMethod()
-        mock_observer = MagicMock()
-        mock_observer.is_alive.return_value = True
-        method._observer = mock_observer
+        observer = MagicMock()
+        observer.is_alive.return_value = True
+        method._observers = [observer]
         assert await method.health_check() is True
 
     @pytest.mark.asyncio
     async def test_health_check_observer_dead(self):
-        """health_check returns False when observer thread is not alive."""
         method = DirectoryWatchMethod()
-        mock_observer = MagicMock()
-        mock_observer.is_alive.return_value = False
-        method._observer = mock_observer
+        observer = MagicMock()
+        observer.is_alive.return_value = False
+        method._observers = [observer]
         assert await method.health_check() is False
 
 
-# -----------------------------------------------------------------------
-# DirectoryWatchConfig
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Server config build
+# ---------------------------------------------------------------------------
 
 
-class TestDirectoryWatchConfig:
-    """Tests for the DirectoryWatchConfig dataclass."""
-
-    def test_defaults(self):
-        """Config defaults are populated correctly."""
-        cfg = DirectoryWatchConfig(watch_dir="/tmp/watch")
-        assert cfg.watch_dir == "/tmp/watch"
-        assert cfg.file_patterns == ["*.dat", "*.csv", "*.DAT", "*.CSV"]
-        assert cfg.decoder is None
-        assert cfg.signal_id is None
+class TestBuildServerConfig:
+    def test_minimal_config(self, tmp_path):
+        cfg = DirectoryWatchMethod._build_server_config(
+            {"paths": [str(tmp_path)]},
+        )
+        assert cfg.paths == [str(tmp_path.resolve())]
+        assert cfg.patterns == ["*.dat", "*.csv", "*.DAT", "*.CSV"]
+        assert cfg.decoder == "auto"
         assert cfg.move_after_processing is True
         assert cfg.processed_subdir == "processed"
         assert cfg.error_subdir == "errors"
         assert cfg.recursive is False
 
-    def test_custom_values(self):
-        """Config accepts custom values for all fields."""
-        cfg = DirectoryWatchConfig(
-            watch_dir="/data/incoming",
-            file_patterns=["*.bin"],
-            decoder="asc3",
-            signal_id="SIG-042",
-            move_after_processing=False,
-            processed_subdir="done",
-            error_subdir="failed",
-            recursive=True,
-        )
-        assert cfg.watch_dir == "/data/incoming"
-        assert cfg.file_patterns == ["*.bin"]
+    def test_no_paths_raises(self):
+        with pytest.raises(ValueError, match="requires at least one path"):
+            DirectoryWatchMethod._build_server_config({})
+
+    def test_empty_paths_raises(self):
+        with pytest.raises(ValueError, match="requires at least one path"):
+            DirectoryWatchMethod._build_server_config({"paths": []})
+
+    def test_custom_patterns_and_decoder(self, tmp_path):
+        cfg = DirectoryWatchMethod._build_server_config({
+            "paths": [str(tmp_path)],
+            "patterns": ["*.bin"],
+            "decoder": "asc3",
+            "recursive": True,
+            "move_after_processing": False,
+            "processed_subdir": "done",
+            "error_subdir": "failed",
+        })
+        assert cfg.patterns == ["*.bin"]
         assert cfg.decoder == "asc3"
-        assert cfg.signal_id == "SIG-042"
+        assert cfg.recursive is True
         assert cfg.move_after_processing is False
         assert cfg.processed_subdir == "done"
         assert cfg.error_subdir == "failed"
-        assert cfg.recursive is True
+
+    def test_paths_resolved_to_absolute(self, tmp_path, monkeypatch):
+        # cd to tmp_path so a relative path resolves predictably.
+        monkeypatch.chdir(tmp_path)
+        cfg = DirectoryWatchMethod._build_server_config({"paths": ["."]})
+        assert Path(cfg.paths[0]).is_absolute()
 
 
-# -----------------------------------------------------------------------
-# _build_config
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Filename → device_id resolution
+# ---------------------------------------------------------------------------
 
 
-class TestBuildConfig:
-    """Tests for DirectoryWatchMethod._build_config()."""
-
-    def test_minimal_config(self):
-        """Builds config with only watch_dir specified."""
-        cfg = DirectoryWatchMethod._build_config({"watch_dir": "/tmp/watch"})
-        assert isinstance(cfg, DirectoryWatchConfig)
-        # watch_dir is resolved to absolute
-        assert Path(cfg.watch_dir).is_absolute()
-        assert cfg.file_patterns == ["*.dat", "*.csv", "*.DAT", "*.CSV"]
-
-    def test_missing_watch_dir_raises(self):
-        """Raises ValueError when watch_dir is not provided."""
-        with pytest.raises(ValueError, match="requires 'watch_dir'"):
-            DirectoryWatchMethod._build_config({})
-
-    def test_empty_watch_dir_raises(self):
-        """Raises ValueError when watch_dir is empty string."""
-        with pytest.raises(ValueError, match="requires 'watch_dir'"):
-            DirectoryWatchMethod._build_config({"watch_dir": ""})
-
-    def test_custom_file_patterns(self):
-        """Custom file_patterns are passed through."""
-        cfg = DirectoryWatchMethod._build_config({
-            "watch_dir": "/tmp/watch",
-            "file_patterns": ["*.bin", "*.log"],
-        })
-        assert cfg.file_patterns == ["*.bin", "*.log"]
-
-    def test_explicit_decoder(self):
-        """Explicit decoder name is passed through."""
-        cfg = DirectoryWatchMethod._build_config({
-            "watch_dir": "/tmp/watch",
-            "decoder": "asc3",
-        })
-        assert cfg.decoder == "asc3"
-
-    def test_explicit_signal_id(self):
-        """Explicit signal_id is passed through."""
-        cfg = DirectoryWatchMethod._build_config({
-            "watch_dir": "/tmp/watch",
-            "signal_id": "SIG-001",
-        })
-        assert cfg.signal_id == "SIG-001"
-
-    def test_recursive_flag(self):
-        """Recursive flag is passed through."""
-        cfg = DirectoryWatchMethod._build_config({
-            "watch_dir": "/tmp/watch",
-            "recursive": True,
-        })
-        assert cfg.recursive is True
-
-    def test_move_after_processing_disabled(self):
-        """move_after_processing can be disabled."""
-        cfg = DirectoryWatchMethod._build_config({
-            "watch_dir": "/tmp/watch",
-            "move_after_processing": False,
-        })
-        assert cfg.move_after_processing is False
-
-    def test_subdir_traversal_rejected(self):
-        """Subdirectory paths that escape watch_dir raise ValueError."""
-        with pytest.raises(ValueError, match="escapes watch_dir"):
-            DirectoryWatchMethod._build_config({
-                "watch_dir": "/tmp/watch",
-                "processed_subdir": "../../etc",
-            })
-
-    def test_error_subdir_traversal_rejected(self):
-        """Error subdirectory paths that escape watch_dir raise ValueError."""
-        with pytest.raises(ValueError, match="escapes watch_dir"):
-            DirectoryWatchMethod._build_config({
-                "watch_dir": "/tmp/watch",
-                "error_subdir": "../../../tmp/evil",
-            })
-
-
-# -----------------------------------------------------------------------
-# Signal ID Resolution
-# -----------------------------------------------------------------------
-
-
-class TestResolveSignalId:
-    """Tests for DirectoryWatchMethod._resolve_signal_id()."""
-
-    def test_explicit_signal_id_from_config(self):
-        """Uses signal_id from config when set."""
-        cfg = DirectoryWatchConfig(watch_dir="/tmp", signal_id="SIG-099")
-        result = DirectoryWatchMethod._resolve_signal_id("anything.dat", cfg)
-        assert result == "SIG-099"
-
+class TestResolveDeviceId:
     def test_infer_from_filename_with_underscore(self):
-        """Extracts signal_id before the first underscore in filename."""
-        cfg = DirectoryWatchConfig(watch_dir="/tmp")
-        result = DirectoryWatchMethod._resolve_signal_id(
-            "gdot-0142_20240115_events.dat", cfg
-        )
+        method = DirectoryWatchMethod()
+        result = method._resolve_device_id("gdot-0142_20260415_events.dat")
         assert result == "gdot-0142"
 
     def test_no_underscore_returns_none(self):
-        """Returns None when filename has no underscore and no config signal_id."""
-        cfg = DirectoryWatchConfig(watch_dir="/tmp")
-        result = DirectoryWatchMethod._resolve_signal_id("nounder.dat", cfg)
-        assert result is None
-
-    def test_underscore_at_start(self):
-        """Filename starting with underscore returns empty string prefix."""
-        cfg = DirectoryWatchConfig(watch_dir="/tmp")
-        result = DirectoryWatchMethod._resolve_signal_id("_data.dat", cfg)
-        assert result == ""
+        method = DirectoryWatchMethod()
+        assert method._resolve_device_id("randomname.dat") is None
 
 
-# -----------------------------------------------------------------------
-# File Pattern Matching (_FileEventHandler)
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Pattern matching via _FileEventHandler
+# ---------------------------------------------------------------------------
 
 
 class TestFilePatternMatching:
-    """Tests for _FileEventHandler._matches_patterns()."""
-
-    def _make_handler(self, patterns=None):
-        """Create a _FileEventHandler with given patterns."""
-        cfg = DirectoryWatchConfig(
-            watch_dir="/tmp/watch",
-            file_patterns=patterns or ["*.dat", "*.csv", "*.DAT", "*.CSV"],
-        )
+    def _handler(self, patterns):
+        cfg = DirectoryWatchServerConfig(paths=["/tmp"], patterns=patterns)
         return _FileEventHandler(
-            config=cfg,
-            session_factory=MagicMock(),
-            loop=MagicMock(),
-            method=MagicMock(),
+            "/tmp", cfg, MagicMock(), MagicMock(),
         )
 
     def test_matches_dat(self):
-        """*.dat pattern matches .dat files."""
-        handler = self._make_handler()
-        assert handler._matches_patterns("events_20240101.dat") is True
+        assert self._handler(["*.dat"])._matches_patterns("file.dat") is True
 
     def test_matches_csv(self):
-        """*.csv pattern matches .csv files."""
-        handler = self._make_handler()
-        assert handler._matches_patterns("data.csv") is True
+        assert self._handler(["*.csv"])._matches_patterns("file.csv") is True
 
-    def test_matches_uppercase_dat(self):
-        """*.DAT pattern matches uppercase .DAT files."""
-        handler = self._make_handler()
-        assert handler._matches_patterns("FILE.DAT") is True
+    def test_matches_uppercase(self):
+        assert (
+            self._handler(["*.DAT"])._matches_patterns("FILE.DAT") is True
+        )
 
     def test_rejects_unmatched_extension(self):
-        """Non-matching extensions are rejected."""
-        handler = self._make_handler()
-        assert handler._matches_patterns("readme.txt") is False
+        assert (
+            self._handler(["*.dat"])._matches_patterns("file.txt") is False
+        )
 
     def test_rejects_no_extension(self):
-        """Files without extension are rejected."""
-        handler = self._make_handler()
-        assert handler._matches_patterns("Makefile") is False
+        assert (
+            self._handler(["*.dat"])._matches_patterns("noext") is False
+        )
 
     def test_custom_patterns(self):
-        """Custom patterns work correctly."""
-        handler = self._make_handler(["*.bin", "report_*"])
-        assert handler._matches_patterns("output.bin") is True
-        assert handler._matches_patterns("report_daily") is True
-        assert handler._matches_patterns("data.csv") is False
+        assert (
+            self._handler(["controller_*.bin"])
+            ._matches_patterns("controller_42.bin")
+            is True
+        )
 
 
-# -----------------------------------------------------------------------
-# Event Handler Scheduling
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# _FileEventHandler scheduling
+# ---------------------------------------------------------------------------
 
 
 class TestFileEventHandlerScheduling:
-    """Tests for _FileEventHandler event dispatching."""
-
-    def _make_handler(self, patterns=None):
-        cfg = DirectoryWatchConfig(
-            watch_dir="/tmp/watch",
-            file_patterns=patterns or ["*.dat"],
+    def _setup(self):
+        cfg = DirectoryWatchServerConfig(
+            paths=["/tmp"], patterns=["*.dat"],
         )
-        mock_loop = MagicMock()
-        mock_method = MagicMock()
-        handler = _FileEventHandler(
-            config=cfg,
-            session_factory=MagicMock(),
-            loop=mock_loop,
-            method=mock_method,
-        )
-        return handler, mock_loop, mock_method
+        method = MagicMock()
+        loop = MagicMock()
+        return _FileEventHandler("/tmp", cfg, loop, method)
 
     @patch(f"{_MOD}.asyncio.run_coroutine_threadsafe")
     def test_on_created_schedules_matching_file(self, mock_rcts):
-        """on_created schedules processing for a matching file."""
-        handler, mock_loop, mock_method = self._make_handler()
+        h = self._setup()
         event = MagicMock()
         event.is_directory = False
-        event.src_path = "/tmp/watch/signal_001.dat"
-        handler.on_created(event)
+        event.src_path = "/tmp/x.dat"
+        h.on_created(event)
         mock_rcts.assert_called_once()
 
     @patch(f"{_MOD}.asyncio.run_coroutine_threadsafe")
     def test_on_created_skips_directory(self, mock_rcts):
-        """on_created ignores directory events."""
-        handler, _, _ = self._make_handler()
+        h = self._setup()
         event = MagicMock()
         event.is_directory = True
-        handler.on_created(event)
+        h.on_created(event)
         mock_rcts.assert_not_called()
 
     @patch(f"{_MOD}.asyncio.run_coroutine_threadsafe")
     def test_on_created_skips_non_matching(self, mock_rcts):
-        """on_created ignores files that don't match patterns."""
-        handler, _, _ = self._make_handler()
+        h = self._setup()
         event = MagicMock()
         event.is_directory = False
-        event.src_path = "/tmp/watch/readme.txt"
-        handler.on_created(event)
+        event.src_path = "/tmp/note.txt"
+        h.on_created(event)
         mock_rcts.assert_not_called()
 
     @patch(f"{_MOD}.asyncio.run_coroutine_threadsafe")
     def test_on_moved_schedules_matching_file(self, mock_rcts):
-        """on_moved schedules processing using dest_path."""
-        handler, _, _ = self._make_handler()
+        h = self._setup()
         event = MagicMock()
         event.is_directory = False
-        event.dest_path = "/tmp/watch/signal_001.dat"
-        handler.on_moved(event)
+        event.dest_path = "/tmp/y.dat"
+        h.on_moved(event)
         mock_rcts.assert_called_once()
 
-    @patch(f"{_MOD}.asyncio.run_coroutine_threadsafe")
-    def test_on_moved_skips_directory(self, mock_rcts):
-        """on_moved ignores directory events."""
-        handler, _, _ = self._make_handler()
-        event = MagicMock()
-        event.is_directory = True
-        handler.on_moved(event)
-        mock_rcts.assert_not_called()
 
-
-# -----------------------------------------------------------------------
-# File Processing Pipeline
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# _process_file end-to-end
+# ---------------------------------------------------------------------------
 
 
 class TestProcessFile:
-    """Tests for DirectoryWatchMethod._process_file()."""
-
-    @pytest.mark.asyncio
-    @patch(f"{_MOD}.shutil.move")
-    @patch(f"{_MOD}.persist_events", new_callable=AsyncMock)
-    @patch(f"{_MOD}.DecoderRegistry")
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_successful_processing(
-        self, mock_sleep, mock_decoder_reg, mock_persist, mock_move
-    ):
-        """File is decoded, events persisted, and file moved to processed."""
-        from datetime import datetime, timezone
-
-        fake_events = [
-            DecodedEvent(
-                timestamp=datetime(2024, 1, 15, tzinfo=timezone.utc),
-                event_code=1,
-                event_param=2,
-            )
-        ]
-
-        mock_decoder_cls = MagicMock()
-        mock_decoder_instance = MagicMock()
-        mock_decoder_instance.decode_bytes.return_value = fake_events
-        mock_decoder_cls.return_value = mock_decoder_instance
-        mock_decoder_reg.get.return_value = mock_decoder_cls
-
-        method = DirectoryWatchMethod()
-        config = DirectoryWatchConfig(
-            watch_dir="/tmp/watch",
-            signal_id="SIG-001",
-        )
-        session_factory = AsyncMock()
-
-        file_path = "/tmp/watch/SIG-001_20240115.dat"
-
-        with patch.object(Path, "exists", return_value=True), \
-             patch.object(Path, "read_bytes", return_value=b"fake data"), \
-             patch.object(Path, "name", new_callable=lambda: property(lambda s: "SIG-001_20240115.dat")), \
-             patch.object(Path, "mkdir"):
-            await method._process_file(file_path, config, session_factory)
-
-        # Decoder was called
-        mock_decoder_instance.decode_bytes.assert_called_once_with(b"fake data")
-        # Events were persisted
-        mock_persist.assert_awaited_once_with(fake_events, "SIG-001", session_factory)
-
     @pytest.mark.asyncio
     @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_file_not_exists_skipped(self, mock_sleep):
-        """File that no longer exists is skipped without error."""
+    async def test_successful_processing(self, mock_sleep, tmp_path):
         method = DirectoryWatchMethod()
-        config = DirectoryWatchConfig(watch_dir="/tmp/watch", signal_id="SIG-001")
-        session_factory = AsyncMock()
-
-        with patch.object(Path, "exists", return_value=False):
-            # Should not raise
-            await method._process_file(
-                "/tmp/watch/gone.dat", config, session_factory
-            )
-
-    @pytest.mark.asyncio
-    @patch(f"{_MOD}.shutil.move")
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_no_signal_id_moves_to_error(self, mock_sleep, mock_move):
-        """File with unresolvable signal_id is moved to error subdir."""
-        method = DirectoryWatchMethod()
-        config = DirectoryWatchConfig(watch_dir="/tmp/watch")
-        session_factory = AsyncMock()
-
-        # Filename with no underscore -> signal_id is None
-        file_path = "/tmp/watch/nounder.dat"
-
-        with patch.object(Path, "exists", return_value=True), \
-             patch.object(Path, "mkdir"):
-            await method._process_file(file_path, config, session_factory)
-
-        # File should be moved to error subdir
-        mock_move.assert_called_once()
-        call_args = mock_move.call_args
-        assert "errors" in call_args[0][1]
-
-    @pytest.mark.asyncio
-    @patch(f"{_MOD}.shutil.move")
-    @patch(f"{_MOD}.persist_events", new_callable=AsyncMock)
-    @patch(f"{_MOD}.DecoderRegistry")
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_decode_error_moves_to_error(
-        self, mock_sleep, mock_decoder_reg, mock_persist, mock_move
-    ):
-        """File that fails to decode is moved to error subdir."""
-        mock_decoder_cls = MagicMock()
-        mock_decoder_instance = MagicMock()
-        mock_decoder_instance.decode_bytes.side_effect = ValueError("bad data")
-        mock_decoder_cls.return_value = mock_decoder_instance
-        mock_decoder_reg.get.return_value = mock_decoder_cls
-
-        method = DirectoryWatchMethod()
-        config = DirectoryWatchConfig(
-            watch_dir="/tmp/watch",
-            signal_id="SIG-001",
-        )
-        session_factory = AsyncMock()
-
-        file_path = "/tmp/watch/SIG-001_bad.dat"
-
-        with patch.object(Path, "exists", return_value=True), \
-             patch.object(Path, "read_bytes", return_value=b"bad data"), \
-             patch.object(Path, "mkdir"):
-            await method._process_file(file_path, config, session_factory)
-
-        # persist_events should NOT have been called
-        mock_persist.assert_not_awaited()
-        # File moved to errors
-        mock_move.assert_called_once()
-        assert "errors" in mock_move.call_args[0][1]
-
-    @pytest.mark.asyncio
-    @patch(f"{_MOD}.shutil.move")
-    @patch(f"{_MOD}.persist_events", new_callable=AsyncMock)
-    @patch(f"{_MOD}.DecoderRegistry")
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_persist_error_moves_to_error(
-        self, mock_sleep, mock_decoder_reg, mock_persist, mock_move
-    ):
-        """File whose events fail to persist is moved to error subdir."""
-        mock_decoder_cls = MagicMock()
-        mock_decoder_instance = MagicMock()
-        mock_decoder_instance.decode_bytes.return_value = [
-            DecodedEvent(
-                timestamp=MagicMock(),
-                event_code=1,
-                event_param=0,
-            )
-        ]
-        mock_decoder_cls.return_value = mock_decoder_instance
-        mock_decoder_reg.get.return_value = mock_decoder_cls
-        mock_persist.side_effect = RuntimeError("db down")
-
-        method = DirectoryWatchMethod()
-        config = DirectoryWatchConfig(
-            watch_dir="/tmp/watch",
-            signal_id="SIG-001",
-        )
-        session_factory = AsyncMock()
-
-        file_path = "/tmp/watch/SIG-001_data.dat"
-
-        with patch.object(Path, "exists", return_value=True), \
-             patch.object(Path, "read_bytes", return_value=b"data"), \
-             patch.object(Path, "mkdir"):
-            await method._process_file(file_path, config, session_factory)
-
-        # File moved to errors
-        mock_move.assert_called_once()
-        assert "errors" in mock_move.call_args[0][1]
-
-    @pytest.mark.asyncio
-    @patch(f"{_MOD}.shutil.move")
-    @patch(f"{_MOD}.persist_events", new_callable=AsyncMock)
-    @patch(f"{_MOD}.DecoderRegistry")
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_move_disabled(
-        self, mock_sleep, mock_decoder_reg, mock_persist, mock_move
-    ):
-        """When move_after_processing is False, file is not moved."""
-        mock_decoder_cls = MagicMock()
-        mock_decoder_instance = MagicMock()
-        mock_decoder_instance.decode_bytes.return_value = []
-        mock_decoder_cls.return_value = mock_decoder_instance
-        mock_decoder_reg.get.return_value = mock_decoder_cls
-
-        method = DirectoryWatchMethod()
-        config = DirectoryWatchConfig(
-            watch_dir="/tmp/watch",
-            signal_id="SIG-001",
+        method._cfg = DirectoryWatchServerConfig(
+            paths=[str(tmp_path)], decoder="asc3",
             move_after_processing=False,
         )
-        session_factory = AsyncMock()
+        method._target = ControllerTarget()
+        method._target.persist = AsyncMock()
+        method._session_factory = AsyncMock()
+        method._device_overrides = {}
 
-        file_path = "/tmp/watch/SIG-001_data.dat"
+        # Real file the method can read.
+        f = tmp_path / "SIG-001_20260415_events.dat"
+        f.write_bytes(b"\x01\x02\x03")
 
-        with patch.object(Path, "exists", return_value=True), \
-             patch.object(Path, "read_bytes", return_value=b"data"), \
-             patch.object(Path, "mkdir"):
-            await method._process_file(file_path, config, session_factory)
+        decoder_cls = MagicMock()
+        decoder_inst = MagicMock()
+        decoder_inst.decode_bytes.return_value = [
+            DecodedEvent(timestamp=None, event_code=82, event_param=1),
+        ]
+        decoder_cls.return_value = decoder_inst
+        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls):
+            await method._process_file(str(f), str(tmp_path))
 
-        mock_move.assert_not_called()
+        method._target.persist.assert_awaited_once()
+        # device_id resolved from filename prefix
+        assert method._target.persist.call_args[0][1] == "SIG-001"
+
+    @pytest.mark.asyncio
+    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
+    async def test_file_not_exists_skipped(self, mock_sleep, tmp_path):
+        method = DirectoryWatchMethod()
+        method._cfg = DirectoryWatchServerConfig(paths=[str(tmp_path)])
+        method._target = ControllerTarget()
+        method._target.persist = AsyncMock()
+        method._session_factory = AsyncMock()
+        method._device_overrides = {}
+
+        await method._process_file(
+            str(tmp_path / "ghost.dat"), str(tmp_path),
+        )
+        method._target.persist.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
+    async def test_no_device_id_moves_to_error(self, mock_sleep, tmp_path):
+        method = DirectoryWatchMethod()
+        method._cfg = DirectoryWatchServerConfig(paths=[str(tmp_path)])
+        method._target = ControllerTarget()
+        method._target.persist = AsyncMock()
+        method._session_factory = AsyncMock()
+        method._device_overrides = {}
+
+        # No underscore in filename → no resolved device_id.
+        f = tmp_path / "noprefix.dat"
+        f.write_bytes(b"\x01")
+
+        with patch.object(method, "_move_to_error") as mock_move:
+            await method._process_file(str(f), str(tmp_path))
+        mock_move.assert_called_once()
+        method._target.persist.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
+    async def test_decode_error_moves_to_error(self, mock_sleep, tmp_path):
+        method = DirectoryWatchMethod()
+        method._cfg = DirectoryWatchServerConfig(paths=[str(tmp_path)])
+        method._target = ControllerTarget()
+        method._target.persist = AsyncMock()
+        method._session_factory = AsyncMock()
+        method._device_overrides = {}
+
+        f = tmp_path / "SIG-001_x.dat"
+        f.write_bytes(b"\xff")
+
+        decoder_cls = MagicMock()
+        decoder_inst = MagicMock()
+        decoder_inst.decode_bytes.side_effect = ValueError("bad bytes")
+        decoder_cls.return_value = decoder_inst
+
+        with (
+            patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls),
+            patch.object(method, "_move_to_error") as mock_move,
+        ):
+            await method._process_file(str(f), str(tmp_path))
+
+        mock_move.assert_called_once()
+        method._target.persist.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
+    async def test_persist_error_moves_to_error(self, mock_sleep, tmp_path):
+        method = DirectoryWatchMethod()
+        method._cfg = DirectoryWatchServerConfig(paths=[str(tmp_path)])
+        method._target = ControllerTarget()
+        method._target.persist = AsyncMock(side_effect=RuntimeError("db down"))
+        method._session_factory = AsyncMock()
+        method._device_overrides = {}
+
+        f = tmp_path / "SIG-001_x.dat"
+        f.write_bytes(b"\x01")
+
+        decoder_cls = MagicMock()
+        decoder_inst = MagicMock()
+        decoder_inst.decode_bytes.return_value = [
+            DecodedEvent(timestamp=None, event_code=82, event_param=1),
+        ]
+        decoder_cls.return_value = decoder_inst
+
+        with (
+            patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls),
+            patch.object(method, "_move_to_error") as mock_move,
+        ):
+            await method._process_file(str(f), str(tmp_path))
+
+        mock_move.assert_called_once()
 
 
-# -----------------------------------------------------------------------
-# Read File With Retry
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# _read_file_with_retry
+# ---------------------------------------------------------------------------
 
 
 class TestReadFileWithRetry:
-    """Tests for DirectoryWatchMethod._read_file_with_retry()."""
+    @pytest.mark.asyncio
+    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
+    async def test_reads_successfully_first_attempt(self, mock_sleep, tmp_path):
+        f = tmp_path / "file.dat"
+        f.write_bytes(b"\x01\x02")
+        result = await DirectoryWatchMethod._read_file_with_retry(f)
+        assert result == b"\x01\x02"
 
     @pytest.mark.asyncio
     @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_reads_successfully_first_attempt(self, mock_sleep):
-        """Returns file bytes on first successful read."""
-        mock_path = MagicMock(spec=Path)
-        mock_path.read_bytes.return_value = b"file content"
-        result = await DirectoryWatchMethod._read_file_with_retry(mock_path)
-        assert result == b"file content"
-        mock_sleep.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_retries_on_permission_error(self, mock_sleep):
-        """Retries once on PermissionError, then succeeds."""
-        mock_path = MagicMock(spec=Path)
-        mock_path.name = "locked.dat"
-        mock_path.read_bytes.side_effect = [
-            PermissionError("locked"),
-            b"content after retry",
-        ]
-        result = await DirectoryWatchMethod._read_file_with_retry(mock_path)
-        assert result == b"content after retry"
-        mock_sleep.assert_awaited_once()
+    async def test_retries_then_succeeds(self, mock_sleep):
+        fp = MagicMock(spec=Path)
+        fp.read_bytes = MagicMock(side_effect=[OSError("locked"), b"ok"])
+        fp.name = "f.dat"
+        result = await DirectoryWatchMethod._read_file_with_retry(fp)
+        assert result == b"ok"
+        assert fp.read_bytes.call_count == 2
 
     @pytest.mark.asyncio
     @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
     async def test_returns_none_after_both_attempts_fail(self, mock_sleep):
-        """Returns None when both read attempts fail."""
-        mock_path = MagicMock(spec=Path)
-        mock_path.name = "locked.dat"
-        mock_path.read_bytes.side_effect = PermissionError("locked")
-        result = await DirectoryWatchMethod._read_file_with_retry(mock_path)
+        fp = MagicMock(spec=Path)
+        fp.read_bytes = MagicMock(side_effect=OSError("locked"))
+        fp.name = "f.dat"
+        result = await DirectoryWatchMethod._read_file_with_retry(fp)
         assert result is None
+        assert fp.read_bytes.call_count == 2
 
 
-# -----------------------------------------------------------------------
-# Decoder Resolution
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Decoder resolution
+# ---------------------------------------------------------------------------
 
 
 class TestResolveDecoder:
-    """Tests for DirectoryWatchMethod._resolve_decoder()."""
+    def _method(self, decoder_default="auto", per_device=None):
+        m = DirectoryWatchMethod()
+        m._cfg = DirectoryWatchServerConfig(
+            paths=["/tmp"], decoder=decoder_default,
+        )
+        m._device_overrides = per_device or {}
+        return m
 
-    @patch(f"{_MOD}.DecoderRegistry")
-    def test_explicit_decoder_from_config(self, mock_registry):
-        """Uses explicit decoder name from config when set."""
-        mock_cls = MagicMock()
-        mock_registry.get.return_value = mock_cls
-        cfg = DirectoryWatchConfig(watch_dir="/tmp", decoder="asc3")
+    def test_per_device_decoder_overrides_default(self):
+        method = self._method(per_device={"SIG-1": {"decoder": "asc3"}})
+        decoder_cls = MagicMock()
+        decoder_cls.return_value = "instance"
+        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls) as g:
+            result = method._resolve_decoder("file.dat", "SIG-1")
+        g.assert_called_once_with("asc3")
+        assert result == "instance"
 
-        result = DirectoryWatchMethod._resolve_decoder("file.dat", cfg)
-        mock_registry.get.assert_called_once_with("asc3")
-        mock_cls.assert_called_once()
-        assert result == mock_cls()
+    def test_server_default_used_when_no_override(self):
+        method = self._method(decoder_default="csv")
+        decoder_cls = MagicMock()
+        decoder_cls.return_value = "instance"
+        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls) as g:
+            result = method._resolve_decoder("file.dat", "SIG-1")
+        g.assert_called_once_with("csv")
+        assert result == "instance"
 
-    @patch(f"{_MOD}.DecoderRegistry")
-    def test_dat_extension_maps_to_asc3(self, mock_registry):
-        """'.dat' extension maps to 'asc3' decoder via extension map."""
-        mock_cls = MagicMock()
-        mock_registry.get.return_value = mock_cls
-        cfg = DirectoryWatchConfig(watch_dir="/tmp")
+    def test_dat_extension_maps_to_asc3_when_default_is_auto(self):
+        method = self._method(decoder_default="auto")
+        decoder_cls = MagicMock()
+        decoder_cls.return_value = "instance"
+        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls) as g:
+            method._resolve_decoder("file.dat", "SIG-1")
+        g.assert_called_once_with("asc3")
 
-        DirectoryWatchMethod._resolve_decoder("events.dat", cfg)
-        mock_registry.get.assert_called_once_with("asc3")
+    def test_csv_extension_maps_to_csv_when_default_is_auto(self):
+        method = self._method(decoder_default="auto")
+        decoder_cls = MagicMock()
+        decoder_cls.return_value = "instance"
+        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls) as g:
+            method._resolve_decoder("file.csv", "SIG-1")
+        g.assert_called_once_with("csv")
 
-    @patch(f"{_MOD}.DecoderRegistry")
-    def test_csv_extension_maps_to_csv(self, mock_registry):
-        """'.csv' extension maps to 'csv' decoder via extension map."""
-        mock_cls = MagicMock()
-        mock_registry.get.return_value = mock_cls
-        cfg = DirectoryWatchConfig(watch_dir="/tmp")
+    def test_unknown_extension_falls_back_to_registry(self):
+        method = self._method(decoder_default="auto")
+        decoder_cls = MagicMock()
+        decoder_cls.return_value = "instance"
+        with patch(
+            f"{_MOD}.DecoderRegistry.get_for_extension",
+            return_value=[decoder_cls],
+        ) as g:
+            method._resolve_decoder("file.xyz", "SIG-1")
+        g.assert_called_once_with(".xyz")
 
-        DirectoryWatchMethod._resolve_decoder("data.csv", cfg)
-        mock_registry.get.assert_called_once_with("csv")
-
-    @patch(f"{_MOD}.DecoderRegistry")
-    def test_unknown_extension_falls_back_to_registry(self, mock_registry):
-        """Unknown extensions fall back to DecoderRegistry.get_for_extension."""
-        mock_decoder = MagicMock()
-        mock_registry.get_for_extension.return_value = [mock_decoder]
-        cfg = DirectoryWatchConfig(watch_dir="/tmp")
-
-        # .bin is not in the extension map
-        DirectoryWatchMethod._resolve_decoder("data.bin", cfg)
-        mock_registry.get_for_extension.assert_called_once_with(".bin")
-        mock_decoder.assert_called_once()
-
-    @patch(f"{_MOD}.DecoderRegistry")
-    def test_no_decoder_found_raises(self, mock_registry):
-        """Raises ValueError when no decoder can be found."""
-        mock_registry.get_for_extension.return_value = []
-        cfg = DirectoryWatchConfig(watch_dir="/tmp")
-
-        with pytest.raises(ValueError, match="No decoder found"):
-            DirectoryWatchMethod._resolve_decoder("file.xyz", cfg)
+    def test_no_decoder_found_raises(self):
+        method = self._method(decoder_default="auto")
+        with patch(
+            f"{_MOD}.DecoderRegistry.get_for_extension", return_value=[],
+        ):
+            with pytest.raises(ValueError, match="No decoder"):
+                method._resolve_decoder("file.unknown", "SIG-1")
 
 
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Stop
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 class TestStop:
-    """Tests for DirectoryWatchMethod.stop()."""
-
     @pytest.mark.asyncio
     async def test_stop_when_not_started(self):
-        """stop() is a no-op when observer is None."""
         method = DirectoryWatchMethod()
-        await method.stop()  # Should not raise
+        # Should not raise.
+        await method.stop()
 
     @pytest.mark.asyncio
-    async def test_stop_stops_observer(self):
-        """stop() stops and joins the observer thread."""
+    async def test_stop_stops_all_observers(self):
         method = DirectoryWatchMethod()
-        mock_observer = MagicMock()
-        method._observer = mock_observer
+        observer1 = MagicMock()
+        observer2 = MagicMock()
+        method._observers = [observer1, observer2]
+        method._cfg = DirectoryWatchServerConfig(paths=["/tmp"])
 
         await method.stop()
 
-        mock_observer.stop.assert_called_once()
-        mock_observer.join.assert_called_once_with(timeout=5.0)
-        assert method._observer is None
+        observer1.stop.assert_called_once()
+        observer1.join.assert_called_once_with(timeout=5.0)
+        observer2.stop.assert_called_once()
+        assert method._observers == []
 
 
-# -----------------------------------------------------------------------
-# Move-after-ingest logic (lines 223-251, 286-312, 354-356, 501-502,
-# 525-526)
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Start lifecycle
+# ---------------------------------------------------------------------------
 
 
 class TestStartup:
-    """Tests for DirectoryWatchMethod.start() and _startup_scan()."""
-
     @pytest.mark.asyncio
-    @patch(f"{_MOD}.Observer")
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_start_with_existing_files(self, mock_sleep, MockObserver):
-        """start() performs startup scan of existing files (lines 286-312)."""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create some files
-            for name in ["SIG-001_data1.dat", "SIG-001_data2.dat"]:
-                (Path(tmpdir) / name).write_bytes(b"test data")
-
-            method = DirectoryWatchMethod()
-            mock_observer = MagicMock()
-            MockObserver.return_value = mock_observer
-
-            config = {"watch_dir": tmpdir, "signal_id": "SIG-001"}
-
-            with patch.object(method, "_process_file", new_callable=AsyncMock) as mock_process:
-                await method.start(config, AsyncMock())
-
-            # Both files should be processed
-            assert mock_process.await_count == 2
-
-            # Clean up observer
-            await method.stop()
-
-    @pytest.mark.asyncio
-    @patch(f"{_MOD}.Observer")
-    async def test_start_nonexistent_dir_raises(self, MockObserver):
-        """start() raises FileNotFoundError for missing directory."""
+    async def test_start_with_existing_files_triggers_scan(self, tmp_path):
         method = DirectoryWatchMethod()
-        config = {"watch_dir": "/nonexistent/path/that/does/not/exist"}
+        f = tmp_path / "SIG-001_x.dat"
+        f.write_bytes(b"\x01")
 
-        with pytest.raises(FileNotFoundError, match="does not exist"):
-            await method.start(config, AsyncMock())
+        with (
+            patch(f"{_MOD}.Observer") as MockObserver,
+            patch.object(method, "_process_file", new_callable=AsyncMock) as proc,
+        ):
+            MockObserver.return_value = MagicMock()
+            await method.start(
+                {"paths": [str(tmp_path)]},
+                AsyncMock(),
+                target=ControllerTarget(),
+                devices=[],
+            )
 
-    @pytest.mark.asyncio
-    @patch(f"{_MOD}.Observer")
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_startup_scan_recursive(self, mock_sleep, MockObserver):
-        """_startup_scan processes files in subdirectories when recursive=True (lines 290-291)."""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            subdir = Path(tmpdir) / "sub"
-            subdir.mkdir()
-            (subdir / "SIG-001_nested.dat").write_bytes(b"data")
-
-            method = DirectoryWatchMethod()
-            mock_observer = MagicMock()
-            MockObserver.return_value = mock_observer
-
-            config = {"watch_dir": tmpdir, "signal_id": "SIG-001", "recursive": True}
-
-            with patch.object(method, "_process_file", new_callable=AsyncMock) as mock_process:
-                await method.start(config, AsyncMock())
-
-            assert mock_process.await_count >= 1
-
-            await method.stop()
-
-
-class TestMoveToProcessed:
-    """Tests for _move_to_processed (lines 481-502)."""
-
-    @patch(f"{_MOD}.shutil.move")
-    def test_move_to_processed_creates_dir(self, mock_move):
-        """_move_to_processed creates the processed subdirectory."""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = Path(tmpdir) / "SIG-001_data.dat"
-            file_path.write_bytes(b"data")
-
-            config = DirectoryWatchConfig(watch_dir=tmpdir)
-
-            DirectoryWatchMethod._move_to_processed(file_path, config)
-
-            # Verify processed dir was created
-            processed_dir = Path(tmpdir) / "processed"
-            assert processed_dir.exists()
-
-            # Verify shutil.move was called
-            mock_move.assert_called_once()
-            dest = mock_move.call_args[0][1]
-            assert "processed" in dest
-
-    @patch(f"{_MOD}.shutil.move", side_effect=OSError("permission denied"))
-    def test_move_to_processed_handles_error(self, mock_move):
-        """_move_to_processed logs error when move fails (lines 501-502)."""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = Path(tmpdir) / "SIG-001_data.dat"
-            file_path.write_bytes(b"data")
-
-            config = DirectoryWatchConfig(watch_dir=tmpdir)
-
-            # Should not raise
-            DirectoryWatchMethod._move_to_processed(file_path, config)
-
-
-class TestMoveToError:
-    """Tests for _move_to_error (lines 505-526)."""
-
-    @patch(f"{_MOD}.shutil.move")
-    def test_move_to_error_creates_dir(self, mock_move):
-        """_move_to_error creates the error subdirectory."""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = Path(tmpdir) / "bad_file.dat"
-            file_path.write_bytes(b"data")
-
-            config = DirectoryWatchConfig(watch_dir=tmpdir)
-
-            DirectoryWatchMethod._move_to_error(file_path, config)
-
-            error_dir = Path(tmpdir) / "errors"
-            assert error_dir.exists()
-
-            mock_move.assert_called_once()
-            dest = mock_move.call_args[0][1]
-            assert "errors" in dest
-
-    @patch(f"{_MOD}.shutil.move", side_effect=OSError("disk full"))
-    def test_move_to_error_handles_error(self, mock_move):
-        """_move_to_error logs error when move fails (lines 525-526)."""
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = Path(tmpdir) / "bad_file.dat"
-            file_path.write_bytes(b"data")
-
-            config = DirectoryWatchConfig(watch_dir=tmpdir)
-
-            # Should not raise
-            DirectoryWatchMethod._move_to_error(file_path, config)
-
-
-class TestProcessFileReadRetryFailure:
-    """Tests for _process_file when file read fails (lines 354-356)."""
+        # The startup scan should have processed the existing file.
+        proc.assert_awaited_once()
+        # First positional arg is the file path.
+        assert proc.call_args[0][0].endswith("SIG-001_x.dat")
+        await method.stop()
 
     @pytest.mark.asyncio
-    @patch(f"{_MOD}.shutil.move")
-    @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_file_read_failure_moves_to_error(self, mock_sleep, mock_move):
-        """File that can't be read after retry is moved to error subdir (lines 354-356)."""
+    async def test_start_skips_nonexistent_path(self, caplog, tmp_path):
+        import logging
         method = DirectoryWatchMethod()
-        config = DirectoryWatchConfig(
-            watch_dir="/tmp/watch",
-            signal_id="SIG-001",
+        ghost = tmp_path / "ghost"  # doesn't exist
+        with caplog.at_level(logging.ERROR, logger=_MOD):
+            await method.start(
+                {"paths": [str(ghost)]},
+                AsyncMock(),
+                target=ControllerTarget(),
+                devices=[],
+            )
+        assert "does not exist" in caplog.text.lower()
+        # No observer started for that path.
+        assert method._observers == []
+
+    @pytest.mark.asyncio
+    async def test_start_recursive_scan(self, tmp_path):
+        method = DirectoryWatchMethod()
+        sub = tmp_path / "deep"
+        sub.mkdir()
+        f = sub / "SIG-123_x.dat"
+        f.write_bytes(b"\x01")
+
+        with (
+            patch(f"{_MOD}.Observer") as MockObserver,
+            patch.object(method, "_process_file", new_callable=AsyncMock) as proc,
+        ):
+            MockObserver.return_value = MagicMock()
+            await method.start(
+                {"paths": [str(tmp_path)], "recursive": True},
+                AsyncMock(),
+                target=ControllerTarget(),
+                devices=[],
+            )
+
+        proc.assert_awaited_once()
+        assert proc.call_args[0][0].endswith("SIG-123_x.dat")
+        await method.stop()
+
+
+# ---------------------------------------------------------------------------
+# Move-to-processed / Move-to-error
+# ---------------------------------------------------------------------------
+
+
+class TestMoveOps:
+    @patch(f"{_MOD}.shutil.move")
+    def test_move_to_processed_creates_dir(self, mock_move, tmp_path):
+        method = DirectoryWatchMethod()
+        method._cfg = DirectoryWatchServerConfig(
+            paths=[str(tmp_path)], processed_subdir="processed",
         )
-        session_factory = AsyncMock()
-
-        file_path = "/tmp/watch/SIG-001_locked.dat"
-
-        with patch.object(Path, "exists", return_value=True), \
-             patch.object(Path, "read_bytes", side_effect=PermissionError("locked")), \
-             patch.object(Path, "mkdir"):
-            await method._process_file(file_path, config, session_factory)
-
-        # File should be moved to errors
+        f = tmp_path / "x.dat"
+        f.write_bytes(b"")
+        method._move_to_processed(f, str(tmp_path))
+        assert (tmp_path / "processed").is_dir()
         mock_move.assert_called_once()
-        assert "errors" in mock_move.call_args[0][1]
+
+    @patch(f"{_MOD}.shutil.move", side_effect=OSError("move failed"))
+    def test_move_to_processed_handles_error(self, mock_move, tmp_path, caplog):
+        import logging
+        method = DirectoryWatchMethod()
+        method._cfg = DirectoryWatchServerConfig(
+            paths=[str(tmp_path)], processed_subdir="processed",
+        )
+        f = tmp_path / "x.dat"
+        f.write_bytes(b"")
+        with caplog.at_level(logging.ERROR, logger=_MOD):
+            method._move_to_processed(f, str(tmp_path))
+        assert "failed to move" in caplog.text.lower()
+
+    @patch(f"{_MOD}.shutil.move")
+    def test_move_to_error_creates_dir(self, mock_move, tmp_path):
+        method = DirectoryWatchMethod()
+        method._cfg = DirectoryWatchServerConfig(
+            paths=[str(tmp_path)], error_subdir="errors",
+        )
+        f = tmp_path / "x.dat"
+        f.write_bytes(b"")
+        method._move_to_error(f, str(tmp_path))
+        assert (tmp_path / "errors").is_dir()
+        mock_move.assert_called_once()
