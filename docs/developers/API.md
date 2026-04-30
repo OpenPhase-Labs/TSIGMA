@@ -97,7 +97,47 @@ DELETE /api/v1/auth/api-keys/{key_id}                # revoke key
 # System
 GET    /health                                       # liveness probe
 GET    /ready                                        # readiness probe
+
+# Raw IHR event log (mirrors GraphQL `events` query)
+GET    /api/v1/signals/{signal_id}/events            # ?start=&end=&event_codes=&event_param=&limit=
 ```
+
+### Content Negotiation
+
+All `GET` endpoints under `/api/v1/` (except `/export` routes) support
+three response formats: **JSON** (default), **CSV**, and **XML**.
+
+Format is selected by, in priority order:
+
+1. `?format=json|csv|xml` query parameter (case-insensitive).
+2. `Accept` header — `application/json`, `text/csv`,
+   `application/xml`, or `text/xml`.
+3. Default: JSON.
+
+The query parameter wins on conflict so ad-hoc tooling (PowerShell,
+spreadsheet imports, ETL clients) can request CSV without setting
+headers.
+
+```bash
+curl /api/v1/signals/SIG-001/events?start=2026-04-29T00:00Z&end=2026-04-29T23:59Z
+curl /api/v1/signals/SIG-001/events?start=...&end=...&format=csv
+curl /api/v1/signals/SIG-001/events?start=...&end=...&format=xml
+curl -H "Accept: text/csv" /api/v1/signals/SIG-001/events?start=...&end=...
+```
+
+CSV serialization requires the response to tabularize cleanly: a JSON
+object or array of objects with **only scalar values**.  Endpoints
+whose payload contains nested objects or arrays (e.g. signal detail
+with embedded `metadata` JSONB) return `406 Not Acceptable` for CSV
+requests; the same data is fully serializable as XML.
+
+Excluded from negotiation:
+
+- The GraphQL endpoint (`/api/graphql`)
+- Liveness / readiness probes (`/health`, `/ready`)
+- Report `/export` endpoints (which already handle their own format)
+- Error responses (4xx / 5xx remain JSON regardless of negotiation)
+- Non-`GET` methods (POST/PUT/PATCH/DELETE always use JSON)
 
 ## GraphQL API
 
