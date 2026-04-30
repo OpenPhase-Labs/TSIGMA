@@ -64,7 +64,7 @@ curl http://localhost:8080/ready
 | Query performance | Hours | Hours | Seconds (on hot data) |
 | Event storage | Individual indexed rows | Compressed binary blobs | Individual indexed rows |
 | Event code queries | Direct SQL WHERE clause | Decompress → filter in app | Direct SQL WHERE clause |
-| Storage | 4+ TB / 3 weeks (unpartitioned) | Unknown (compressed; ratio not characterized) | ~2.5 TB / 3 weeks (partitioned) |
+| Storage (10,000 Signals) | ~4+ TB / 1 month(unpartitioned) | Unknown (compressed; ratio not characterized) | ~2.5 TB / 1 month (partitioned with PostgreSQL) |
 | Architecture | 77 projects, 172K lines C# | 26 projects, 156K lines C# | Modular Python |
 | Deployment | Manual / IIS | Docker (6+ containers) | Docker (1-2 containers) |
 | Maintainability | Complex codebase | Microservices complexity | Clean, testable |
@@ -73,7 +73,7 @@ curl http://localhost:8080/ready
 | Frontend | ASP.NET | Angular SPA | Hybrid (server + Alpine.js) |
 | API style | REST (WCF + WebAPI 2 / .NET Framework) | REST (ASP.NET Core; ConfigApi / ReportApi / IdentityApi / WatchdogApi split) | REST (FastAPI w/ auto-OpenAPI) + GraphQL |
 | API documentation | Minimal / undocumented | Swagger/OpenAPI per service | Swagger/OpenAPI + GraphQL introspection at `/graphql` |
-| Raw IHR event log API | Yes — `/api/data/controllerEventLogs*` (auth + record-cap gated) | None | Indexed SQL access (events are individually rowed) |
+| Raw IHR event log API | Yes — `/api/data/controllerEventLogs*` (auth + record-cap gated) | None | Yes — `GET /api/v1/signals/{signal_id}/events` REST endpoint *and* GraphQL `events` query, both with the same filters (start, end, event_codes, event_param, limit) and same per-request cap |
 | Report API | Pre-aggregated data only (`/api/data/*Aggregate` endpoints, ~10); reports themselves rendered via WebForms — adding a new report requires C# code + recompile | One REST controller per report — adding a new report requires a new controller class + recompile | Plugin architecture: any module that registers via `@ReportRegistry.register("name")` is automatically discovered and exposed at `POST /api/v1/reports/{name}` (no code changes to the API layer). Generic `GET /api/v1/reports/` lists all registered reports; `/api/v1/reports/{name}/export` for CSV/JSON; plus 13 dedicated analytics endpoints under `/api/v1/analytics/*` |
 | Programmatic config CRUD | Limited (read-mostly) | Full (ConfigApi) | Full CRUD (signals, detectors, approaches, routes, corridors, regions, jurisdictions) |
 | Authentication | JWT bearer | ASP.NET Identity / OIDC | Session cookie + OIDC + OAuth2 |

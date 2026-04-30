@@ -507,3 +507,186 @@ class TestSignalAudit:
         client = TestClient(app)
         resp = client.get("/api/v1/signals/UNKNOWN/audit")
         assert resp.status_code == 404
+
+
+class TestSignalEvents:
+    """Tests for GET /api/v1/signals/{signal_id}/events (raw IHR read)."""
+
+    @staticmethod
+    def _wire(app, signal_lookup_returns, events):
+        """Wire a session that:
+          - First execute() = signal existence lookup -> signal_id or None
+          - Second execute() = event-log query -> rows
+        """
+        signal_result = MagicMock()
+        signal_result.scalar_one_or_none.return_value = signal_lookup_returns
+        events_result = MagicMock()
+        events_result.scalars.return_value.all.return_value = events
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[signal_result, events_result],
+        )
+
+        from tsigma.dependencies import get_session
+
+        async def _override():
+            yield mock_session
+
+        app.dependency_overrides[get_session] = _override
+        return mock_session
+
+    @staticmethod
+    def _mock_event(
+        signal_id="SIG-001",
+        event_time=None,
+        event_code=82,
+        event_param=5,
+    ):
+        if event_time is None:
+            event_time = datetime(2026, 4, 29, 12, 0, 0, tzinfo=timezone.utc)
+        e = MagicMock()
+        e.signal_id = signal_id
+        e.event_time = event_time
+        e.event_code = event_code
+        e.event_param = event_param
+        return e
+
+    def test_returns_events_for_window(self):
+        app = _create_test_app()
+        _add_access_overrides(app)
+        events = [
+            self._mock_event(event_param=1),
+            self._mock_event(event_param=2),
+        ]
+        self._wire(app, signal_lookup_returns="SIG-001", events=events)
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/signals/SIG-001/events",
+            params={
+                "start": "2026-04-29T00:00:00+00:00",
+                "end": "2026-04-29T23:59:59+00:00",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["signal_id"] == "SIG-001"
+        assert data[0]["event_code"] == 82
+        assert {row["event_param"] for row in data} == {1, 2}
+
+    def test_event_codes_csv_filter(self):
+        """event_codes CSV is parsed and applied as a WHERE IN."""
+        app = _create_test_app()
+        _add_access_overrides(app)
+        mock_session = self._wire(
+            app, signal_lookup_returns="SIG-001",
+            events=[self._mock_event()],
+        )
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/signals/SIG-001/events",
+            params={
+                "start": "2026-04-29T00:00:00+00:00",
+                "end": "2026-04-29T23:59:59+00:00",
+                "event_codes": "1, 82, 9",
+            },
+        )
+        assert resp.status_code == 200
+        # The endpoint built two SELECTs: signal existence + event query.
+        assert mock_session.execute.await_count == 2
+
+    def test_event_codes_malformed_returns_400(self):
+        app = _create_test_app()
+        _add_access_overrides(app)
+        self._wire(
+            app, signal_lookup_returns="SIG-001",
+            events=[],
+        )
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/signals/SIG-001/events",
+            params={
+                "start": "2026-04-29T00:00:00+00:00",
+                "end": "2026-04-29T23:59:59+00:00",
+                "event_codes": "1,not-a-number,9",
+            },
+        )
+        assert resp.status_code == 400
+        assert "comma-separated list of integers" in resp.json()["detail"]
+
+    def test_end_before_start_returns_400(self):
+        app = _create_test_app()
+        _add_access_overrides(app)
+        # FastAPI resolves Depends(get_session) before the handler, so the
+        # override has to be in place even though the handler short-circuits.
+        self._wire(app, signal_lookup_returns=None, events=[])
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/signals/SIG-001/events",
+            params={
+                "start": "2026-04-29T12:00:00+00:00",
+                "end": "2026-04-29T11:00:00+00:00",
+            },
+        )
+        assert resp.status_code == 400
+        assert "end must be greater" in resp.json()["detail"]
+
+    def test_unknown_signal_returns_404(self):
+        app = _create_test_app()
+        _add_access_overrides(app)
+        self._wire(app, signal_lookup_returns=None, events=[])
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/signals/UNKNOWN/events",
+            params={
+                "start": "2026-04-29T00:00:00+00:00",
+                "end": "2026-04-29T23:59:59+00:00",
+            },
+        )
+        assert resp.status_code == 404
+
+    def test_limit_above_ceiling_rejected(self):
+        app = _create_test_app()
+        _add_access_overrides(app)
+        # Same as above — override needed even though FastAPI's Query
+        # validator rejects before the handler runs.
+        self._wire(app, signal_lookup_returns=None, events=[])
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/signals/SIG-001/events",
+            params={
+                "start": "2026-04-29T00:00:00+00:00",
+                "end": "2026-04-29T23:59:59+00:00",
+                "limit": 999_999_999,
+            },
+        )
+        assert resp.status_code == 422  # FastAPI Query validation
+
+    def test_event_param_filter_passes_through(self):
+        """event_param query parameter parses and applies cleanly."""
+        app = _create_test_app()
+        _add_access_overrides(app)
+        self._wire(
+            app, signal_lookup_returns="SIG-001",
+            events=[self._mock_event(event_param=42)],
+        )
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/signals/SIG-001/events",
+            params={
+                "start": "2026-04-29T00:00:00+00:00",
+                "end": "2026-04-29T23:59:59+00:00",
+                "event_param": 42,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["event_param"] == 42

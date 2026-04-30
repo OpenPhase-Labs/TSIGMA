@@ -1,13 +1,15 @@
 """
 Signals API endpoints.
 
-CRUD operations for traffic signals/intersections.
-GET endpoints respect the 'signal_detail' access policy. POST/PUT/DELETE require admin role.
+CRUD operations for traffic signals/intersections plus raw IHR event-log
+reads.  GET endpoints respect the 'signal_detail' access policy.
+POST/PUT/DELETE require admin role.
 """
 
-from typing import List
+from datetime import datetime
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,9 +18,17 @@ from ...auth.sessions import SessionData
 from ...crypto import encrypt_sensitive_fields, has_encryption_key, redact_metadata
 from ...dependencies import get_audited_session, get_session
 from ...models import Signal, SignalAudit
+from ...models.event import ControllerEventLog
 from .schemas import SignalCreate, SignalUpdate
 
 router = APIRouter()
+
+# Hard ceiling for raw IHR event reads.  GraphQL uses the same default.
+# A single signal at typical event rates produces ~50–100k events/day, so
+# 100k caps the response at "about a day's worth" — enough for ad-hoc
+# reporting without materializing multi-day windows in app memory.
+_RAW_EVENTS_DEFAULT_LIMIT = 10000
+_RAW_EVENTS_MAX_LIMIT = 100000
 
 
 @router.get("/", response_model=List[dict])
@@ -302,4 +312,117 @@ async def list_signal_audit(
             "new_values": row.new_values,
         }
         for row in rows
+    ]
+
+
+@router.get("/{signal_id}/events")
+async def list_signal_events(
+    signal_id: str,
+    start: datetime,
+    end: datetime,
+    event_codes: Optional[str] = Query(
+        None,
+        description=(
+            "Comma-separated NTCIP/IHR event codes to filter on "
+            "(e.g. ``1,82,9``).  Omit to return every code in the window."
+        ),
+    ),
+    event_param: Optional[int] = Query(
+        None,
+        description=(
+            "Optional exact-match filter on event_param "
+            "(phase, detector channel, etc., depending on the event code)."
+        ),
+    ),
+    limit: int = Query(
+        _RAW_EVENTS_DEFAULT_LIMIT,
+        ge=1,
+        le=_RAW_EVENTS_MAX_LIMIT,
+        description=(
+            f"Max rows to return.  Default {_RAW_EVENTS_DEFAULT_LIMIT}, "
+            f"hard ceiling {_RAW_EVENTS_MAX_LIMIT}."
+        ),
+    ),
+    session: AsyncSession = Depends(get_session),
+    _access=Depends(require_access("signal_detail")),
+):
+    """
+    Raw IHR event log read for a single signal.
+
+    Mirrors the GraphQL ``events`` resolver — same filters, same default
+    limit, same ordering.  Use this for ad-hoc reporting, third-party
+    tool integration, or any consumer that doesn't want to learn
+    GraphQL.  ATSPM 4.x exposed ``/api/data/controllerEventLogs*`` for
+    the same purpose; ATSPM 5.x removed raw event access entirely.
+
+    Returns events ordered by ``event_time`` ascending.
+
+    Args:
+        signal_id: Signal identifier.
+        start: Inclusive lower bound (ISO-8601 datetime).
+        end: Inclusive upper bound (ISO-8601 datetime).
+        event_codes: Optional CSV of event codes to filter on.
+        event_param: Optional exact-match filter on event_param.
+        limit: Max rows to return (capped at ``_RAW_EVENTS_MAX_LIMIT``).
+
+    Returns:
+        List of ``{signal_id, event_time, event_code, event_param}`` rows.
+
+    Raises:
+        HTTPException: 400 if ``end`` is before ``start`` or
+            ``event_codes`` is malformed; 404 if the signal does not exist.
+    """
+    if end < start:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="end must be greater than or equal to start",
+        )
+
+    signal_result = await session.execute(
+        select(Signal.signal_id).where(Signal.signal_id == signal_id)
+    )
+    if signal_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Signal {signal_id} not found",
+        )
+
+    parsed_codes: Optional[list[int]] = None
+    if event_codes:
+        try:
+            parsed_codes = [
+                int(token.strip())
+                for token in event_codes.split(",")
+                if token.strip()
+            ]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"event_codes must be a comma-separated list of integers: {exc}",
+            ) from exc
+
+    stmt = (
+        select(ControllerEventLog)
+        .where(
+            ControllerEventLog.signal_id == signal_id,
+            ControllerEventLog.event_time >= start,
+            ControllerEventLog.event_time <= end,
+        )
+        .order_by(ControllerEventLog.event_time)
+        .limit(limit)
+    )
+    if parsed_codes:
+        stmt = stmt.where(ControllerEventLog.event_code.in_(parsed_codes))
+    if event_param is not None:
+        stmt = stmt.where(ControllerEventLog.event_param == event_param)
+
+    result = await session.execute(stmt)
+    return [
+        {
+            "signal_id": row.signal_id,
+            "event_time": row.event_time.isoformat(),
+            "event_code": row.event_code,
+            "event_param": row.event_param,
+        }
+        for row in result.scalars().all()
     ]
