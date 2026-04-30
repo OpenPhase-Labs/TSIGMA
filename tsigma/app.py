@@ -40,6 +40,7 @@ from .config import settings
 from .database.db import DatabaseFacade
 from .logging import setup_logging
 from .middleware import (
+    ContentNegotiationMiddleware,
     LoggingMiddleware,
     RateLimitMiddleware,
     RequestIDMiddleware,
@@ -272,12 +273,16 @@ def create_app() -> FastAPI:
     )
     app.state.rate_limiter = rate_limiter
 
-    # --- Middleware (order matters - first added = outermost) -----------------
+    # --- Middleware (order matters - last added = outermost) -----------------
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
     app.add_middleware(LoggingMiddleware)
     app.add_middleware(TimingMiddleware)
     app.add_middleware(RequestIDMiddleware)
+    # ContentNegotiation must run before GZipMiddleware on the response
+    # path (i.e. be inner of GZip in the stack) so it sees the original
+    # JSON bytes before they're compressed.
+    app.add_middleware(ContentNegotiationMiddleware)
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     # --- Global exception handlers -------------------------------------------
