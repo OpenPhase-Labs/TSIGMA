@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.dependencies import get_session
 
 
@@ -18,7 +19,7 @@ class TestGetSession:
     @pytest.mark.asyncio
     async def test_yields_session(self):
         """Test get_session yields an AsyncSession from the facade."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_facade = MagicMock()
         mock_facade._session_factory = MagicMock()
         mock_factory_ctx = MagicMock()
@@ -37,7 +38,7 @@ class TestGetSession:
     @pytest.mark.asyncio
     async def test_commits_on_success(self):
         """Test session is committed when no exception occurs."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_facade = MagicMock()
         mock_facade._session_factory = MagicMock()
         mock_factory_ctx = MagicMock()
@@ -58,7 +59,7 @@ class TestGetSession:
         Uses athrow() directly to match FastAPI's dependency injection
         behavior (async for calls aclose on exception, not athrow).
         """
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_facade = MagicMock()
         mock_facade._session_factory = MagicMock()
         mock_factory_ctx = MagicMock()
@@ -99,7 +100,7 @@ class TestGetAuditedSession:
         """When session cookie resolves to a user, SET LOCAL is executed."""
         from tsigma.dependencies import get_audited_session
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_request = MagicMock()
 
         # Session store returns a session with a username
@@ -130,7 +131,7 @@ class TestGetAuditedSession:
         """When no session cookie is present, SET LOCAL is not executed."""
         from tsigma.dependencies import get_audited_session
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_request = MagicMock()
 
         mock_store = AsyncMock()
@@ -149,7 +150,7 @@ class TestGetAuditedSession:
         """When no session store is on app state, SET LOCAL is not executed."""
         from tsigma.dependencies import get_audited_session
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_request = MagicMock()
         mock_request.app.state = MagicMock(spec=[])  # no session_store attr
 

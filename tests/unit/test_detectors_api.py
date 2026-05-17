@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.detectors import router
 from tsigma.auth.sessions import SessionData
 from tsigma.models import Approach, Detector
@@ -85,7 +86,7 @@ class TestListDetectors:
         """Test listing detectors for an approach."""
         approach = _mock_approach()
         detector = _mock_detector(approach_id=approach.approach_id)
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         approach_result = MagicMock()
         approach_result.scalar_one_or_none.return_value = approach
         detector_result = MagicMock()
@@ -111,7 +112,7 @@ class TestListDetectors:
 
     def test_approach_not_found(self):
         """Test 404 when approach doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -137,7 +138,7 @@ class TestGetDetector:
     def test_returns_detector(self):
         """Test getting a detector by ID."""
         detector = _mock_detector()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = detector
         mock_session.execute = AsyncMock(return_value=result)
@@ -159,7 +160,7 @@ class TestGetDetector:
 
     def test_not_found(self):
         """Test 404 when detector doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -186,7 +187,7 @@ class TestCreateDetector:
         """Test creating a detector under an approach."""
         approach = _mock_approach()
         detector = _mock_detector(approach_id=approach.approach_id)
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         approach_result = MagicMock()
         approach_result.scalar_one_or_none.return_value = approach
         mock_session.execute = AsyncMock(return_value=approach_result)
@@ -219,7 +220,7 @@ class TestCreateDetector:
 
     def test_approach_not_found(self):
         """Test 404 when parent approach doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -248,7 +249,7 @@ class TestCreateDetector:
 
     def test_validation_error(self):
         """Test 422 on invalid body."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
 
@@ -279,7 +280,7 @@ class TestUpdateDetector:
     def test_updates_detector(self):
         """Test updating a detector returns 200."""
         detector = _mock_detector()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = detector
         mock_session.execute = AsyncMock(return_value=result)
@@ -310,7 +311,7 @@ class TestUpdateDetector:
     def test_partial_update(self):
         """Test partial update only changes provided fields."""
         detector = _mock_detector(detector_channel=5, distance_from_stop_bar=300)
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = detector
         mock_session.execute = AsyncMock(return_value=result)
@@ -341,7 +342,7 @@ class TestUpdateDetector:
 
     def test_not_found(self):
         """Test 404 when detector doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -370,7 +371,7 @@ class TestUpdateDetector:
 
     def test_empty_body_returns_422(self):
         """Test 422 when no fields provided for update."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
 
@@ -401,7 +402,7 @@ class TestDeleteDetector:
     def test_deletes_detector(self):
         """Test deleting a detector returns 204."""
         detector = _mock_detector()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = detector
         mock_session.execute = AsyncMock(return_value=result)
@@ -428,7 +429,7 @@ class TestDeleteDetector:
 
     def test_not_found(self):
         """Test 404 when detector doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)

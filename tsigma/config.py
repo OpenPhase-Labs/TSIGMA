@@ -109,9 +109,10 @@ class Settings(BaseSettings):
     storage_warm_after: str = "7 days"
     storage_retention: str = "2 years"
 
-    # Cold tier (On-Prem only)
-    storage_cold_enabled: bool = False
-    storage_cold_after: str = "6 months"
+    # Cold tier (On-Prem only).
+    # ``storage_cold_enabled`` and ``storage_cold_after`` are runtime-settings
+    # (registry keys ``storage.cold_enabled`` / ``storage.cold_after_days``);
+    # only the deployment-fixed path remains a Pydantic attribute.
     storage_cold_path: str = "/var/lib/tsigma/cold"
 
     # File storage backend
@@ -183,6 +184,7 @@ class Settings(BaseSettings):
 
     # Valkey (session store, cache, websockets)
     valkey_url: str = ""  # e.g. "redis://localhost:6379/0" — empty = in-memory fallback
+    valkey_settings_invalidation_enabled: bool = True
 
     # Authentication
     auth_mode: str = "local"

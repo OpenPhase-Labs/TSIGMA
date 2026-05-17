@@ -8,6 +8,7 @@ with mocked database sessions.
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from tests._helpers import make_mock_session
 from tsigma.api.graphql.schema import (
     Query,
     _approach_to_type,
@@ -197,7 +198,7 @@ class TestSignalsResolver:
         result_mock = MagicMock()
         result_mock.scalars.return_value = scalars_mock
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute.return_value = result_mock
         info = _make_info(session)
 
@@ -213,7 +214,7 @@ class TestSignalsResolver:
         result_mock = MagicMock()
         result_mock.scalars.return_value = scalars_mock
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute.return_value = result_mock
         info = _make_info(session)
 
@@ -226,7 +227,7 @@ class TestSignalResolver:
     """Tests for Query.signal resolver."""
 
     def test_signal_not_found(self):
-        session = AsyncMock()
+        session = make_mock_session()
         session.get.return_value = None
         info = _make_info(session)
 
@@ -246,7 +247,7 @@ class TestRegionsResolver:
         result_mock = MagicMock()
         result_mock.scalars.return_value = scalars_mock
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute.return_value = result_mock
         info = _make_info(session)
 
@@ -280,7 +281,7 @@ class TestRunReportResolver:
     def test_unknown_report(self, mock_registry):
         mock_registry.get.side_effect = ValueError("Unknown")
 
-        session = AsyncMock()
+        session = make_mock_session()
         info = _make_info(session)
         query = Query()
         result = _run(query.run_report(info, report_name="bad", params={}))
@@ -295,7 +296,7 @@ class TestRunReportResolver:
         mock_cls = MagicMock(return_value=mock_report_instance)
         mock_registry.get.return_value = mock_cls
 
-        session = AsyncMock()
+        session = make_mock_session()
         info = _make_info(session)
         query = Query()
         result = _run(query.run_report(info, report_name="vol", params={"signal_id": "s1"}))
@@ -310,7 +311,7 @@ class TestRunReportResolver:
         mock_cls = MagicMock(return_value=mock_report_instance)
         mock_registry.get.return_value = mock_cls
 
-        session = AsyncMock()
+        session = make_mock_session()
         info = _make_info(session)
         query = Query()
         result = _run(query.run_report(info, report_name="vol", params={}))
@@ -349,7 +350,7 @@ class TestSignalResolverWithData:
             lane_number=1,
         )
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.get = AsyncMock(return_value=sig)
 
         # First execute call: approaches
@@ -380,7 +381,7 @@ class TestSignalResolverWithData:
             signal_id="sig-2", primary_street="Main", secondary_street=None,
             latitude=None, longitude=None, enabled=True, note=None,
         )
-        session = AsyncMock()
+        session = make_mock_session()
         session.get = AsyncMock(return_value=sig)
 
         app_scalars = MagicMock()
@@ -413,7 +414,7 @@ class TestJurisdictionsResolver:
         result_mock = MagicMock()
         result_mock.scalars.return_value = scalars_mock
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute.return_value = result_mock
         info = _make_info(session)
 
@@ -430,7 +431,7 @@ class TestJurisdictionsResolver:
         result_mock = MagicMock()
         result_mock.scalars.return_value = scalars_mock
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute.return_value = result_mock
         info = _make_info(session)
 
@@ -455,7 +456,7 @@ class TestCorridorsResolver:
         result_mock = MagicMock()
         result_mock.scalars.return_value = scalars_mock
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute.return_value = result_mock
         info = _make_info(session)
 
@@ -484,7 +485,7 @@ class TestEventsResolver:
         result_mock = MagicMock()
         result_mock.scalars.return_value = scalars_mock
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute.return_value = result_mock
         info = _make_info(session)
 
@@ -506,7 +507,7 @@ class TestEventsResolver:
         result_mock = MagicMock()
         result_mock.scalars.return_value = scalars_mock
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute.return_value = result_mock
         info = _make_info(session)
 

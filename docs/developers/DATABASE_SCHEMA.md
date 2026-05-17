@@ -1091,7 +1091,7 @@ HOT (uncompressed) ──► WARM (compressed) ──► COLD (Parquet) ──�
 | Transition | Mechanism | Default Interval | Config Variable |
 |------------|-----------|------------------|-----------------|
 | Hot → Warm | TimescaleDB compression policy | 7 days | `TSIGMA_STORAGE_WARM_AFTER` |
-| Warm → Cold | Parquet export scheduler job | 6 months | `TSIGMA_STORAGE_COLD_AFTER` |
+| Warm → Cold | Parquet export scheduler job | 180 days | `TSIGMA_STORAGE_COLD_AFTER_DAYS` |
 | Cold → Drop | TimescaleDB retention policy | 2 years | `TSIGMA_STORAGE_RETENTION` |
 
 **Note:** SaaS deployments skip the Cold tier. Warm data is retained until `TSIGMA_STORAGE_RETENTION`, then dropped.

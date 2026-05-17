@@ -12,6 +12,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.signals import router
 from tsigma.auth.sessions import SessionData
 from tsigma.models import Signal
@@ -94,7 +95,7 @@ class TestGetSignalRedactsPassword:
                 }
             }
         )
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = signal
         mock_session.execute = AsyncMock(return_value=result)
@@ -126,7 +127,7 @@ class TestGetSignalRedactsPassword:
                 }
             }
         )
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = signal
         mock_session.execute = AsyncMock(return_value=result)
@@ -150,7 +151,7 @@ class TestGetSignalRedactsPassword:
     def test_get_signal_no_metadata(self):
         """GET /signals/{id} with None metadata returns null."""
         signal = _mock_signal(metadata=None)
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = signal
         mock_session.execute = AsyncMock(return_value=result)
@@ -188,7 +189,7 @@ class TestCreateSignalEncryptsPassword:
         }
         mock_encrypt.return_value = encrypted_metadata
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         # First execute: check for existing signal (returns None)
         existing_result = MagicMock()
         existing_result.scalar_one_or_none.return_value = None
@@ -229,7 +230,7 @@ class TestCreateSignalEncryptsPassword:
             "collection": {"method": "ftp", "password": "secret123"}
         }
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         existing_result = MagicMock()
         existing_result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=existing_result)
@@ -270,7 +271,7 @@ class TestUpdateSignalEncryptsPassword:
     ):
         """PUT /signals/{id} with metadata.collection.password encrypts it."""
         signal = _mock_signal()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = signal
         mock_session.execute = AsyncMock(return_value=result)
@@ -306,7 +307,7 @@ class TestUpdateSignalEncryptsPassword:
     ):
         """PUT /signals/{id} without encryption key does not call encrypt."""
         signal = _mock_signal()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = signal
         mock_session.execute = AsyncMock(return_value=result)
@@ -344,7 +345,7 @@ class TestListSignals:
         sig1 = _mock_signal(signal_id="SIG-001")
         sig2 = _mock_signal(signal_id="SIG-002", primary_street="Oak Ave")
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = [sig1, sig2]
         mock_session.execute = AsyncMock(return_value=result)
@@ -369,7 +370,7 @@ class TestListSignals:
 
     def test_list_signals_empty(self):
         """GET /signals/ returns empty list when no signals exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -396,7 +397,7 @@ class TestDeleteSignal:
     def test_delete_signal(self):
         """DELETE /signals/{id} returns 204 on success."""
         signal = _mock_signal()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = signal
         mock_session.execute = AsyncMock(return_value=result)
@@ -419,7 +420,7 @@ class TestDeleteSignal:
 
     def test_delete_signal_not_found(self):
         """DELETE /signals/{id} returns 404 for unknown signal."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -456,7 +457,7 @@ class TestSignalAudit:
         audit_row.old_values = {"enabled": True}
         audit_row.new_values = {"enabled": False}
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         # First call: signal existence check
         signal_result = MagicMock()
@@ -489,7 +490,7 @@ class TestSignalAudit:
 
     def test_get_signal_audit_not_found(self):
         """GET /signals/{id}/audit returns 404 for unknown signal."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -523,7 +524,7 @@ class TestSignalEvents:
         events_result = MagicMock()
         events_result.scalars.return_value.all.return_value = events
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(
             side_effect=[signal_result, events_result],
         )

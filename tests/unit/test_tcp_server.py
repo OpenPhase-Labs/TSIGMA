@@ -230,6 +230,7 @@ class TestTCPServerStartStop:
         method = TCPServerMethod()
         method._config = TCPServerConfig(port=10088)
         mock_server = AsyncMock()
+        mock_server.close = MagicMock()
         mock_server.wait_closed = AsyncMock()
         method._server = mock_server
 
@@ -251,7 +252,7 @@ class TestTCPServerStartStop:
         method._active_connections = 5
         mock_server = MagicMock()
         mock_server.close = MagicMock()
-        mock_server.wait_closed = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_server.wait_closed = MagicMock()
         method._server = mock_server
 
         with patch(

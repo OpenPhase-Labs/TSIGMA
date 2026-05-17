@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.jurisdictions import router
 from tsigma.auth.sessions import SessionData
 from tsigma.models import Jurisdiction
@@ -66,7 +67,7 @@ class TestListJurisdictions:
     def test_returns_jurisdictions(self):
         """Test listing jurisdictions."""
         jurisdiction = _mock_jurisdiction()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = [jurisdiction]
         mock_session.execute = AsyncMock(return_value=result)
@@ -90,7 +91,7 @@ class TestListJurisdictions:
 
     def test_empty_list(self):
         """Test empty jurisdiction list."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -112,7 +113,7 @@ class TestListJurisdictions:
 
     def test_pagination(self):
         """Test pagination parameters are accepted."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -138,7 +139,7 @@ class TestGetJurisdiction:
     def test_returns_jurisdiction(self):
         """Test getting a jurisdiction by ID."""
         jurisdiction = _mock_jurisdiction()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = jurisdiction
         mock_session.execute = AsyncMock(return_value=result)
@@ -160,7 +161,7 @@ class TestGetJurisdiction:
 
     def test_not_found(self):
         """Test 404 when jurisdiction doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -187,7 +188,7 @@ class TestCreateJurisdiction:
         """Test creating a jurisdiction."""
         expected_id = uuid4()
         added_objects = []
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.add = MagicMock(side_effect=lambda obj: added_objects.append(obj))
 
         async def fake_flush():
@@ -224,7 +225,7 @@ class TestCreateJurisdiction:
 
     def test_name_required(self):
         """Test 422 when name missing."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
 
@@ -252,7 +253,7 @@ class TestUpdateJurisdiction:
     def test_updates_jurisdiction(self):
         """Test updating a jurisdiction returns 200."""
         jurisdiction = _mock_jurisdiction()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = jurisdiction
         mock_session.execute = AsyncMock(return_value=result)
@@ -285,7 +286,7 @@ class TestUpdateJurisdiction:
         jurisdiction = _mock_jurisdiction(
             name="City of Atlanta", mpo_name="Atlanta Regional Commission",
         )
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = jurisdiction
         mock_session.execute = AsyncMock(return_value=result)
@@ -316,7 +317,7 @@ class TestUpdateJurisdiction:
 
     def test_not_found(self):
         """Test 404 when jurisdiction doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -345,7 +346,7 @@ class TestUpdateJurisdiction:
 
     def test_empty_body_returns_422(self):
         """Test 422 when no fields provided for update."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
 
@@ -376,7 +377,7 @@ class TestDeleteJurisdiction:
     def test_deletes_jurisdiction(self):
         """Test deleting a jurisdiction returns 204."""
         jurisdiction = _mock_jurisdiction()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = jurisdiction
         mock_session.execute = AsyncMock(return_value=result)
@@ -405,7 +406,7 @@ class TestDeleteJurisdiction:
 
     def test_not_found(self):
         """Test 404 when jurisdiction doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)

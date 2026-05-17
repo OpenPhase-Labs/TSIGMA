@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.auth.dependencies import get_current_user, get_session_store
 from tsigma.auth.providers.local import LocalAuthProvider
 from tsigma.auth.router import router as auth_router
@@ -48,7 +49,7 @@ def _create_login_app():
 @pytest.fixture
 def mock_db_session():
     """Async mock database session."""
-    return AsyncMock()
+    return make_mock_session()
 
 
 @pytest.fixture

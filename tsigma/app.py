@@ -48,9 +48,47 @@ from .middleware import (
     TimingMiddleware,
 )
 from .rate_limiter import create_rate_limiter
-from .settings_service import seed_system_settings
+from .settings_service import (
+    SETTINGS_INVALIDATE_CHANNEL,
+    _handle_invalidate_message,
+    seed_system_settings,
+)
 
 logger = logging.getLogger(__name__)
+
+
+async def _start_settings_invalidation_subscriber(
+    app: FastAPI, valkey_client,
+) -> asyncio.Task:
+    """Subscribe to the settings-invalidation pub/sub channel.
+
+    Reuses the existing process-wide Valkey client (the same connection used
+    by the session store and the rate limiter — no new connection). Returns
+    the background task so the lifespan can cancel it on shutdown BEFORE
+    ``valkey_client.aclose()``.
+    """
+    pubsub = valkey_client.pubsub()
+    await pubsub.subscribe(SETTINGS_INVALIDATE_CHANNEL)
+
+    async def _subscriber_loop() -> None:
+        try:
+            async for message in pubsub.listen():
+                try:
+                    await _handle_invalidate_message(message)
+                except Exception:
+                    logger.exception(
+                        "Settings invalidation handler raised; "
+                        "continuing to listen"
+                    )
+        except asyncio.CancelledError:
+            # Normal shutdown — re-raise so the awaiter sees CancelledError.
+            raise
+        except Exception:
+            logger.exception(
+                "Settings invalidation subscriber loop exited unexpectedly"
+            )
+
+    return asyncio.create_task(_subscriber_loop())
 
 
 @asynccontextmanager
@@ -124,6 +162,31 @@ async def lifespan(app: FastAPI):
                 ValkeyRateLimiterBackend(valkey_client)
             )
             logger.info("Rate limiter: upgraded to Valkey backend")
+
+        # Settings invalidation subscriber — dual-gated per Locked Decision
+        # #7. Shares the existing valkey_client; cleanup happens BEFORE
+        # ``valkey_client.aclose()`` below so the listen loop doesn't raise
+        # on a closed connection.
+        app.state._settings_invalidation_task = None
+        if (settings.valkey_settings_invalidation_enabled
+                and settings.valkey_url
+                and getattr(app.state, "valkey_client", None) is not None):
+            try:
+                app.state._settings_invalidation_task = (
+                    await _start_settings_invalidation_subscriber(
+                        app, app.state.valkey_client
+                    )
+                )
+                logger.info(
+                    "Settings invalidation subscriber: listening on %s",
+                    SETTINGS_INVALIDATE_CHANNEL,
+                )
+            except Exception:
+                logger.warning(
+                    "Settings invalidation subscriber failed to start; "
+                    "TTL-only fallback",
+                    exc_info=True,
+                )
 
         # Initialize active auth provider and mount its routes
         provider_cls = AuthProviderRegistry.get(settings.auth_mode)
@@ -231,6 +294,20 @@ async def lifespan(app: FastAPI):
     if cleanup_task is not None:
         cleanup_task.cancel()
 
+    # Stop the settings-invalidation subscriber BEFORE closing the Valkey
+    # client — otherwise the listen loop raises on a closed connection.
+    sub_task = getattr(app.state, "_settings_invalidation_task", None)
+    if isinstance(sub_task, asyncio.Task):
+        sub_task.cancel()
+        try:
+            await sub_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(
+                "Settings invalidation subscriber raised on shutdown"
+            )
+
     # Close Valkey connection
     if getattr(app.state, "valkey_client", None):
         await app.state.valkey_client.aclose()
@@ -289,7 +366,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError):
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={"detail": str(exc)},
         )
 

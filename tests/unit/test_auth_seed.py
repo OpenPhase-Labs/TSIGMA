@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.auth.seed import FORBIDDEN_PASSWORDS, seed_admin
 
 
@@ -18,8 +19,7 @@ class TestSeedAdmin:
     @pytest.mark.asyncio
     async def test_creates_admin_when_none_exists(self):
         """Test seed_admin creates admin user when table is empty."""
-        mock_session = AsyncMock()
-        mock_session.add = MagicMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
@@ -43,7 +43,7 @@ class TestSeedAdmin:
     @pytest.mark.asyncio
     async def test_skips_when_admin_exists(self):
         """Test seed_admin does nothing when admin user already exists."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = MagicMock(username="admin")
         mock_session.execute.return_value = mock_result
@@ -59,8 +59,7 @@ class TestSeedAdmin:
     @pytest.mark.asyncio
     async def test_uses_settings_credentials(self):
         """Test seed_admin uses username/password from settings."""
-        mock_session = AsyncMock()
-        mock_session.add = MagicMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
@@ -81,7 +80,7 @@ class TestSeedAdmin:
     @pytest.mark.parametrize("bad_password", sorted(FORBIDDEN_PASSWORDS))
     async def test_rejects_insecure_default_password(self, bad_password):
         """Test seed_admin refuses to start with a forbidden password."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
@@ -99,7 +98,7 @@ class TestSeedAdmin:
     @pytest.mark.asyncio
     async def test_insecure_password_skipped_when_admin_exists(self):
         """Test forbidden password check is skipped when admin already exists."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = MagicMock(username="admin")
         mock_session.execute.return_value = mock_result

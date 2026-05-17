@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.scheduler.jobs.watchdog import STUCK_DETECTOR_THRESHOLD, watchdog
 
 # Import the registry first, then trigger job auto-registration via the
@@ -23,7 +24,7 @@ from tsigma.scheduler.registry import JobRegistry
 
 def _mock_session() -> AsyncMock:
     """Return an AsyncMock that behaves like an AsyncSession."""
-    session = AsyncMock()
+    session = make_mock_session()
     session.execute = AsyncMock()
     session.commit = AsyncMock()
     session.rollback = AsyncMock()
@@ -756,28 +757,56 @@ class TestExportCold:
 
     @pytest.mark.asyncio
     async def test_export_cold_callable(self):
-        """export_cold can be called with a mocked session."""
+        """export_cold can be called with a mocked session.
+
+        Task A6: patches the typed getter ``get_bool`` directly in the
+        ``export_cold`` module namespace; the legacy
+        ``settings.storage_cold_enabled`` Pydantic attribute is removed.
+        """
         session = _mock_session()
         func = JobRegistry.get("export_cold")["func"]
-        with patch("tsigma.scheduler.jobs.export_cold.settings") as mock_settings:
-            mock_settings.storage_cold_enabled = False
+        with patch(
+            "tsigma.scheduler.jobs.export_cold.get_bool",
+            new=AsyncMock(return_value=False),
+        ):
             await func(session)
 
     @pytest.mark.asyncio
     async def test_export_cold_disabled(self):
-        """export_cold returns early when cold storage is disabled."""
+        """export_cold returns early when cold storage is disabled.
+
+        Task A6: patches the typed getter ``get_bool`` directly; also
+        asserts ``get_int`` is NEVER called (early-return guarantee
+        before the cold-after-days read).
+        """
         session = _mock_session()
         func = JobRegistry.get("export_cold")["func"]
 
-        with patch("tsigma.scheduler.jobs.export_cold.settings") as mock_settings:
-            mock_settings.storage_cold_enabled = False
+        mock_get_int = AsyncMock(return_value=180)
+        with (
+            patch(
+                "tsigma.scheduler.jobs.export_cold.get_bool",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "tsigma.scheduler.jobs.export_cold.get_int",
+                new=mock_get_int,
+            ),
+        ):
             await func(session)
 
         session.execute.assert_not_called()
+        mock_get_int.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_export_cold_runs(self):
-        """export_cold queries and exports data when cold storage enabled."""
+        """export_cold queries and exports data when cold storage enabled.
+
+        Task A6: patches the typed getters ``get_bool`` / ``get_int``
+        directly. The ``settings`` patch is kept (and shrunk) because
+        ``storage_cold_path`` remains a Pydantic attribute under
+        Locked Decision #1 (deployment-fixed).
+        """
         session = _mock_session()
 
         # Simulate query returning rows
@@ -797,11 +826,17 @@ class TestExportCold:
         func = JobRegistry.get("export_cold")["func"]
 
         with (
+            patch(
+                "tsigma.scheduler.jobs.export_cold.get_bool",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "tsigma.scheduler.jobs.export_cold.get_int",
+                new=AsyncMock(return_value=180),
+            ),
             patch("tsigma.scheduler.jobs.export_cold.settings") as mock_settings,
             patch("tsigma.scheduler.jobs.export_cold.pd") as mock_pd,
         ):
-            mock_settings.storage_cold_enabled = True
-            mock_settings.storage_cold_after = "6 months"
             mock_settings.storage_cold_path = "/tmp/tsigma_cold_test"
 
             # Mock DataFrame behavior
@@ -828,7 +863,11 @@ class TestExportCold:
 
     @pytest.mark.asyncio
     async def test_export_cold_no_data(self):
-        """export_cold does nothing when no rows are eligible for export."""
+        """export_cold does nothing when no rows are eligible for export.
+
+        Task A6: same patch shape as ``test_export_cold_runs`` — typed
+        getters + shrunk ``settings`` patch for ``storage_cold_path``.
+        """
         session = _mock_session()
 
         query_result = MagicMock()
@@ -836,14 +875,98 @@ class TestExportCold:
         session.execute = AsyncMock(return_value=query_result)
 
         func = JobRegistry.get("export_cold")["func"]
-        with patch("tsigma.scheduler.jobs.export_cold.settings") as mock_settings:
-            mock_settings.storage_cold_enabled = True
-            mock_settings.storage_cold_after = "6 months"
+        with (
+            patch(
+                "tsigma.scheduler.jobs.export_cold.get_bool",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "tsigma.scheduler.jobs.export_cold.get_int",
+                new=AsyncMock(return_value=180),
+            ),
+            patch("tsigma.scheduler.jobs.export_cold.settings") as mock_settings,
+        ):
             mock_settings.storage_cold_path = "/tmp/tsigma_cold_test"
             await func(session)
 
         # Only the initial query, no Parquet writes
         assert session.execute.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_export_cold_uses_python_cutoff_not_pg_interval(self):
+        """Task A6 SQL portability (Option B, 2026-05-16): the DELETE SQL
+        must not contain PostgreSQL-only ``::interval`` cast or the legacy
+        ``:cold_interval`` bind-param name.
+
+        The plan rewrites the WHERE clause from
+        ``event_time < now() - :cold_interval ::interval`` (PG-only)
+        to ``event_time < :cutoff`` where ``cutoff`` is computed in
+        Python as ``datetime.now(tz=timezone.utc) - timedelta(days=N)``.
+        This matches the established pattern in
+        ``tsigma/scheduler/jobs/watchdog.py`` / ``signal_plan.py`` /
+        ``manage_partitions.py``.
+
+        We capture the SQL via the mocked ``session.execute`` call and
+        string-search for the PG-only markers.
+        """
+        session = _mock_session()
+
+        query_result = MagicMock()
+        query_result.all.return_value = []
+        session.execute = AsyncMock(return_value=query_result)
+
+        func = JobRegistry.get("export_cold")["func"]
+        with (
+            patch(
+                "tsigma.scheduler.jobs.export_cold.get_bool",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "tsigma.scheduler.jobs.export_cold.get_int",
+                new=AsyncMock(return_value=180),
+            ),
+            patch("tsigma.scheduler.jobs.export_cold.settings") as mock_settings,
+        ):
+            mock_settings.storage_cold_path = "/tmp/tsigma_cold_test"
+            await func(session)
+
+        # Inspect the SQL that was executed.
+        assert session.execute.call_count >= 1
+        call_args = session.execute.call_args
+        # First positional arg is a sqlalchemy ``TextClause`` produced by
+        # ``text(...)``. Stringify it to inspect the SQL body.
+        sql_clause = call_args.args[0]
+        sql_text = str(sql_clause)
+
+        assert "::interval" not in sql_text, (
+            "Task A6 (Option B): SQL must not contain the PostgreSQL-only "
+            "``::interval`` cast. Found in: %r" % sql_text
+        )
+        assert "cold_interval" not in sql_text, (
+            "Task A6 (Option B): the legacy ``:cold_interval`` bind-param "
+            "name must be renamed to ``:cutoff`` (a datetime bound from "
+            "Python). Found in: %r" % sql_text
+        )
+        # And the new bind-param name must be present.
+        assert ":cutoff" in sql_text, (
+            "Task A6 (Option B): SQL must bind ``:cutoff`` (a Python-side "
+            "``datetime`` computed via ``datetime.now(tz=timezone.utc) - "
+            "timedelta(days=cold_after_days)``). Not found in: %r" % sql_text
+        )
+
+        # And the bind-params dict must carry ``cutoff`` as a datetime.
+        # call_args.args[1] is the params dict.
+        if len(call_args.args) >= 2:
+            params = call_args.args[1]
+            assert "cutoff" in params, (
+                "Task A6 (Option B): bind params must include ``cutoff``; "
+                "got %r" % params
+            )
+            assert isinstance(params["cutoff"], datetime), (
+                "Task A6 (Option B): ``cutoff`` bind param must be a "
+                "``datetime``, got %r (type %s)"
+                % (params["cutoff"], type(params["cutoff"]).__name__)
+            )
 
 
 class TestRefreshViews:

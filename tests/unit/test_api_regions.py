@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.regions import router
 from tsigma.auth.sessions import SessionData
 from tsigma.models import Region
@@ -74,7 +75,7 @@ class TestListRegions:
 
     def test_returns_regions(self):
         region = _mock_region()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = [region]
         mock_session.execute = AsyncMock(return_value=result)
@@ -91,7 +92,7 @@ class TestListRegions:
         assert data[0]["description"] == "District 7"
 
     def test_empty_list(self):
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -111,7 +112,7 @@ class TestGetRegion:
 
     def test_returns_region(self):
         region = _mock_region()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = region
         mock_session.execute = AsyncMock(return_value=result)
@@ -126,7 +127,7 @@ class TestGetRegion:
         assert resp.json()["description"] == "District 7"
 
     def test_not_found(self):
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -146,7 +147,7 @@ class TestCreateRegion:
     def test_creates_region(self):
         expected_id = uuid4()
         added_objects = []
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.add = MagicMock(side_effect=lambda obj: added_objects.append(obj))
 
         async def fake_flush():
@@ -181,7 +182,7 @@ class TestCreateRegion:
         assert resp.json()["description"] == "District 7"
 
     def test_description_required(self):
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
 
@@ -233,7 +234,7 @@ class TestUpdateRegion:
         """PUT /regions/{id} returns updated region data."""
         region = _mock_region(description="Old Name")
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = region
         mock_session.execute = AsyncMock(return_value=result)
@@ -253,7 +254,7 @@ class TestUpdateRegion:
 
     def test_update_region_not_found(self):
         """PUT /regions/{id} returns 404 for unknown region."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -276,7 +277,7 @@ class TestDeleteRegion:
     def test_delete_region(self):
         """DELETE /regions/{id} returns 204 on success."""
         region = _mock_region()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = region
         mock_session.execute = AsyncMock(return_value=result)
@@ -293,7 +294,7 @@ class TestDeleteRegion:
 
     def test_delete_region_not_found(self):
         """DELETE /regions/{id} returns 404 for unknown region."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -339,7 +340,7 @@ class TestListRegionsWithParentFilter:
         parent_id = uuid4()
         child_region = _mock_region(parent_region_id=parent_id, description="Zone A")
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = [child_region]
         mock_session.execute = AsyncMock(return_value=result)
@@ -367,7 +368,7 @@ class TestCreateRegionWithParent:
     def test_create_region_with_nonexistent_parent(self):
         """POST /regions/ with invalid parent returns 404."""
         parent_id = uuid4()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         # parent lookup returns None
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
@@ -410,7 +411,7 @@ class TestUpdateRegionWithParent:
         region = _mock_region(description="Zone B")
         parent_id = uuid4()
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         # First call: region lookup (found); second call: parent lookup (not found)
         result_region = MagicMock()
         result_region.scalar_one_or_none.return_value = region
@@ -439,7 +440,7 @@ class TestUpdateRegionWithParent:
         """PUT /regions/{id} with only description updates description."""
         region = _mock_region(description="Old")
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = region
         mock_session.execute = AsyncMock(return_value=result)

@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.reference import (
     ControllerTypeCreate,
     ControllerTypeUpdate,
@@ -68,7 +69,7 @@ def _mock_db_session(auto_pk_field=None):
             attribute on any object passed to session.add() (simulates
             server_default UUID generation).
     """
-    session = AsyncMock()
+    session = make_mock_session()
     _added_objects = []
 
     def _capture_add(obj):

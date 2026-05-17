@@ -16,11 +16,13 @@ from ...auth.dependencies import require_admin
 from ...auth.sessions import SessionData
 from ...dependencies import get_session
 from ...models.system_setting import SystemSetting
+from ...models.system_setting_audit import SystemSettingAudit
 from ...settings_service import (
     ACCESS_VALUES,
     LOCKED_CATEGORIES,
     settings_cache,
 )
+from ...settings_service import set as settings_set
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class SettingResponse(BaseModel):
 
 class SettingUpdate(BaseModel):
     value: str
+    reason: str | None = None
 
 
 class AccessPolicyResponse(BaseModel):
@@ -58,6 +61,7 @@ class AccessPolicyUpdate(BaseModel):
     reports: str | None = None
     signal_detail: str | None = None
     health: str | None = None
+    reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -136,14 +140,18 @@ async def update_access_policy(
     Only non-locked categories can be changed. The management category
     is always authenticated and cannot be modified.
     """
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    dumped = body.model_dump()
+    reason = dumped.pop("reason", None)
+    updates = {k: v for k, v in dumped.items() if v is not None}
 
     if not updates:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="No fields to update",
         )
 
+    # Validate all categories/values BEFORE any write so a failed PUT
+    # leaves no audit rows behind.
     for category, value in updates.items():
         if category in LOCKED_CATEGORIES:
             raise HTTPException(
@@ -152,30 +160,78 @@ async def update_access_policy(
             )
         if value not in ACCESS_VALUES:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                f"Invalid value '{value}' for {category}."
-                " Must be 'public' or 'authenticated'."
-            ),
+                    f"Invalid value '{value}' for {category}."
+                    " Must be 'public' or 'authenticated'."
+                ),
             )
 
-    # Apply updates to database
+    # Apply each update via the audit-aware set() helper. One audit row
+    # per modified category.
     for category, value in updates.items():
-        key = f"access_policy.{category}"
-        result = await session.execute(
-            select(SystemSetting).where(SystemSetting.key == key)
+        await settings_set(
+            f"access_policy.{category}",
+            value,
+            session,
+            changed_by=admin.username,
+            reason=reason,
         )
-        setting = result.scalar_one_or_none()
-        if setting:
-            setting.value = value
-            setting.updated_by = admin.username
 
-    # Invalidate cache so changes take effect immediately
+    # Invalidate at the endpoint level too. `set()` invalidates the global
+    # cache instance, but tests patch the module-local `settings_cache`
+    # reference imported here, so the patched mock only observes the call
+    # if we invalidate via this name as well.
     settings_cache.invalidate()
 
     # Return updated state
     policies = await settings_cache.get_by_category("access_policy", session)
     return _policies_to_response(policies)
+
+
+@router.get("/{key}/audit")
+async def get_setting_audit(
+    key: str,
+    skip: int = 0,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+    _admin: SessionData = Depends(require_admin),
+):
+    """
+    Get audit trail for a system setting.
+
+    Returns change history ordered by most recent first. Empty list
+    (not 404) when no audit rows exist for the key.
+
+    Args:
+        key: System setting key (e.g. ``api.max_page_size``).
+        skip: Number of records to skip (pagination).
+        limit: Maximum number of records to return (default 50).
+
+    Returns:
+        List of audit dicts with keys: id, key, old_value, new_value,
+        changed_at, changed_by, reason.
+    """
+    result = await session.execute(
+        select(SystemSettingAudit)
+        .where(SystemSettingAudit.key == key)
+        .order_by(SystemSettingAudit.changed_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    rows = result.scalars().all()
+    return [
+        {
+            "id": row.id,
+            "key": row.key,
+            "old_value": row.old_value,
+            "new_value": row.new_value,
+            "changed_at": row.changed_at.isoformat() if row.changed_at else None,
+            "changed_by": row.changed_by,
+            "reason": row.reason,
+        }
+        for row in rows
+    ]
 
 
 @router.put("/{setting_key:path}", response_model=SettingResponse)
@@ -201,20 +257,32 @@ async def update_setting(
             detail=f"Setting '{setting_key}' is not editable",
         )
 
-    # Validate access_policy values
+    # Validate access_policy values BEFORE writing so a 422 leaves no
+    # audit row behind.
     if setting.category == "access_policy" and body.value not in ACCESS_VALUES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"Invalid value '{body.value}'."
                 " Must be 'public' or 'authenticated'."
             ),
         )
 
-    setting.value = body.value
-    setting.updated_by = admin.username
+    # Route the write through the audit-aware set() helper. The non-registry
+    # permissive branch mutates the in-memory `setting` row, so the response
+    # below reflects the new value.
+    await settings_set(
+        setting_key,
+        body.value,
+        session,
+        changed_by=admin.username,
+        reason=body.reason,
+    )
 
-    # Invalidate cache
+    # Invalidate at the endpoint level too. `set()` invalidates the global
+    # cache instance, but tests patch the module-local `settings_cache`
+    # reference imported here, so the patched mock only observes the call
+    # if we invalidate via this name as well.
     settings_cache.invalidate()
 
     return _setting_to_response(setting)

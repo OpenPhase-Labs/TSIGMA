@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.app import create_app
 
 
@@ -17,7 +18,7 @@ def _make_mock_facade():
     mock_facade.connect = AsyncMock()
     mock_facade.disconnect = AsyncMock()
 
-    mock_session = AsyncMock()
+    mock_session = make_mock_session()
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = None
     result_mock.scalars.return_value.all.return_value = []
@@ -66,6 +67,7 @@ def _apply_mock_settings(mock_settings, **overrides):
         "log_level": "INFO",
         "log_format": "json",
         "valkey_url": "",
+        "valkey_settings_invalidation_enabled": False,
         "validation_enabled": False,
     }
     defaults.update(overrides)
@@ -255,6 +257,7 @@ class TestSchedulerWiring:
 
         mock_facade, _ = _make_mock_facade()
         mock_scheduler = AsyncMock()
+        mock_scheduler.load_registry = MagicMock()
 
         try:
             with patch("tsigma.app.DatabaseFacade", return_value=mock_facade), \
@@ -499,6 +502,15 @@ class TestValkeySessionStore:
         mock_facade, _ = _make_mock_facade()
         mock_valkey_client = AsyncMock()
         mock_valkey_client.aclose = AsyncMock()
+        # Defensive double-write for A4: if a future implementer flips the
+        # `_apply_mock_settings` default for `valkey_settings_invalidation_enabled`
+        # to True, the subscriber-start path would touch `.pubsub()` on this
+        # mock. Bare AsyncMock auto-generates async attrs that don't iterate
+        # cleanly inside the subscriber's `async for message in pubsub.listen()`.
+        # Pinning `.pubsub` to MagicMock (so the chained `pubsub().subscribe()`
+        # / `pubsub().listen()` calls return predictable mocks) inoculates this
+        # test against that change.
+        mock_valkey_client.pubsub = MagicMock()
 
         try:
             with patch("tsigma.app.DatabaseFacade", return_value=mock_facade), \
@@ -508,7 +520,15 @@ class TestValkeySessionStore:
                        new_callable=AsyncMock), \
                  patch("tsigma.app.settings") as mock_settings, \
                  patch("valkey.asyncio.from_url", return_value=mock_valkey_client):
-                _apply_mock_settings(mock_settings, valkey_url="valkey://localhost:6379")
+                # Per A4 plan: defensive double-write of the flag-False for
+                # this specific test. Even with the helper default already
+                # False, an explicit kwarg here protects against a future
+                # default flip.
+                _apply_mock_settings(
+                    mock_settings,
+                    valkey_url="valkey://localhost:6379",
+                    valkey_settings_invalidation_enabled=False,
+                )
 
                 app = create_app()
                 async with app.router.lifespan_context(app):
@@ -546,5 +566,155 @@ class TestSeedRollback:
                         pass
 
                 mock_session.rollback.assert_awaited_once()
+        finally:
+            db_module.db_facade = original
+
+
+# ---------------------------------------------------------------------------
+# Task A4: Valkey settings-invalidation subscriber wiring in lifespan
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsInvalidationSubscriberWiring:
+    """Lifespan wiring of the A4 pub/sub subscriber.
+
+    Three sites, one dual gate
+    (``valkey_settings_invalidation_enabled`` AND ``valkey_url``):
+
+    - **Open** → subscriber task is created (positive case).
+    - **Flag closed** → no subscriber, even if Valkey is otherwise wired.
+    - **URL closed** → no subscriber.
+
+    The tests patch ``tsigma.app._start_settings_invalidation_subscriber``
+    (the helper introduced by A4 in ``tsigma/app.py``) so we can assert
+    "called / not called" without depending on the subscriber's internal
+    behaviour. If the implementer chooses a different helper name, this
+    test should be updated to match (the seam under test is the public
+    fact that the subscriber start is invoked at lifespan start; the name
+    of the helper is an implementation detail).
+    """
+
+    @pytest.mark.asyncio
+    async def test_subscriber_started_when_dual_gate_open(self):
+        """Flag=True AND valkey_url set: subscriber-start helper is awaited once."""
+        import tsigma.database.db as db_module
+        original = db_module.db_facade
+
+        mock_facade, _ = _make_mock_facade()
+        mock_valkey_client = AsyncMock()
+        mock_valkey_client.aclose = AsyncMock()
+        mock_valkey_client.pubsub = MagicMock()
+
+        mock_subscriber_start = AsyncMock()
+
+        try:
+            with patch("tsigma.app.DatabaseFacade", return_value=mock_facade), \
+                 patch("tsigma.app.seed_admin", new_callable=AsyncMock), \
+                 patch("tsigma.app.seed_system_settings", new_callable=AsyncMock), \
+                 patch("tsigma.notifications.registry.initialize_providers",
+                       new_callable=AsyncMock), \
+                 patch("tsigma.app.settings") as mock_settings, \
+                 patch("valkey.asyncio.from_url", return_value=mock_valkey_client), \
+                 patch(
+                     "tsigma.app._start_settings_invalidation_subscriber",
+                     new=mock_subscriber_start,
+                 ):
+                _apply_mock_settings(
+                    mock_settings,
+                    valkey_url="valkey://localhost:6379",
+                    valkey_settings_invalidation_enabled=True,
+                )
+
+                app = create_app()
+                async with app.router.lifespan_context(app):
+                    pass
+
+                mock_subscriber_start.assert_awaited()
+                # The dual gate is independent of the rate limiter / session
+                # store / auth provider — Valkey is shared but the new
+                # subscriber is wired in its own block.
+        finally:
+            db_module.db_facade = original
+
+    @pytest.mark.asyncio
+    async def test_subscriber_not_started_when_flag_false(self):
+        """Flag=False: subscriber helper is NOT called, even with valkey_url set."""
+        import tsigma.database.db as db_module
+        original = db_module.db_facade
+
+        mock_facade, _ = _make_mock_facade()
+        mock_valkey_client = AsyncMock()
+        mock_valkey_client.aclose = AsyncMock()
+        mock_valkey_client.pubsub = MagicMock()
+
+        mock_subscriber_start = AsyncMock()
+
+        try:
+            with patch("tsigma.app.DatabaseFacade", return_value=mock_facade), \
+                 patch("tsigma.app.seed_admin", new_callable=AsyncMock), \
+                 patch("tsigma.app.seed_system_settings", new_callable=AsyncMock), \
+                 patch("tsigma.notifications.registry.initialize_providers",
+                       new_callable=AsyncMock), \
+                 patch("tsigma.app.settings") as mock_settings, \
+                 patch("valkey.asyncio.from_url", return_value=mock_valkey_client), \
+                 patch(
+                     "tsigma.app._start_settings_invalidation_subscriber",
+                     new=mock_subscriber_start,
+                 ):
+                _apply_mock_settings(
+                    mock_settings,
+                    valkey_url="valkey://localhost:6379",
+                    valkey_settings_invalidation_enabled=False,
+                )
+
+                app = create_app()
+                async with app.router.lifespan_context(app):
+                    # The existing Valkey-using subsystems (session store,
+                    # rate limiter) must still wire up — the dual gate
+                    # gates ONLY the pub/sub subscriber.
+                    assert hasattr(app.state, "session_store")
+                    from tsigma.auth.sessions import ValkeySessionStore
+                    assert isinstance(
+                        app.state.session_store, ValkeySessionStore
+                    )
+
+                mock_subscriber_start.assert_not_called()
+        finally:
+            db_module.db_facade = original
+
+    @pytest.mark.asyncio
+    async def test_subscriber_not_started_when_valkey_url_empty(self):
+        """valkey_url="" (regardless of flag value): subscriber helper is NOT called."""
+        import tsigma.database.db as db_module
+        original = db_module.db_facade
+
+        mock_facade, _ = _make_mock_facade()
+
+        mock_subscriber_start = AsyncMock()
+
+        try:
+            with patch("tsigma.app.DatabaseFacade", return_value=mock_facade), \
+                 patch("tsigma.app.seed_admin", new_callable=AsyncMock), \
+                 patch("tsigma.app.seed_system_settings", new_callable=AsyncMock), \
+                 patch("tsigma.notifications.registry.initialize_providers",
+                       new_callable=AsyncMock), \
+                 patch("tsigma.app.settings") as mock_settings, \
+                 patch(
+                     "tsigma.app._start_settings_invalidation_subscriber",
+                     new=mock_subscriber_start,
+                 ):
+                # Flag True, URL empty — second gate closes; no Valkey
+                # client is constructed at all (per app.py:91-97).
+                _apply_mock_settings(
+                    mock_settings,
+                    valkey_url="",
+                    valkey_settings_invalidation_enabled=True,
+                )
+
+                app = create_app()
+                async with app.router.lifespan_context(app):
+                    pass
+
+                mock_subscriber_start.assert_not_called()
         finally:
             db_module.db_facade = original

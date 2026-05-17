@@ -24,6 +24,7 @@ import pytest
 
 # Importing the jobs package wires up all @JobRegistry.register decorators.
 import tsigma.scheduler.jobs  # noqa: F401  -- triggers auto-import
+from tests._helpers import make_mock_session
 from tsigma.scheduler.registry import JobRegistry
 
 # ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ from tsigma.scheduler.registry import JobRegistry
 
 def _mock_session() -> AsyncMock:
     """Return an AsyncMock that behaves like an AsyncSession."""
-    session = AsyncMock()
+    session = make_mock_session()
     session.execute = AsyncMock()
     session.commit = AsyncMock()
     session.rollback = AsyncMock()

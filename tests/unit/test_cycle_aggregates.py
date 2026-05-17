@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.models.aggregates import (
     CycleBoundary,
     CycleDetectorArrival,
@@ -101,7 +102,7 @@ class TestCycleBoundaryJob:
         """Job returns early when TimescaleDB continuous aggregates are active."""
         from tsigma.scheduler.jobs.cycle_aggregate import agg_cycle_boundary
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         with patch(
             "tsigma.scheduler.jobs.cycle_aggregate._should_skip",
             new_callable=AsyncMock,
@@ -115,7 +116,7 @@ class TestCycleBoundaryJob:
         """Job deletes stale rows and inserts fresh aggregates."""
         from tsigma.scheduler.jobs.cycle_aggregate import agg_cycle_boundary
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         with patch(
             "tsigma.scheduler.jobs.cycle_aggregate._should_skip",
             new_callable=AsyncMock,
@@ -145,7 +146,7 @@ class TestCycleDetectorArrivalJob:
     async def test_skips_when_timescaledb_active(self):
         from tsigma.scheduler.jobs.cycle_aggregate import agg_cycle_detector_arrival
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         with patch(
             "tsigma.scheduler.jobs.cycle_aggregate._should_skip",
             new_callable=AsyncMock,
@@ -168,7 +169,7 @@ class TestCycleSummary15MinJob:
     async def test_skips_when_timescaledb_active(self):
         from tsigma.scheduler.jobs.cycle_aggregate import agg_cycle_summary_15min
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         with patch(
             "tsigma.scheduler.jobs.cycle_aggregate._should_skip",
             new_callable=AsyncMock,

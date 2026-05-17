@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.app import create_app
 from tsigma.auth.dependencies import get_session_store, require_admin
 from tsigma.auth.sessions import InMemorySessionStore, SessionData
@@ -84,9 +85,7 @@ def _warm_settings_cache():
 @pytest.fixture
 def mock_session():
     """Async mock session for dependency injection."""
-    session = AsyncMock()
-    session.add = MagicMock()
-    return session
+    return make_mock_session()
 
 
 @pytest.fixture

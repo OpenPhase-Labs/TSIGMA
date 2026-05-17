@@ -6,12 +6,13 @@ and missing/unknown settings.
 """
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 
+from tests._helpers import make_mock_session
 from tsigma.auth.dependencies import require_access
 from tsigma.auth.sessions import SessionData
 
@@ -50,7 +51,7 @@ class TestLockedCategory:
     async def test_locked_requires_auth(self):
         """Test locked category raises 401 when user is None."""
         dep = require_access("management")
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with pytest.raises(HTTPException) as exc_info:
             await dep(
@@ -64,7 +65,7 @@ class TestLockedCategory:
         """Test locked category passes with authenticated user."""
         dep = require_access("management")
         user = _make_user()
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         result = await dep(
             user=user,
@@ -77,7 +78,7 @@ class TestLockedCategory:
         """Test locked categories don't even check the cache."""
         dep = require_access("management")
         user = _make_user()
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             await dep(
@@ -94,7 +95,7 @@ class TestAuthenticatedPolicy:
     async def test_authenticated_policy_rejects_anonymous(self):
         """Test 'authenticated' policy raises 401 for anonymous user."""
         dep = require_access("analytics")
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value="authenticated")
@@ -110,7 +111,7 @@ class TestAuthenticatedPolicy:
         """Test 'authenticated' policy passes with logged-in user."""
         dep = require_access("analytics")
         user = _make_user()
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value="authenticated")
@@ -128,7 +129,7 @@ class TestPublicPolicy:
     async def test_public_allows_anonymous(self):
         """Test 'public' policy allows unauthenticated access."""
         dep = require_access("analytics")
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value="public")
@@ -143,7 +144,7 @@ class TestPublicPolicy:
         """Test 'public' policy returns user when one is authenticated."""
         dep = require_access("reports")
         user = _make_user()
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value="public")
@@ -161,7 +162,7 @@ class TestMissingOrUnknownPolicy:
     async def test_missing_policy_defaults_to_authenticated(self):
         """Test None from cache (key missing) defaults to requiring auth."""
         dep = require_access("analytics")
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value=None)
@@ -176,7 +177,7 @@ class TestMissingOrUnknownPolicy:
     async def test_unknown_value_defaults_to_authenticated(self):
         """Test unrecognised policy value (e.g. 'open') defaults to requiring auth."""
         dep = require_access("analytics")
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value="open")
@@ -192,7 +193,7 @@ class TestMissingOrUnknownPolicy:
         """Test unrecognised policy still allows logged-in users."""
         dep = require_access("reports")
         user = _make_user()
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value="garbage")
@@ -210,7 +211,7 @@ class TestCategoryKeyMapping:
     async def test_correct_cache_key_for_analytics(self):
         """Test analytics category looks up 'access_policy.analytics'."""
         dep = require_access("analytics")
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value="public")
@@ -226,7 +227,7 @@ class TestCategoryKeyMapping:
     async def test_correct_cache_key_for_signal_detail(self):
         """Test signal_detail category looks up 'access_policy.signal_detail'."""
         dep = require_access("signal_detail")
-        mock_db = AsyncMock()
+        mock_db = make_mock_session()
 
         with patch("tsigma.auth.dependencies.settings_cache") as mock_cache:
             mock_cache.get = AsyncMock(return_value="public")

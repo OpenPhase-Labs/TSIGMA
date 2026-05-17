@@ -1,3 +1,5 @@
+import os
+os.environ.setdefault("TSIGMA_VALKEY_SETTINGS_INVALIDATION_ENABLED", "false")
 """
 Pytest configuration and shared fixtures.
 
@@ -10,8 +12,6 @@ Set TSIGMA_TEST_DB_URL to enable them:
 
 Integration tests are skipped automatically when this variable is not set.
 """
-
-import os
 
 import pytest
 from fastapi.testclient import TestClient

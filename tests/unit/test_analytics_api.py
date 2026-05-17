@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.analytics import router
 from tsigma.auth.sessions import SessionData
 
@@ -62,7 +63,7 @@ class TestStuckDetectors:
         row.last_off_time = NOW - timedelta(hours=3)
         row.event_count = 10
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = [row]
         mock_session.execute = AsyncMock(return_value=result)
@@ -88,7 +89,7 @@ class TestStuckDetectors:
 
     def test_empty_when_no_stuck(self):
         """Test empty list when no detectors are stuck."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -114,7 +115,7 @@ class TestGapAnalysis:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
         _add_access_overrides(app)
@@ -138,7 +139,7 @@ class TestGapAnalysis:
             MagicMock(event_param=5, event_time=NOW - timedelta(seconds=10)),
         ]
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = rows
         mock_session.execute = AsyncMock(return_value=result)
@@ -174,7 +175,7 @@ class TestGapAnalysisEdgeCases:
             MagicMock(event_param=3, event_time=NOW - timedelta(seconds=20)),
             MagicMock(event_param=3, event_time=NOW - timedelta(seconds=10)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = rows
         mock_session.execute = AsyncMock(return_value=result)
@@ -204,7 +205,7 @@ class TestGapAnalysisEdgeCases:
         rows = [
             MagicMock(event_param=7, event_time=NOW - timedelta(seconds=10)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = rows
         mock_session.execute = AsyncMock(return_value=result)
@@ -238,7 +239,7 @@ class TestOccupancyEdgeCases:
             MagicMock(event_code=82, event_time=START - timedelta(seconds=30)),
             MagicMock(event_code=81, event_time=START + timedelta(seconds=60)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = events
         mock_session.execute = AsyncMock(return_value=result)
@@ -276,7 +277,7 @@ class TestOccupancyEdgeCases:
         events = [
             MagicMock(event_code=82, event_time=START + timedelta(seconds=30)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = events
         mock_session.execute = AsyncMock(return_value=result)
@@ -314,7 +315,7 @@ class TestDetectorOccupancy:
 
     def test_requires_signal_id_and_channel(self):
         """Test required params."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
         _add_access_overrides(app)
@@ -332,7 +333,7 @@ class TestDetectorOccupancy:
 
     def test_returns_occupancy_bins(self):
         """Test occupancy bin computation."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -370,7 +371,7 @@ class TestSkippedPhases:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -391,7 +392,7 @@ class TestSkippedPhases:
             MagicMock(phase=2, green_count=100),
             MagicMock(phase=4, green_count=85),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = rows
         mock_session.execute = AsyncMock(return_value=result)
@@ -421,7 +422,7 @@ class TestSkippedPhasesEdgeCases:
 
     def test_empty_greens_returns_empty(self):
         """Test empty result returns [] (line 55)."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -456,7 +457,7 @@ class TestSplitMonitorEdgeCases:
             MagicMock(event_code=8, event_param=4, event_time=NOW - timedelta(seconds=5)),
             MagicMock(event_code=9, event_param=4, event_time=NOW - timedelta(seconds=1)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = events
         mock_session.execute = AsyncMock(return_value=result)
@@ -498,7 +499,7 @@ class TestSplitMonitorEdgeCases:
             MagicMock(event_code=8, event_param=2, event_time=NOW - timedelta(seconds=15)),
             MagicMock(event_code=9, event_param=2, event_time=NOW - timedelta(seconds=12)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = events
         mock_session.execute = AsyncMock(return_value=result)
@@ -535,7 +536,7 @@ class TestSplitMonitorEdgeCases:
             MagicMock(event_code=4, event_param=6, event_time=NOW - timedelta(seconds=10)),
             MagicMock(event_code=5, event_param=6, event_time=NOW - timedelta(seconds=5)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = events
         mock_session.execute = AsyncMock(return_value=result)
@@ -564,7 +565,7 @@ class TestSplitMonitor:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -587,7 +588,7 @@ class TestSplitMonitor:
             MagicMock(event_code=8, event_param=2, event_time=NOW - timedelta(seconds=5)),
             MagicMock(event_code=9, event_param=2, event_time=NOW - timedelta(seconds=1)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = events
         mock_session.execute = AsyncMock(return_value=result)
@@ -619,7 +620,7 @@ class TestPhaseTerminations:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -639,7 +640,7 @@ class TestPhaseTerminations:
         rows = [
             MagicMock(phase=2, total_cycles=60, gap_outs=39, max_outs=15, force_offs=6),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = rows
         mock_session.execute = AsyncMock(return_value=result)
@@ -670,7 +671,7 @@ class TestOffsetDrift:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -687,7 +688,7 @@ class TestOffsetDrift:
 
     def test_insufficient_data(self):
         """Test 404 with insufficient data."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = [MagicMock(event_time=NOW)]
         mock_session.execute = AsyncMock(return_value=result)
@@ -716,7 +717,7 @@ class TestOffsetDrift:
             MagicMock(event_time=NOW - timedelta(seconds=120)),
             MagicMock(event_time=NOW),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = times
         mock_session.execute = AsyncMock(return_value=result)
@@ -747,7 +748,7 @@ class TestPatternHistory:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -768,7 +769,7 @@ class TestPatternHistory:
             MagicMock(event_time=NOW - timedelta(hours=6), event_param=1),
             MagicMock(event_time=NOW, event_param=2),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = rows
         mock_session.execute = AsyncMock(return_value=result)
@@ -798,7 +799,7 @@ class TestCoordinationQuality:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -815,7 +816,7 @@ class TestCoordinationQuality:
 
     def test_insufficient_data_returns_404(self):
         """Test 404 when fewer than 2 coord phase events."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = [MagicMock(event_time=NOW)]
         mock_session.execute = AsyncMock(return_value=result)
@@ -846,7 +847,7 @@ class TestCoordinationQuality:
             MagicMock(event_time=NOW - timedelta(seconds=120)),
             MagicMock(event_time=NOW),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = times
         mock_session.execute = AsyncMock(return_value=result)
@@ -887,7 +888,7 @@ class TestCoordinationQuality:
             MagicMock(event_time=NOW - timedelta(seconds=125)),
             MagicMock(event_time=NOW),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = times
         mock_session.execute = AsyncMock(return_value=result)
@@ -922,7 +923,7 @@ class TestPreemptionSummary:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -943,7 +944,7 @@ class TestPreemptionSummary:
             MagicMock(event_code=102, event_param=1, event_time=NOW - timedelta(seconds=60)),
             MagicMock(event_code=104, event_param=1, event_time=NOW - timedelta(seconds=15)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = events
         mock_session.execute = AsyncMock(return_value=result)
@@ -973,7 +974,7 @@ class TestPreemptionRecovery:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -994,7 +995,7 @@ class TestDetectorHealth:
 
     def test_requires_signal_id_and_channel(self):
         """Test required params."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -1017,7 +1018,7 @@ class TestDetectorHealth:
         row.last_on = NOW - timedelta(seconds=10)
         row.last_off = NOW - timedelta(seconds=5)
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.one.return_value = row
         mock_session.execute = AsyncMock(return_value=result)
@@ -1056,7 +1057,7 @@ class TestSignalHealth:
 
     def test_requires_signal_id(self):
         """Test signal_id is required."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
 
@@ -1087,7 +1088,7 @@ class TestSignalHealth:
         comm_scalar = MagicMock()
         comm_scalar.scalar.return_value = 5000
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         det_result = MagicMock()
         det_result.all.return_value = det_rows
         phase_result = MagicMock()
@@ -1136,7 +1137,7 @@ class TestPreemptionRecoveryData:
             MagicMock(event_code=104, event_param=1, event_time=NOW - timedelta(seconds=30)),
             MagicMock(event_code=1, event_param=2, event_time=NOW - timedelta(seconds=20)),
         ]
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = events
         mock_session.execute = AsyncMock(return_value=result)
@@ -1168,7 +1169,7 @@ class TestPreemptionRecoveryData:
 
     def test_returns_empty_when_no_events(self):
         """Test preemption recovery with no events returns empty items."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -1210,7 +1211,7 @@ class TestDetectorHealthScoring:
         row.last_on = NOW - timedelta(minutes=45)
         row.last_off = NOW - timedelta(minutes=50)
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.one.return_value = row
         mock_session.execute = AsyncMock(return_value=result)
@@ -1247,7 +1248,7 @@ class TestDetectorHealthScoring:
         row.last_on = NOW - timedelta(seconds=10)
         row.last_off = NOW - timedelta(seconds=5)
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.one.return_value = row
         mock_session.execute = AsyncMock(return_value=result)
@@ -1284,7 +1285,7 @@ class TestDetectorHealthScoring:
         row.last_on = NOW - timedelta(seconds=10)
         row.last_off = None
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.one.return_value = row
         mock_session.execute = AsyncMock(return_value=result)
@@ -1332,7 +1333,7 @@ class TestSignalHealthIssues:
         comm_scalar = MagicMock()
         comm_scalar.scalar.return_value = 5  # 5 events in 1 hour = very low
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(
             side_effect=[det_result, phase_result, coord_result, comm_scalar]
         )

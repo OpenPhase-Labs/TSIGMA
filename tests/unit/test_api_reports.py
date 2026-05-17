@@ -12,6 +12,7 @@ import pandas as pd
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.reports import router
 from tsigma.auth.sessions import SessionData
 
@@ -201,7 +202,7 @@ class TestRunReport:
         fake_cls = _make_fake_report_cls(execute_result={"metric": 42})
         mock_registry.get.return_value = fake_cls
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -220,7 +221,7 @@ class TestRunReport:
     def test_report_not_found(self, mock_registry):
         mock_registry.get.side_effect = ValueError("Unknown report: nope")
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -238,7 +239,7 @@ class TestRunReport:
         fake_cls.return_value = instance
         mock_registry.get.return_value = fake_cls
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -256,7 +257,7 @@ class TestRunReport:
         fake_cls.return_value = instance
         mock_registry.get.return_value = fake_cls
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -274,7 +275,7 @@ class TestExportReport:
         fake_cls = _make_fake_report_cls(export_result=b"a,b\n1,2")
         mock_registry.get.return_value = fake_cls
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -294,7 +295,7 @@ class TestExportReport:
         fake_cls = _make_fake_report_cls(export_result=b'{"key":"val"}')
         mock_registry.get.return_value = fake_cls
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -311,7 +312,7 @@ class TestExportReport:
     def test_export_not_found(self, mock_registry):
         mock_registry.get.side_effect = ValueError("Unknown report")
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -329,7 +330,7 @@ class TestExportReport:
         fake_cls.return_value = instance
         mock_registry.get.return_value = fake_cls
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -348,7 +349,7 @@ class TestExportReport:
         fake_cls.return_value = instance
         mock_registry.get.return_value = fake_cls
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -366,7 +367,7 @@ class TestExportReport:
         fake_cls.return_value = instance
         mock_registry.get.return_value = fake_cls
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)

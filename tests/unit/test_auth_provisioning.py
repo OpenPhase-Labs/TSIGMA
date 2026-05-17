@@ -9,13 +9,14 @@ from uuid import uuid4
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.auth.models import AuthUser, UserRole
 from tsigma.auth.provisioning import _EXTERNAL_PASSWORD_HASH, provision_user
 
 
 def _make_mock_session(scalar_result=None):
     """Build a mock AsyncSession that returns scalar_result from execute()."""
-    session = AsyncMock()
+    session = make_mock_session()
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = scalar_result
     session.execute = AsyncMock(return_value=mock_result)
@@ -49,7 +50,7 @@ def _make_user(**overrides):
 async def test_provision_creates_new_user():
     """When no existing user matches, a new AuthUser is created."""
     # Both lookups return None
-    session = AsyncMock()
+    session = make_mock_session()
     result_none = MagicMock()
     result_none.scalar_one_or_none.return_value = None
     session.execute = AsyncMock(return_value=result_none)
@@ -201,7 +202,7 @@ async def test_provision_links_existing_local_user():
     result_user.scalar_one_or_none.return_value = local_user
     results.append(result_user)
 
-    session = AsyncMock()
+    session = make_mock_session()
     session.execute = AsyncMock(side_effect=results)
 
     user = await provision_user(

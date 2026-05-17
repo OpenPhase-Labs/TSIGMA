@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.database.db import DatabaseFacade, DialectHelper, _validate_identifier
 
 
@@ -377,7 +378,7 @@ class TestDatabaseFacadeErrorPaths:
         facade._session_factory = MagicMock()
 
         # Make session().execute() raise
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(side_effect=RuntimeError("db error"))
         mock_session.commit = AsyncMock()
         mock_session.rollback = AsyncMock()
@@ -398,7 +399,7 @@ class TestDatabaseFacadeErrorPaths:
         facade._engine = MagicMock()
         facade._session_factory = MagicMock()
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(side_effect=RuntimeError("timeout"))
         mock_session.commit = AsyncMock()
         mock_session.rollback = AsyncMock()
@@ -419,7 +420,7 @@ class TestDatabaseFacadeErrorPaths:
         facade._engine = MagicMock()
         facade._session_factory = MagicMock()
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(side_effect=RuntimeError("df error"))
         mock_session.commit = AsyncMock()
         mock_session.rollback = AsyncMock()

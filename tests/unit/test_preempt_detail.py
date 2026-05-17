@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.reports.sdk.events import (
     EVENT_PREEMPTION_BEGIN_DWELL,
     EVENT_PREEMPTION_BEGIN_EXIT,
@@ -60,7 +61,7 @@ def _events_to_df(events: list[SimpleNamespace]) -> pd.DataFrame:
 
 def _mock_session():
     """AsyncSession mock (unused by report but required by the ABC signature)."""
-    session = AsyncMock()
+    session = make_mock_session()
     mock_result = MagicMock()
     mock_result.all.return_value = []
     session.execute = AsyncMock(return_value=mock_result)

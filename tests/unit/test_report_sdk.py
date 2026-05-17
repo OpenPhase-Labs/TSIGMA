@@ -9,11 +9,12 @@ use plain model objects).
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.config_resolver import ApproachSnapshot, DetectorSnapshot, SignalConfig
 from tsigma.reports.sdk.events import (
     DETECTOR_EVENT_CODES,
@@ -565,7 +566,7 @@ async def test_load_channel_to_phase_populated(mock_get_config):
     from tsigma.reports.sdk.config import load_channel_to_phase
 
     mock_get_config.return_value = _populated_config()
-    session = AsyncMock()
+    session = make_mock_session()
 
     result = await load_channel_to_phase(session, "SIG-001", datetime(2025, 6, 15))
 
@@ -579,7 +580,7 @@ async def test_load_channels_for_phase_populated(mock_get_config):
     from tsigma.reports.sdk.config import load_channels_for_phase
 
     mock_get_config.return_value = _populated_config()
-    session = AsyncMock()
+    session = make_mock_session()
 
     result = await load_channels_for_phase(session, "SIG-001", 2, datetime(2025, 6, 15))
 
@@ -593,7 +594,7 @@ async def test_load_channel_to_ped_phase_populated(mock_get_config):
     from tsigma.reports.sdk.config import load_channel_to_ped_phase
 
     mock_get_config.return_value = _populated_config()
-    session = AsyncMock()
+    session = make_mock_session()
 
     result = await load_channel_to_ped_phase(session, "SIG-001", datetime(2025, 6, 15))
 
@@ -608,7 +609,7 @@ async def test_load_channel_to_approach_populated(mock_get_config):
     from tsigma.reports.sdk.config import load_channel_to_approach
 
     mock_get_config.return_value = _populated_config()
-    session = AsyncMock()
+    session = make_mock_session()
 
     result = await load_channel_to_approach(session, "SIG-001", datetime(2025, 6, 15))
 
@@ -648,7 +649,7 @@ class TestFetchPlans:
         mock_result = MM()
         mock_result.scalars.return_value.all.return_value = [fake_plan]
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(return_value=mock_result)
 
         plans = await fetch_plans(session, "SIG-001", t0, t1)
@@ -670,7 +671,7 @@ class TestFetchPlans:
         mock_result = MM()
         mock_result.scalars.return_value.all.return_value = []
 
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(return_value=mock_result)
 
         plans = await fetch_plans(session, "SIG-001", t0, t1)

@@ -5,16 +5,17 @@ Tests the APScheduler abstraction layer that provides consistent
 job lifecycle management for all TSIGMA services.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.scheduler.service import SchedulerService
 
 
 def _mock_session_factory():
     """Create a mock async session factory that supports 'async with'."""
-    mock_session = AsyncMock()
+    mock_session = make_mock_session()
     mock_session.commit = AsyncMock()
     mock_session.rollback = AsyncMock()
 

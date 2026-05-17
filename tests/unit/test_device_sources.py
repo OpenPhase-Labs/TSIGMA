@@ -14,6 +14,7 @@ from uuid import UUID
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.collection.sources import (
     DeviceSource,
     RoadsideSensorDeviceSource,
@@ -35,7 +36,7 @@ def _mock_signal_row(
 
 
 def _mock_session_with_rows(rows: list) -> AsyncMock:
-    session = AsyncMock()
+    session = make_mock_session()
     result = MagicMock()
     result.all.return_value = rows
     session.execute = AsyncMock(return_value=result)

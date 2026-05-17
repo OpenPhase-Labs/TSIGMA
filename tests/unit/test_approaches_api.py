@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.approaches import router
 from tsigma.auth.sessions import SessionData
 from tsigma.models import Approach, Signal
@@ -82,7 +83,7 @@ class TestListApproaches:
     def test_returns_approaches(self):
         """Test listing approaches for a signal."""
         approach = _mock_approach()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         # First query: signal exists
         signal_result = MagicMock()
         signal_result.scalar_one_or_none.return_value = _mock_signal()
@@ -110,7 +111,7 @@ class TestListApproaches:
 
     def test_signal_not_found(self):
         """Test 404 when signal doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -131,7 +132,7 @@ class TestListApproaches:
 
     def test_empty_list(self):
         """Test empty approach list for signal with no approaches."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         signal_result = MagicMock()
         signal_result.scalar_one_or_none.return_value = _mock_signal()
         approach_result = MagicMock()
@@ -160,7 +161,7 @@ class TestGetApproach:
     def test_returns_approach(self):
         """Test getting an approach by ID."""
         approach = _mock_approach()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = approach
         mock_session.execute = AsyncMock(return_value=result)
@@ -182,7 +183,7 @@ class TestGetApproach:
 
     def test_not_found(self):
         """Test 404 when approach doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -208,7 +209,7 @@ class TestCreateApproach:
     def test_creates_approach(self):
         """Test creating an approach under a signal."""
         approach = _mock_approach()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         signal_result = MagicMock()
         signal_result.scalar_one_or_none.return_value = _mock_signal()
         mock_session.execute = AsyncMock(return_value=signal_result)
@@ -241,7 +242,7 @@ class TestCreateApproach:
 
     def test_signal_not_found(self):
         """Test 404 when parent signal doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -270,7 +271,7 @@ class TestCreateApproach:
 
     def test_validation_error(self):
         """Test 422 on invalid body."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
 
@@ -301,7 +302,7 @@ class TestUpdateApproach:
     def test_updates_approach(self):
         """Test updating an approach returns 200."""
         approach = _mock_approach()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = approach
         mock_session.execute = AsyncMock(return_value=result)
@@ -332,7 +333,7 @@ class TestUpdateApproach:
     def test_partial_update(self):
         """Test partial update only changes provided fields."""
         approach = _mock_approach(mph=35, description="Northbound Through")
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = approach
         mock_session.execute = AsyncMock(return_value=result)
@@ -363,7 +364,7 @@ class TestUpdateApproach:
 
     def test_not_found(self):
         """Test 404 when approach doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -392,7 +393,7 @@ class TestUpdateApproach:
 
     def test_empty_body_returns_422(self):
         """Test 422 when no fields provided for update."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
 
@@ -423,7 +424,7 @@ class TestDeleteApproach:
     def test_deletes_approach(self):
         """Test deleting an approach returns 204."""
         approach = _mock_approach()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = approach
         mock_session.execute = AsyncMock(return_value=result)
@@ -450,7 +451,7 @@ class TestDeleteApproach:
 
     def test_not_found(self):
         """Test 404 when approach doesn't exist."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.collection.decoders.base import DecodedEvent
 from tsigma.collection.methods.ftp_pull import (
     FTPProtocol,
@@ -171,14 +172,11 @@ def _mock_decoder(events=None):
 
 def _mock_session_factory():
     """Create a mock async session factory with proper checkpoint support."""
-    mock_session = AsyncMock()
+    mock_session = make_mock_session()
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = None
     result_mock.scalars.return_value.all.return_value = []
     mock_session.execute = AsyncMock(return_value=result_mock)
-    mock_session.add = MagicMock()
-    mock_session.add_all = MagicMock()
-    mock_session.expunge = MagicMock()
     mock_session.flush = AsyncMock()
     mock_session_ctx = MagicMock()
     mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)

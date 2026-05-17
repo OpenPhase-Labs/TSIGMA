@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.database.db import DatabaseFacade, get_db_facade
 
 
@@ -296,7 +297,7 @@ class TestSession:
     async def test_commits_on_success(self):
         """Test session commits when block succeeds."""
         facade = DatabaseFacade("postgresql")
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_factory = MagicMock()
         mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -311,7 +312,7 @@ class TestSession:
     async def test_rollback_on_error(self):
         """Test session rolls back when block raises."""
         facade = DatabaseFacade("postgresql")
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_factory = MagicMock()
         mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -342,7 +343,7 @@ class TestExecute:
         from sqlalchemy import text
 
         facade = DatabaseFacade("postgresql")
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.commit = AsyncMock()
         mock_session.rollback = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -357,7 +358,7 @@ class TestExecute:
     async def test_sqlalchemy_statement_passed_directly(self):
         """Test SQLAlchemy statements are passed without wrapping."""
         facade = DatabaseFacade("postgresql")
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_factory = MagicMock()
         mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -374,7 +375,7 @@ class TestExecute:
     async def test_reraises_on_error(self):
         """Test execute logs and re-raises database errors."""
         facade = DatabaseFacade("postgresql")
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute.side_effect = RuntimeError("connection lost")
         mock_session.commit = AsyncMock()
         mock_session.rollback = AsyncMock()

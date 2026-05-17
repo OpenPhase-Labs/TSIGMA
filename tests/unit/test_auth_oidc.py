@@ -14,6 +14,7 @@ import httpx
 import pytest
 from fastapi import APIRouter, HTTPException
 
+from tests._helpers import make_mock_session
 from tsigma.auth.providers.oidc import _STATE_TTL_SECONDS, OIDCAuthProvider
 from tsigma.auth.registry import AuthProviderRegistry
 
@@ -228,7 +229,7 @@ class TestOIDCCallback:
         mock_store = AsyncMock()
         mock_store.create.return_value = "session-id-xyz"
         mock_response = MagicMock()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         with (
             patch("tsigma.auth.providers.oidc.settings", _settings_defaults()),

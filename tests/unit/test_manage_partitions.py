@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
+
 
 def _mock_rows(rows: list[tuple[str, str]]) -> MagicMock:
     """Build a MagicMock ``execute`` result whose ``.all()`` returns rows.
@@ -34,7 +36,7 @@ async def test_skips_postgresql():
     """PostgreSQL uses TimescaleDB — job returns early without touching DB."""
     from tsigma.scheduler.jobs import manage_partitions as mp
 
-    session = AsyncMock()
+    session = make_mock_session()
     with patch.object(mp.settings, "db_type", "postgresql"):
         await mp.manage_partitions(session)
     session.execute.assert_not_called()
@@ -45,7 +47,7 @@ async def test_skips_when_table_not_partitioned():
     """list_partitions returning no rows means the table isn't partitioned yet."""
     from tsigma.scheduler.jobs import manage_partitions as mp
 
-    session = AsyncMock()
+    session = make_mock_session()
     session.execute = AsyncMock(return_value=_mock_rows([]))
 
     with patch.object(mp, "_MANAGED_TABLES", ("controller_event_log",)), \
@@ -72,7 +74,7 @@ async def test_creates_missing_future_partitions_mysql():
          "99999999"),
     ]
 
-    session = AsyncMock()
+    session = make_mock_session()
     # First call = list_partitions; subsequent calls = ALTER TABLE ADD PARTITION
     session.execute = AsyncMock(side_effect=[
         _mock_rows(existing_rows),
@@ -108,7 +110,7 @@ async def test_does_not_create_when_all_future_partitions_exist():
         for i in range(4)
     ]
 
-    session = AsyncMock()
+    session = make_mock_session()
     session.execute = AsyncMock(return_value=_mock_rows(existing_rows))
 
     with patch.object(mp, "_MANAGED_TABLES", ("controller_event_log",)), \
@@ -140,7 +142,7 @@ async def test_drops_old_partitions_when_retention_set_mysql():
          _mysql_unix_ts(fresh_boundary)),
     ]
 
-    session = AsyncMock()
+    session = make_mock_session()
     # list + 1 create (today+1 missing) + 1 drop (old partition)
     session.execute = AsyncMock(side_effect=[
         _mock_rows(existing_rows),
@@ -170,7 +172,7 @@ async def test_oracle_is_inert_for_ensure_creates_but_can_drop():
         ("P_20260101", "TO_DATE(' 2026-04-20 00:00:00', 'SYYYY-MM-DD HH24:MI:SS')"),
     ]
 
-    session = AsyncMock()
+    session = make_mock_session()
     session.execute = AsyncMock(return_value=_mock_rows(existing_rows))
 
     with patch.object(mp, "_MANAGED_TABLES", ("controller_event_log",)), \
@@ -196,7 +198,7 @@ async def test_manages_both_event_tables_mysql():
         (helper.partition_name(today, 1), "99999999"),
     ]
 
-    session = AsyncMock()
+    session = make_mock_session()
     # Sequence: list(cel), create(cel tomorrow), list(re), create(re tomorrow).
     session.execute = AsyncMock(side_effect=[
         _mock_rows(existing_rows),

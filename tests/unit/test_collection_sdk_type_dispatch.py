@@ -26,6 +26,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.collection.decoders.base import DecodedEvent, SensorDetection
 from tsigma.collection.sdk import (
     _upsert_controller_events,
@@ -44,7 +45,7 @@ def _make_session_factory(lookup_rows: list | None = None):
     lookup.  Subsequent execute() calls return a generic MagicMock
     (the INSERT doesn't care about the result).
     """
-    mock_session = AsyncMock()
+    mock_session = make_mock_session()
 
     if lookup_rows is not None:
         call_idx = {"n": 0}

@@ -131,13 +131,21 @@ All storage settings live in `tsigma.config.Settings` with the `TSIGMA_` env-var
 | `storage_s3_access_key`    | `TSIGMA_STORAGE_S3_ACCESS_KEY`  | `str`  | `""`                       |
 | `storage_s3_secret_key`    | `TSIGMA_STORAGE_S3_SECRET_KEY`  | `str`  | `""`                       |
 
-Related cold-tier settings (not part of the storage backend, but relevant to data lifecycle):
+Related cold-tier settings (not part of the storage backend, but relevant to data lifecycle). The first five rows are runtime-registry keys in `tsigma.settings_service` — see [`docs/operations/runtime-settings.md`](../operations/runtime-settings.md) for the admin API, env-var override rules, and audit log details. Only `storage_cold_path` remains a Pydantic config attribute, because the cold-tier filesystem path is fixed at deployment time.
 
-| Setting                | Env Var                          | Type   | Default                     |
+| Registry key                         | Env Var Override                          | Type   | Default | Category   |
+|--------------------------------------|-------------------------------------------|--------|---------|------------|
+| `storage.cold_enabled`               | `TSIGMA_STORAGE_COLD_ENABLED`             | `bool` | `false` | cold_tier  |
+| `storage.cold_after_days`            | `TSIGMA_STORAGE_COLD_AFTER_DAYS`          | `int`  | `180`   | cold_tier  |
+| `storage.cold_delete_after_export`   | `TSIGMA_STORAGE_COLD_DELETE_AFTER_EXPORT` | `bool` | `true`  | cold_tier  |
+| `cold_tier.query_enabled`            | `TSIGMA_COLD_TIER_QUERY_ENABLED`          | `bool` | `true`  | cold_tier  |
+| `cold_tier.threshold_days`           | `TSIGMA_COLD_TIER_THRESHOLD_DAYS`         | `int`  | `180`   | cold_tier  |
+
+| Pydantic setting       | Env Var                          | Type   | Default                     |
 |------------------------|----------------------------------|--------|-----------------------------|
-| `storage_cold_enabled` | `TSIGMA_STORAGE_COLD_ENABLED`    | `bool` | `False`                     |
-| `storage_cold_after`   | `TSIGMA_STORAGE_COLD_AFTER`      | `str`  | `"6 months"`                |
 | `storage_cold_path`    | `TSIGMA_STORAGE_COLD_PATH`       | `str`  | `"/var/lib/tsigma/cold"`    |
+
+The `cold_tier.*` keys (query routing) are registered so operators can pre-stage values; the query-layer wiring is forthcoming.
 
 ## Adding a New Storage Backend
 

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.reports.sdk.events import (
     EVENT_PREEMPTION_CALL_INPUT_ON,
     EVENT_PREEMPTION_ENTRY_STARTED,
@@ -50,7 +51,7 @@ def _events_to_df(events: list[SimpleNamespace]) -> pd.DataFrame:
 
 def _mock_session():
     """AsyncSession mock — not used when fetch_plans is patched."""
-    session = AsyncMock()
+    session = make_mock_session()
     mock_result = MagicMock()
     mock_result.all.return_value = []
     mock_scalars = MagicMock()

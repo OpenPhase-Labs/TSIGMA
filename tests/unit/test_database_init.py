@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.database.init import (
     _create_indexes,
     _setup_timescale,
@@ -25,7 +26,7 @@ def _make_facade_with_mock_session(db_type: str = "postgresql"):
     Returns:
         Tuple of (mock_facade, mock_session).
     """
-    mock_session = AsyncMock()
+    mock_session = make_mock_session()
 
     # session.begin() is used as `async with session.begin():` so it must
     # return an async context manager directly (not a coroutine).
@@ -131,7 +132,7 @@ class TestSetupTimescale:
     @pytest.mark.asyncio
     async def test_creates_extension(self):
         """Test TimescaleDB extension is created."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await _setup_timescale(mock_session, 7, 7)
 
@@ -143,7 +144,7 @@ class TestSetupTimescale:
     @pytest.mark.asyncio
     async def test_creates_hypertable(self):
         """Test hypertable is created with correct chunk interval."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await _setup_timescale(mock_session, 14, 7)
 
@@ -158,7 +159,7 @@ class TestSetupTimescale:
     @pytest.mark.asyncio
     async def test_configures_compression(self):
         """Test compression policy is set up."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await _setup_timescale(mock_session, 7, 30)
 
@@ -173,7 +174,7 @@ class TestSetupTimescale:
     @pytest.mark.asyncio
     async def test_hypertable_already_exists_is_handled(self):
         """Test existing hypertable doesn't raise."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         # First call (CREATE EXTENSION) succeeds, second (create_hypertable) fails
         mock_session.execute.side_effect = [
             None,  # CREATE EXTENSION
@@ -188,7 +189,7 @@ class TestSetupTimescale:
     @pytest.mark.asyncio
     async def test_hypertable_non_already_error_reraises(self):
         """Test non-'already' hypertable error is re-raised (line 106)."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute.side_effect = [
             None,  # CREATE EXTENSION
             Exception("permission denied for table controller_event_log"),
@@ -200,7 +201,7 @@ class TestSetupTimescale:
     @pytest.mark.asyncio
     async def test_compression_already_configured(self):
         """Test compression 'already' error is logged as info (line 129-130)."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute.side_effect = [
             None,  # CREATE EXTENSION
             None,  # create_hypertable
@@ -214,7 +215,7 @@ class TestSetupTimescale:
     @pytest.mark.asyncio
     async def test_compression_other_error_warns(self):
         """Test non-'already' compression error is logged as warning (lines 131-132)."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute.side_effect = [
             None,  # CREATE EXTENSION
             None,  # create_hypertable
@@ -231,7 +232,7 @@ class TestCreateIndexes:
     @pytest.mark.asyncio
     async def test_creates_signal_event_time_index(self):
         """Test signal+event_time composite index is created."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await _create_indexes(mock_session, "postgresql")
 
@@ -242,7 +243,7 @@ class TestCreateIndexes:
     @pytest.mark.asyncio
     async def test_creates_event_timestamp_index(self):
         """Test event_code+timestamp composite index is created."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await _create_indexes(mock_session, "postgresql")
 
@@ -253,7 +254,7 @@ class TestCreateIndexes:
     @pytest.mark.asyncio
     async def test_uses_if_not_exists(self):
         """Test indexes use IF NOT EXISTS for idempotency."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await _create_indexes(mock_session, "postgresql")
 
@@ -268,7 +269,7 @@ class TestCreateBackfillProgressTable:
     @pytest.mark.asyncio
     async def test_creates_table(self):
         """Test backfill_progress table is created."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await create_backfill_progress_table(mock_session)
 
@@ -278,7 +279,7 @@ class TestCreateBackfillProgressTable:
     @pytest.mark.asyncio
     async def test_has_required_columns(self):
         """Test table has hour_start, row_count, and completed_at."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await create_backfill_progress_table(mock_session)
 
@@ -290,7 +291,7 @@ class TestCreateBackfillProgressTable:
     @pytest.mark.asyncio
     async def test_idempotent(self):
         """Test uses IF NOT EXISTS for safe re-runs."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         await create_backfill_progress_table(mock_session)
 

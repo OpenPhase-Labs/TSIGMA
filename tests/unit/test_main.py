@@ -4,6 +4,7 @@ Unit tests for application entrypoint.
 Tests that main() calls uvicorn.run with correct configuration.
 """
 
+import sys
 from unittest.mock import patch
 
 from tsigma.main import main
@@ -62,6 +63,7 @@ class TestMain:
         """Test __name__ == '__main__' block calls main() (line 31)."""
         with patch("tsigma.main.uvicorn.run"):
             import runpy
+            sys.modules.pop("tsigma.main", None)
             # runpy.run_module re-executes the module with __name__="__main__",
             # so main() defined inside the module will be called via the guard.
             # We patch uvicorn.run so it doesn't actually start a server.

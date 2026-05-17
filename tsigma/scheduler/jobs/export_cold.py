@@ -8,6 +8,7 @@ is expected after verifying archive integrity.
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tsigma.config import settings
 from tsigma.scheduler.registry import JobRegistry
+from tsigma.settings_service import get_bool, get_int
 
 logger = logging.getLogger(__name__)
 
@@ -29,22 +31,28 @@ logger = logging.getLogger(__name__)
 )
 async def export_cold(session: AsyncSession) -> None:
     """Export old event data to Parquet files in the cold-storage directory."""
-    if not settings.storage_cold_enabled:
+    if not await get_bool("storage.cold_enabled", session):
         logger.debug("Skipping export_cold — cold storage is disabled")
         return
 
+    cold_after_days = await get_int("storage.cold_after_days", session)
     cold_root = Path(settings.storage_cold_path)
 
     try:
-        # Fetch events older than the cold-storage threshold
+        # Fetch events older than the cold-storage threshold.  The cutoff is
+        # computed in Python (mirrors watchdog.py / signal_plan.py /
+        # manage_partitions.py) so the SQL is portable across PostgreSQL,
+        # MS-SQL, Oracle, and MySQL — SQLAlchemy adapts the ``datetime`` bind
+        # parameter for each dialect.
+        cutoff = datetime.now(timezone.utc) - timedelta(days=cold_after_days)
         result = await session.execute(
             text("""
                 SELECT signal_id, event_time, event_code, event_param, device_id
                 FROM controller_event_log
-                WHERE event_time < now() - :cold_interval ::interval
+                WHERE event_time < :cutoff
                 ORDER BY signal_id, event_time
             """),
-            {"cold_interval": settings.storage_cold_after},
+            {"cutoff": cutoff},
         )
         rows = result.all()
 
@@ -77,9 +85,10 @@ async def export_cold(session: AsyncSession) -> None:
             cold_root,
         )
         logger.info(
-            "Exported data covers events before now() - %s. "
+            "Exported data covers events before %s (cold_after_days=%d). "
             "Manual partition drop is recommended after verifying archive integrity.",
-            settings.storage_cold_after,
+            cutoff.isoformat(),
+            cold_after_days,
         )
 
     except Exception:

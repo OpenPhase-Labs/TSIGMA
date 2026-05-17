@@ -27,7 +27,7 @@ data:
   TSIGMA_STORAGE_RETENTION: {{ .Values.storage.retention | quote }}
 
   TSIGMA_STORAGE_COLD_ENABLED: {{ .Values.storage.cold.enabled | quote }}
-  TSIGMA_STORAGE_COLD_AFTER: {{ .Values.storage.cold.after | quote }}
+  TSIGMA_STORAGE_COLD_AFTER_DAYS: {{ .Values.storage.cold.afterDays | quote }}
   TSIGMA_STORAGE_COLD_PATH: {{ .Values.storage.cold.path | quote }}
 
   TSIGMA_COLLECTOR_MAX_CONCURRENT: {{ .Values.collector.maxConcurrent | quote }}

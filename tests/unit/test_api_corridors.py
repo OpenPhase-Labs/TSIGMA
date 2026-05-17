@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.corridors import router
 from tsigma.auth.sessions import SessionData
 from tsigma.models import Corridor
@@ -75,7 +76,7 @@ class TestListCorridors:
 
     def test_returns_corridors(self):
         corridor = _mock_corridor()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = [corridor]
         mock_session.execute = AsyncMock(return_value=result)
@@ -92,7 +93,7 @@ class TestListCorridors:
         assert data[0]["name"] == "Peachtree Street Corridor"
 
     def test_empty_list(self):
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = []
         mock_session.execute = AsyncMock(return_value=result)
@@ -112,7 +113,7 @@ class TestGetCorridor:
 
     def test_returns_corridor(self):
         corridor = _mock_corridor()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = corridor
         mock_session.execute = AsyncMock(return_value=result)
@@ -127,7 +128,7 @@ class TestGetCorridor:
         assert resp.json()["name"] == "Peachtree Street Corridor"
 
     def test_not_found(self):
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -147,7 +148,7 @@ class TestCreateCorridor:
     def test_creates_corridor(self):
         expected_id = uuid4()
         added_objects = []
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.add = MagicMock(side_effect=lambda obj: added_objects.append(obj))
 
         async def fake_flush():
@@ -181,7 +182,7 @@ class TestCreateCorridor:
         assert resp.json()["name"] == "Peachtree Street Corridor"
 
     def test_name_required(self):
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         app = _create_test_app()
 
@@ -233,7 +234,7 @@ class TestUpdateCorridor:
         """PUT /corridors/{id} returns updated corridor data."""
         corridor = _mock_corridor(name="Old Name")
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = corridor
         mock_session.execute = AsyncMock(return_value=result)
@@ -253,7 +254,7 @@ class TestUpdateCorridor:
 
     def test_update_corridor_not_found(self):
         """PUT /corridors/{id} returns 404 for unknown corridor."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -276,7 +277,7 @@ class TestDeleteCorridor:
     def test_delete_corridor(self):
         """DELETE /corridors/{id} returns 204 on success."""
         corridor = _mock_corridor()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = corridor
         mock_session.execute = AsyncMock(return_value=result)
@@ -293,7 +294,7 @@ class TestDeleteCorridor:
 
     def test_delete_corridor_not_found(self):
         """DELETE /corridors/{id} returns 404 for unknown corridor."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)

@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.auth.dependencies import get_current_user, get_session_store
 from tsigma.auth.models import ApiKey, UserRole
 from tsigma.auth.router import router as auth_router
@@ -94,7 +95,7 @@ class TestGenerateApiKey:
         """generate_api_key returns (key_id, plaintext_key)."""
         from tsigma.auth.api_keys import generate_api_key
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         user_id = uuid4()
 
         key_id, plaintext = await generate_api_key(
@@ -115,7 +116,7 @@ class TestGenerateApiKey:
         """The stored key_hash must differ from the plaintext."""
         from tsigma.auth.api_keys import generate_api_key
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         user_id = uuid4()
 
         _key_id, plaintext = await generate_api_key(
@@ -136,7 +137,7 @@ class TestGenerateApiKey:
         """generate_api_key accepts optional expires_at."""
         from tsigma.auth.api_keys import generate_api_key
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         user_id = uuid4()
         future = datetime.now(timezone.utc) + timedelta(days=30)
 
@@ -160,7 +161,7 @@ class TestValidateApiKey:
         """A valid, non-expired, non-revoked key returns SessionData."""
         from tsigma.auth.api_keys import generate_api_key, validate_api_key
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         user_id = uuid4()
 
         _key_id, plaintext = await generate_api_key(
@@ -198,7 +199,7 @@ class TestValidateApiKey:
         """An expired key returns None."""
         from tsigma.auth.api_keys import generate_api_key, validate_api_key
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         user_id = uuid4()
         past = datetime.now(timezone.utc) - timedelta(hours=1)
 
@@ -227,7 +228,7 @@ class TestValidateApiKey:
         """A revoked key returns None."""
         from tsigma.auth.api_keys import generate_api_key, validate_api_key
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         user_id = uuid4()
 
         _key_id, plaintext = await generate_api_key(
@@ -254,7 +255,7 @@ class TestValidateApiKey:
         """A non-matching key returns None."""
         from tsigma.auth.api_keys import validate_api_key
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         # No keys match the prefix
         mock_result = MagicMock()
@@ -299,7 +300,7 @@ class TestApiKeyHeaderResolution:
             patch("tsigma.auth.dependencies._get_db_for_api_key") as mock_get_db,
         ):
             mock_settings.auth_cookie_name = "tsigma_session"
-            mock_db = AsyncMock()
+            mock_db = make_mock_session()
             mock_get_db.return_value = mock_db
             result = await get_current_user_optional(mock_request, mock_store)
 
@@ -332,7 +333,7 @@ class TestApiKeyHeaderResolution:
             patch("tsigma.auth.dependencies._get_db_for_api_key") as mock_get_db,
         ):
             mock_settings.auth_cookie_name = "tsigma_session"
-            mock_db = AsyncMock()
+            mock_db = make_mock_session()
             mock_get_db.return_value = mock_db
             result = await get_current_user_optional(mock_request, mock_store)
 
@@ -408,7 +409,7 @@ def viewer_session():
 def api_key_client(admin_session):
     """TestClient with auth overrides for API key endpoints."""
     app = _create_api_key_app()
-    mock_db = AsyncMock()
+    mock_db = make_mock_session()
     mock_store = InMemorySessionStore()
 
     app.dependency_overrides[get_session] = lambda: mock_db

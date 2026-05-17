@@ -225,7 +225,7 @@ services:
       # Storage tiers
       - TSIGMA_STORAGE_WARM_AFTER=7 days
       - TSIGMA_STORAGE_COLD_ENABLED=true
-      - TSIGMA_STORAGE_COLD_AFTER=6 months
+      - TSIGMA_STORAGE_COLD_AFTER_DAYS=180
       - TSIGMA_STORAGE_COLD_FORMAT=parquet
       - TSIGMA_STORAGE_RETENTION=2 years
       # Cold endpoint — filesystem
@@ -337,8 +337,8 @@ Set these only on processes that have the matching `TSIGMA_ENABLE_*_LISTENER` (o
 | `TSIGMA_STORAGE_WARM_AFTER` | `7 days` | Compress chunks older than this interval |
 | `TSIGMA_STORAGE_WARM_MAX_DISK` | — | Compress early if hot tier exceeds this size (TimescaleDB only, e.g., `500 GB`) |
 | `TSIGMA_STORAGE_WARM_CHECK_INTERVAL` | `5m` | How often to check disk usage for `WARM_MAX_DISK` |
-| `TSIGMA_STORAGE_COLD_ENABLED` | `false` | Enable Parquet cold tier (On-Prem only) |
-| `TSIGMA_STORAGE_COLD_AFTER` | `6 months` | Export to Parquet after this age |
+| `TSIGMA_STORAGE_COLD_ENABLED` | `false` | Enable Parquet cold tier (On-Prem only). Runtime-registry override for `storage.cold_enabled`. |
+| `TSIGMA_STORAGE_COLD_AFTER_DAYS` | `180` | Export to Parquet after this many days. Runtime-registry override for `storage.cold_after_days`. **Renamed — see migration note below.** |
 | `TSIGMA_STORAGE_COLD_FORMAT` | `parquet` | Cold export format |
 | `TSIGMA_STORAGE_BACKEND` | `filesystem` | Cold storage backend (`filesystem` or `s3`) |
 | `TSIGMA_STORAGE_COLD_PATH` | `/var/lib/tsigma/cold` | Filesystem path for cold storage |
@@ -346,3 +346,54 @@ Set these only on processes that have the matching `TSIGMA_ENABLE_*_LISTENER` (o
 | `TSIGMA_STORAGE_S3_REGION` | `us-east-1` | S3 region |
 | `TSIGMA_STORAGE_S3_ENDPOINT` | — | Custom S3 endpoint (MinIO/Ceph) |
 | `TSIGMA_STORAGE_RETENTION` | `2 years` | Drop data entirely after this age |
+
+### Runtime Settings (registry-derived overrides)
+
+TSIGMA exposes a runtime-settings registry — nine admin-tunable keys
+stored in `identity.system_setting` and exposed via the admin API. Each
+registered key carries a `TSIGMA_<KEY>` environment-variable override
+(dots → underscores, uppercased) that takes precedence over the
+database row. See
+[docs/operations/runtime-settings.md](../operations/runtime-settings.md)
+for the full registry, admin API reference, and audit log details.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TSIGMA_VALKEY_SETTINGS_INVALIDATION_ENABLED` | `true` | Publish runtime-settings invalidations on the Valkey pub/sub channel `tsigma:system_setting:invalidate` so peer replicas drop their local caches. Dual-gated with `TSIGMA_VALKEY_URL` — both must be set; setting this to `false` disables publication without unsetting the shared Valkey URL. Single-replica deployments may leave this at default. |
+| `TSIGMA_COLD_TIER_QUERY_ENABLED` | `true` | Route queries past the cold threshold to the Parquet tier. Override for `cold_tier.query_enabled`. (Registry value ships now; query-layer wiring forthcoming.) |
+| `TSIGMA_COLD_TIER_THRESHOLD_DAYS` | `180` | Events older than this many days are read from the cold tier. Override for `cold_tier.threshold_days`. (Registry value ships now; query-layer wiring forthcoming.) |
+| `TSIGMA_STORAGE_COLD_DELETE_AFTER_EXPORT` | `true` | Delete archived rows from the hot DB after verified Parquet write. Override for `storage.cold_delete_after_export`. |
+| `TSIGMA_API_MAX_PAGE_SIZE` | `1000` | Event-list endpoint per-page cap. Override for `api.max_page_size`. |
+| `TSIGMA_API_MAX_AGGREGATION_DAYS` | `92` | Aggregation endpoint date-range cap. Override for `api.max_aggregation_days`. |
+| `TSIGMA_API_MAX_SIGNALS_PER_REQUEST` | `100` | Aggregation endpoint per-request signal count cap. Override for `api.max_signals_per_request`. |
+| `TSIGMA_API_MAX_LOOKBACK_DAYS` | `92` | Absolute oldest data an API request can ask for. Override for `api.max_lookback_days`. |
+
+> **Note on precedence.** When an env-var override is set, the matching
+> DB row is ignored at read time. Admin-UI writes still succeed and
+> still produce audit rows, but the running process keeps observing the
+> env-var value until the env var is removed and the process is
+> restarted (or the cache TTL passes after env removal). Document
+> deployed env-var overrides in your runbook so operators do not mistake
+> them for unsaved admin changes.
+
+### Migration Notes (hard cutover)
+
+One storage env var was renamed with a **hard cutover** — the old name
+is silently ignored and no deprecation warning is emitted. Audit your
+deployment artifacts (`.env`, docker-compose, Helm values, Kubernetes
+ConfigMaps, secret stores) before deploying:
+
+| Old (silently inert)                     | New                                       |
+|------------------------------------------|-------------------------------------------|
+| `TSIGMA_STORAGE_COLD_AFTER="6 months"`   | `TSIGMA_STORAGE_COLD_AFTER_DAYS=180`      |
+
+`TSIGMA_STORAGE_COLD_ENABLED` is **unchanged**.
+`TSIGMA_STORAGE_COLD_PATH` is **unchanged** (remains a deployment-fixed
+Pydantic config attribute, not a runtime-registry key).
+
+If you previously set `TSIGMA_STORAGE_COLD_AFTER="6 months"`, rename it
+to `TSIGMA_STORAGE_COLD_AFTER_DAYS=180` (or your preferred integer day
+count) before the next deploy. The cold-export scheduler job
+(`tsigma.scheduler.jobs.export_cold`) now reads the threshold from the
+runtime registry; the previous string-with-units format is no longer
+parsed.

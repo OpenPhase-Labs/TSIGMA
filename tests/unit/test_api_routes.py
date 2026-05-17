@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.routes import (
     RouteCreate,
     RouteDistanceCreate,
@@ -69,7 +70,7 @@ class TestListRouteSignals:
 
     def test_returns_signals_for_valid_route(self):
         route_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
 
         fake_route = MagicMock()
         fake_rs1 = MagicMock(
@@ -102,7 +103,7 @@ class TestListRouteSignals:
 
     def test_raises_404_when_route_not_found(self):
         route_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             return_value=_mock_scalar_result(None),
         )
@@ -125,7 +126,7 @@ class TestCreateRouteSignal:
 
     def test_creates_signal_in_route(self):
         route_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
 
         fake_route = MagicMock()
         fake_signal = MagicMock()
@@ -161,7 +162,7 @@ class TestCreateRouteSignal:
 
     def test_raises_404_when_route_not_found(self):
         route_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
         body = RouteSignalCreate(signal_id="SIG-001", sequence_order=1)
 
         session.execute = AsyncMock(
@@ -178,7 +179,7 @@ class TestCreateRouteSignal:
 
     def test_raises_404_when_signal_not_found(self):
         route_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
         body = RouteSignalCreate(signal_id="NOPE", sequence_order=1)
 
         # Route found, signal not found
@@ -235,7 +236,7 @@ class TestListRoutePhases:
 
     def test_returns_phases_for_valid_route_signal(self):
         route_signal_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
 
         fake_rs = MagicMock()
         fake_phase1 = MagicMock(
@@ -270,7 +271,7 @@ class TestListRoutePhases:
 
     def test_raises_404_when_route_signal_not_found(self):
         route_signal_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             return_value=_mock_scalar_result(None),
         )
@@ -289,7 +290,7 @@ class TestCreateRoutePhase:
 
     def test_creates_phase(self):
         route_signal_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
 
         fake_rs = MagicMock()
         session.execute = AsyncMock(
@@ -324,7 +325,7 @@ class TestCreateRoutePhase:
 
     def test_raises_404_when_route_signal_not_found(self):
         route_signal_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             return_value=_mock_scalar_result(None),
         )
@@ -350,7 +351,7 @@ class TestListRouteDistances:
 
     def test_returns_distances_for_valid_route(self):
         route_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
 
         fake_route = MagicMock()
         fake_dist = MagicMock(
@@ -375,7 +376,7 @@ class TestListRouteDistances:
 
     def test_raises_404_when_route_not_found(self):
         route_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             return_value=_mock_scalar_result(None),
         )
@@ -394,7 +395,7 @@ class TestCreateRouteDistance:
     def test_creates_distance(self):
         from_rs_id = uuid4()
         to_rs_id = uuid4()
-        session = AsyncMock()
+        session = make_mock_session()
 
         session.execute = AsyncMock(
             side_effect=[
@@ -429,7 +430,7 @@ class TestCreateRouteDistance:
             session.flush.assert_awaited_once()
 
     def test_raises_404_when_from_signal_not_found(self):
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             return_value=_mock_scalar_result(None),
         )
@@ -448,7 +449,7 @@ class TestCreateRouteDistance:
         assert exc_info.value.status_code == 404
 
     def test_raises_404_when_to_signal_not_found(self):
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             side_effect=[
                 _mock_scalar_result(MagicMock()),  # from exists
@@ -531,7 +532,7 @@ class TestRouteCrudFactory:
         mock_route.route_id = route_id
         mock_route.name = "EB Progression"
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = mock_route
         mock_session.execute = AsyncMock(return_value=result)
@@ -547,7 +548,7 @@ class TestRouteCrudFactory:
 
     def test_get_route_not_found(self):
         """GET /routes/{pk} returns 404 for unknown route."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)
@@ -567,7 +568,7 @@ class TestRouteCrudFactory:
         mock_route.route_id = route_id
         mock_route.name = "Old Name"
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = mock_route
         mock_session.execute = AsyncMock(return_value=result)
@@ -592,7 +593,7 @@ class TestRouteCrudFactory:
         mock_route.route_id = route_id
         mock_route.name = "Doomed"
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = mock_route
         mock_session.execute = AsyncMock(return_value=result)
@@ -609,7 +610,7 @@ class TestRouteCrudFactory:
 
     def test_delete_route_not_found(self):
         """DELETE /routes/{pk} returns 404 for unknown route."""
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=result)

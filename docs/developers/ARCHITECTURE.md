@@ -862,8 +862,12 @@ SELECT * FROM controller_event_log_cold;   -- cold (Parquet via FDW)
 TSIGMA_STORAGE_WARM_AFTER=7 days          # Agency-configurable
 
 # Cold tier — Parquet export (On-Prem only)
+# storage.cold_enabled and storage.cold_after_days are runtime-registry keys
+# (see docs/operations/runtime-settings.md). The env vars below are the
+# deploy-time overrides for those registry keys; the path remains a Pydantic
+# config attribute because it is fixed at deployment time.
 TSIGMA_STORAGE_COLD_ENABLED=true
-TSIGMA_STORAGE_COLD_AFTER=6 months        # Export to Parquet after this age
+TSIGMA_STORAGE_COLD_AFTER_DAYS=180        # Export to Parquet after this many days
 TSIGMA_STORAGE_COLD_PATH=/var/lib/tsigma/cold
 
 # Retention — drop data entirely
@@ -1388,7 +1392,46 @@ class Settings(BaseSettings):
 
 ### System Config (DB-stored)
 
-Runtime configuration via `system_setting` table. Provides typed async getters with env var override (`TSIGMA_` prefix takes precedence over DB values).
+Runtime configuration lives in the `identity.system_setting` table and
+is fronted by a **typed-getter registry** in `tsigma/settings_service.py`.
+
+**What's registered.** Nine tuning-knob keys are registered at module
+load — three for cold-tier control (`storage.cold_enabled`,
+`storage.cold_after_days`, `storage.cold_delete_after_export`), two
+for cold-tier query routing (`cold_tier.query_enabled`,
+`cold_tier.threshold_days`), and four for API limits (`api.max_page_size`,
+`api.max_aggregation_days`, `api.max_signals_per_request`,
+`api.max_lookback_days`). The registry — not the database — is the
+source of truth for which keys exist; reading or writing an unregistered
+key raises immediately.
+
+**Typed reads.** Callers use one of `get_int`, `get_bool`, `get_str`, or
+`get_float` (all async, all session-scoped). Each enforces the
+registered Python type, coerces the underlying text value, and validates
+declared min/max bounds. Resolution order:
+
+1. `TSIGMA_<KEY>` environment variable (dots → underscores, uppercased), if set;
+2. cached DB row (30-second in-process TTL cache);
+3. registered default.
+
+**Audited writes.** `settings_service.set()` is the only write path. It
+type-checks, coerces, bounds-validates, UPSERTs the row, and appends a
+`system_setting_audit` row **in the same transaction**. The audit row
+carries `old_value`, `new_value`, `changed_by`, optional `reason`, and a
+server-side `changed_at`. Failed validations leave neither a
+`system_setting` row nor an audit row behind.
+
+**Cross-replica invalidation.** Every successful write publishes the
+changed key on the Valkey pub/sub channel
+`tsigma:system_setting:invalidate`. Publication is **dual-gated**: both
+the `valkey_settings_invalidation_enabled` config flag (default `true`
+in production, `false` in tests) AND a non-empty `valkey_url` must be
+set. With the gate closed (single-replica deployments or isolated test
+harnesses), the 30-second TTL cache is the only invalidation mechanism.
+
+See [docs/operations/runtime-settings.md](../operations/runtime-settings.md)
+for the operator reference (registry table, admin API, env-var rules,
+audit retention, migration notes).
 
 ### Example .env File
 

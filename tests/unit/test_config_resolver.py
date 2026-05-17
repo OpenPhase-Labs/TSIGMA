@@ -10,6 +10,7 @@ import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from tests._helpers import make_mock_session
 from tsigma.config_resolver import (
     ApproachSnapshot,
     DetectorSnapshot,
@@ -266,7 +267,7 @@ class TestGetConfigAt:
         expected = SignalConfig("sig-1", datetime(2025, 1, 1), False, [], [])
         mock_live.return_value = expected
 
-        session = AsyncMock()
+        session = make_mock_session()
         result = self._run(get_config_at(session, "sig-1", datetime(2025, 1, 1)))
 
         assert result is expected
@@ -281,7 +282,7 @@ class TestGetConfigAt:
         expected = SignalConfig("sig-1", datetime(2024, 6, 1), True, [], [])
         mock_audit.return_value = expected
 
-        session = AsyncMock()
+        session = make_mock_session()
         result = self._run(get_config_at(session, "sig-1", datetime(2024, 6, 1)))
 
         assert result is expected
@@ -306,7 +307,7 @@ class TestHasChangesAfter:
 
     def test_returns_true_on_signal_audit_change(self):
         """Signal-level audit row after as_of triggers True."""
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             return_value=self._mock_scalar(1),  # signal audit found
         )
@@ -320,7 +321,7 @@ class TestHasChangesAfter:
 
     def test_returns_true_on_approach_audit_change(self):
         """Approach-level audit row triggers True when signal has none."""
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             side_effect=[
                 self._mock_scalar(None),  # no signal audit
@@ -336,7 +337,7 @@ class TestHasChangesAfter:
 
     def test_returns_true_on_detector_audit_change(self):
         """Detector-level audit row triggers True when signal/approach have none."""
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             side_effect=[
                 self._mock_scalar(None),  # no signal audit
@@ -353,7 +354,7 @@ class TestHasChangesAfter:
 
     def test_returns_false_when_no_changes(self):
         """All three queries return None -> False."""
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             side_effect=[
                 self._mock_scalar(None),
@@ -394,7 +395,7 @@ class TestLoadLiveConfig:
 
     def test_loads_approaches_and_detectors(self):
         """Live config loads approaches then detectors for those approaches."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         fake_approach = MagicMock(
             approach_id="app-1",
@@ -439,7 +440,7 @@ class TestLoadLiveConfig:
 
     def test_no_approaches_skips_detector_query(self):
         """When no approaches exist, detector query is skipped."""
-        session = AsyncMock()
+        session = make_mock_session()
         session.execute = AsyncMock(
             return_value=self._mock_scalars_result([]),
         )
@@ -474,7 +475,7 @@ class TestReconstructApproaches:
 
     def test_reconstructs_from_audit_rows(self):
         """Audit rows with INSERT/UPDATE are reconstructed as snapshots."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         audit_row = MagicMock(
             approach_id="app-1",
@@ -505,7 +506,7 @@ class TestReconstructApproaches:
 
     def test_excludes_deleted_approaches(self):
         """Audit rows with DELETE operation are excluded from snapshots."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         deleted_row = MagicMock(
             approach_id="app-del",
@@ -528,7 +529,7 @@ class TestReconstructApproaches:
 
     def test_falls_back_to_live_for_unaudited(self):
         """Approaches with no audit history use live data."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         live_approach = MagicMock(
             approach_id="app-live",
@@ -560,7 +561,7 @@ class TestReconstructApproaches:
 
     def test_deduplicates_audit_rows_keeps_latest(self):
         """When multiple audit rows exist for same approach, keep the latest."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         # Rows arrive ordered by changed_at DESC, so first seen wins
         newer_row = MagicMock(
@@ -609,7 +610,7 @@ class TestReconstructDetectors:
 
     def test_returns_empty_for_no_approaches(self):
         """Empty approach_ids list returns empty detector list."""
-        session = AsyncMock()
+        session = make_mock_session()
         result = self._run(
             _reconstruct_detectors(session, [], datetime(2024, 6, 1))
         )
@@ -618,7 +619,7 @@ class TestReconstructDetectors:
 
     def test_reconstructs_from_audit_rows(self):
         """Detector audit rows with INSERT/UPDATE are reconstructed."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         audit_row = MagicMock(
             detector_id="det-1",
@@ -652,7 +653,7 @@ class TestReconstructDetectors:
 
     def test_excludes_deleted_detectors(self):
         """Detector audit rows with DELETE are excluded."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         deleted_row = MagicMock(
             detector_id="det-del",
@@ -680,7 +681,7 @@ class TestReconstructDetectors:
 
     def test_falls_back_to_live_for_unaudited(self):
         """Detectors with no audit history use live data."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         live_det = MagicMock(
             detector_id="det-live",
@@ -712,7 +713,7 @@ class TestReconstructDetectors:
 
     def test_deduplicates_detector_audit_rows(self):
         """When multiple audit rows exist for same detector, keep the latest."""
-        session = AsyncMock()
+        session = make_mock_session()
 
         newer = MagicMock(
             detector_id="det-1",
@@ -770,7 +771,7 @@ class TestLoadAuditConfig:
         mock_detectors.return_value = [det_snap]
         mock_movement_map.return_value = {}
 
-        session = AsyncMock()
+        session = make_mock_session()
         result = self._run(
             _load_audit_config(session, "sig-1", datetime(2024, 6, 1))
         )

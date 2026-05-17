@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.collection.decoders.base import DecodedEvent
 from tsigma.collection.sdk import (
     load_checkpoint,
@@ -22,7 +23,7 @@ from tsigma.collection.sdk import (
 
 def _make_session_factory():
     """Build a mock async session factory matching the ``async with`` pattern."""
-    mock_session = AsyncMock()
+    mock_session = make_mock_session()
     mock_session_ctx = MagicMock()
     mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_ctx.__aexit__ = AsyncMock(return_value=None)

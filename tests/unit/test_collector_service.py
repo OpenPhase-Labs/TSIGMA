@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.collection.registry import (
     ExecutionMode,
     IngestionMethodRegistry,
@@ -32,7 +33,7 @@ def _make_settings(**overrides) -> Settings:
 
 def _mock_session_factory():
     """Create a mock async session factory that supports 'async with'."""
-    mock_session = AsyncMock()
+    mock_session = make_mock_session()
     mock_session.execute = AsyncMock(return_value=MagicMock())
 
     mock_ctx = AsyncMock()
@@ -495,7 +496,7 @@ class TestCheckSilentSignals:
         cp.last_event_timestamp = now - timedelta(hours=1)
         cp.updated_at = old_poll
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_scalars = MagicMock()
         mock_scalars.__iter__ = MagicMock(return_value=iter([cp]))

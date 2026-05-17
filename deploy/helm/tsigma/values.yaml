@@ -142,7 +142,11 @@ storage:
 
   cold:
     enabled: false
-    after: "6 months"
+    # Age threshold (integer days) before events are archived to Parquet.
+    # The runtime-settings registry expects an integer; the older
+    # string-with-units form (e.g. "6 months") is silently ignored.
+    # See docs/operations/runtime-settings.md.
+    afterDays: 180
     path: /var/lib/tsigma/cold
     persistence:
       enabled: false

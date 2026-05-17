@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests._helpers import make_mock_session
 from tsigma.api.v1.collection import _parse_soap_envelope, router
 from tsigma.auth.sessions import SessionData
 
@@ -268,7 +269,7 @@ class TestTriggerPoll:
         fake_signal.ip_address = "10.0.0.1"
         fake_signal.signal_metadata = {"collection": {"username": "admin"}}
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = fake_signal
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -304,7 +305,7 @@ class TestTriggerPoll:
 
         app = self._make_app_with_overrides()
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -364,7 +365,7 @@ class TestListCheckpoints:
         fake_cp.last_error = None
         fake_cp.last_error_time = None
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(
             return_value=_mock_scalars_result([fake_cp]),
         )
@@ -385,7 +386,7 @@ class TestListCheckpoints:
 
         from tsigma.api.v1.collection import list_checkpoints
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(
             return_value=_mock_scalars_result([]),
         )
@@ -533,7 +534,7 @@ class TestRestPollRateLimiting:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=8),
         )
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         async def override_session():
             yield mock_session
         app.dependency_overrides[dep_get_session] = override_session
@@ -579,7 +580,7 @@ class TestRestPollUnknownMethod:
         fake_signal.ip_address = "10.0.0.1"
         fake_signal.signal_metadata = {}
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = fake_signal
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -630,7 +631,7 @@ class TestGetSignalCheckpoints:
         fake_cp.last_error = None
         fake_cp.last_error_time = None
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(
             return_value=_mock_scalars_result([fake_cp]),
         )
@@ -652,7 +653,7 @@ class TestGetSignalCheckpoints:
 
         from tsigma.api.v1.collection import get_signal_checkpoints
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(
             return_value=_mock_scalars_result([]),
         )
@@ -688,7 +689,7 @@ class TestBulkTimestampCorrection:
         mock_result = MagicMock()
         mock_result.rowcount = 42
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_session.commit = AsyncMock()
 
@@ -725,7 +726,7 @@ class TestAnchorTimestampCorrection:
         mock_result = MagicMock()
         mock_result.rowcount = 100
 
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_session.commit = AsyncMock()
 

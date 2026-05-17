@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.config_resolver import ApproachSnapshot, DetectorSnapshot, SignalConfig
 from tsigma.reports.sdk.events import (
     EVENT_DETECTOR_OFF,
@@ -58,7 +59,7 @@ def _events_to_df(events: list[SimpleNamespace]) -> pd.DataFrame:
 
 def _mock_session():
     """AsyncSession mock — unused by reports that patch helpers directly."""
-    session = AsyncMock()
+    session = make_mock_session()
     mock_result = MagicMock()
     mock_result.all.return_value = []
     mock_scalars = MagicMock()

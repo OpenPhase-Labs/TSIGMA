@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
+from tests._helpers import make_mock_session
 from tsigma.config_resolver import SignalConfig
 
 # ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ from tsigma.config_resolver import SignalConfig
 
 def _make_mock_session():
     """Create a mock AsyncSession that returns empty results."""
-    mock_session = AsyncMock()
+    mock_session = make_mock_session()
     mock_result = MagicMock()
     mock_result.all.return_value = []
     mock_result.scalar.return_value = None

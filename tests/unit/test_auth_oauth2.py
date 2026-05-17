@@ -14,6 +14,7 @@ import httpx
 import pytest
 from fastapi import APIRouter, HTTPException
 
+from tests._helpers import make_mock_session
 from tsigma.auth.providers.oauth2 import _STATE_TTL_SECONDS, OAuth2AuthProvider
 from tsigma.auth.registry import AuthProviderRegistry
 
@@ -254,7 +255,7 @@ class TestOAuth2Callback:
         mock_store = AsyncMock()
         mock_store.create.return_value = "session-id-xyz"
         mock_response = MagicMock()
-        mock_session = AsyncMock()
+        mock_session = make_mock_session()
 
         with (
             patch("tsigma.auth.providers.oauth2.settings", _settings_defaults()),

@@ -67,6 +67,7 @@ from .route import Route, RouteDistance, RoutePhase, RouteSignal
 from .signal import Signal, SignalAudit
 from .signal_plan import SignalPlan
 from .system_setting import SystemSetting
+from .system_setting_audit import SystemSettingAudit
 
 __all__ = [
     # Base
@@ -132,4 +133,5 @@ __all__ = [
     "RoadsideSensorVendor",
     # System
     "SystemSetting",
+    "SystemSettingAudit",
 ]
