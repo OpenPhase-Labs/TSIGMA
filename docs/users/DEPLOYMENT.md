@@ -212,6 +212,21 @@ For the complete per-method matrix (env vars, JSONB fields, decoder pairing, sou
 
 TSIGMA supports two deployment modes that differ in data storage tier availability.
 
+### Storage Tier Model
+
+The three storage tiers describe where event-log rows physically live as they age. Tier boundaries are operator-tunable; the SDK layer handles routing transparently so REST and GraphQL clients see one logical event stream.
+
+| Tier | Where the data lives | Tunable by |
+|------|----------------------|------------|
+| **Hot** | TimescaleDB uncompressed chunks (or plain Postgres / MS-SQL / Oracle / MySQL hot tables) | n/a — newest data, always present |
+| **Warm** | TimescaleDB compressed chunks. Columnar, still queryable through the same SQL surface — Timescale handles transparent decompression. | `TSIGMA_STORAGE_WARM_AFTER` (default `7 days`) |
+| **Cold** | Parquet files (filesystem or S3/MinIO/Ceph), written by the `export_cold` scheduler job, read via DuckDB or a Postgres FDW. | `TSIGMA_STORAGE_COLD_AFTER_DAYS` (default `180`) |
+
+Notes:
+
+- **Warm tier is TimescaleDB-specific.** Plain Postgres / MS-SQL / Oracle / MySQL deployments have only hot and cold; rows stay uncompressed in the live database until export to Parquet. Setting `TSIGMA_STORAGE_WARM_AFTER` on those backends has no effect — there is no compression policy to install.
+- See [Cold-Tier Read Paths](#cold-tier-read-paths) below for the operational choice of where the Parquet reader actually runs (application process vs Postgres backend process).
+
 ### On-Prem (Hot → Warm → Cold)
 
 On-Prem deployments have full access to all three storage tiers, including Parquet cold storage with configurable endpoints.
@@ -264,6 +279,42 @@ services:
       - TSIGMA_STORAGE_COLD_ENABLED=false
       - TSIGMA_STORAGE_RETENTION=1 year
 ```
+
+### Cold-Tier Read Paths
+
+When `TSIGMA_STORAGE_COLD_ENABLED=true`, queries that reach past `cold_tier.threshold_days` need a way to read the Parquet partitions back. TSIGMA supports two read paths; the choice is per-deployment and depends on the database family and where the cold files live.
+
+#### Application-layer DuckDB (universal fallback)
+
+The TSIGMA application process reads Parquet via DuckDB and unions the result with hot/warm rows from the database, inside the SDK layer (`tsigma.reports.sdk.queries.fetch_events` and friends). Works against every supported database family. Requires `TSIGMA_COLD_TIER_QUERY_ENABLED=true` (the default) and the DuckDB `httpfs` extension if cold storage is S3 / MinIO / Ceph (pre-installed in the official image; see `scripts/install_duckdb_extensions.py`).
+
+#### In-database via FDW (preferred for PostgreSQL)
+
+PostgreSQL deployments can read cold Parquet directly inside the database using either `parquet_fdw` or `duckdb_fdw`. The deployment exposes a unified view:
+
+```sql
+CREATE VIEW controller_event_log_all AS
+SELECT * FROM controller_event_log         -- hot + warm (TimescaleDB)
+UNION ALL
+SELECT * FROM controller_event_log_cold;   -- cold (Parquet via FDW)
+```
+
+When this view is in place, set `TSIGMA_COLD_TIER_QUERY_ENABLED=false` so the SDK short-circuits to a single SQL query against the unified view — the FDW does the work and no application-layer DuckDB runs.
+
+#### Choosing between FDW variants for S3/MinIO
+
+- **`parquet_fdw`** (Adjust): designed primarily for local filesystem. S3/MinIO support exists in some forks but is fragile — do not assume it works without testing in your environment.
+- **`duckdb_fdw`**: embeds DuckDB inside the Postgres backend process and uses DuckDB's `httpfs` extension for S3/MinIO. Functionally equivalent to the application-layer DuckDB path; the only difference is which process DuckDB runs in (Postgres backend vs TSIGMA application).
+
+#### Read-path matrix
+
+| Database family | Cold storage | Read paths available |
+|-----------------|--------------|----------------------|
+| PostgreSQL + TimescaleDB | Local filesystem | App-layer DuckDB, `parquet_fdw`, `duckdb_fdw` |
+| PostgreSQL + TimescaleDB | S3 / MinIO / Ceph | App-layer DuckDB, `duckdb_fdw` (recommended over `parquet_fdw`) |
+| PostgreSQL (plain, no Timescale) | Local filesystem | App-layer DuckDB, `parquet_fdw`, `duckdb_fdw` |
+| PostgreSQL (plain, no Timescale) | S3 / MinIO / Ceph | App-layer DuckDB, `duckdb_fdw` |
+| MS-SQL / Oracle / MySQL | Any | App-layer DuckDB only (no Parquet-reading FDW available) |
 
 ---
 
@@ -360,8 +411,8 @@ for the full registry, admin API reference, and audit log details.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TSIGMA_VALKEY_SETTINGS_INVALIDATION_ENABLED` | `true` | Publish runtime-settings invalidations on the Valkey pub/sub channel `tsigma:system_setting:invalidate` so peer replicas drop their local caches. Dual-gated with `TSIGMA_VALKEY_URL` — both must be set; setting this to `false` disables publication without unsetting the shared Valkey URL. Single-replica deployments may leave this at default. |
-| `TSIGMA_COLD_TIER_QUERY_ENABLED` | `true` | Route queries past the cold threshold to the Parquet tier. Override for `cold_tier.query_enabled`. (Registry value ships now; query-layer wiring forthcoming.) |
-| `TSIGMA_COLD_TIER_THRESHOLD_DAYS` | `180` | Events older than this many days are read from the cold tier. Override for `cold_tier.threshold_days`. (Registry value ships now; query-layer wiring forthcoming.) |
+| `TSIGMA_COLD_TIER_QUERY_ENABLED` | `true` | Enable application-layer cold-tier reads via DuckDB. Override for `cold_tier.query_enabled`. Set to `false` for PG + FDW deployments that expose a unified hot/warm/cold view — the SDK then short-circuits to a single SQL query against the view (see [Cold-Tier Read Paths](#cold-tier-read-paths)). |
+| `TSIGMA_COLD_TIER_THRESHOLD_DAYS` | `180` | Events older than this many days are read via the application-layer DuckDB cold path. Override for `cold_tier.threshold_days`. Has no effect on the FDW unified-view path (that path always sees all tiers). |
 | `TSIGMA_STORAGE_COLD_DELETE_AFTER_EXPORT` | `true` | Delete archived rows from the hot DB after verified Parquet write. Override for `storage.cold_delete_after_export`. |
 | `TSIGMA_API_MAX_PAGE_SIZE` | `1000` | Event-list endpoint per-page cap. Override for `api.max_page_size`. |
 | `TSIGMA_API_MAX_AGGREGATION_DAYS` | `92` | Aggregation endpoint date-range cap. Override for `api.max_aggregation_days`. |
