@@ -3,17 +3,21 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....auth.dependencies import require_access
 from ....dependencies import get_session
+from ....reports.sdk.limits import (
+    require_max_aggregation_days,
+    require_max_lookback,
+)
+from ....reports.sdk.queries import fetch_events
 from ..analytics_schemas import (
     CoordinationQualityResponse,
     OffsetDriftResponse,
     PatternChangeItem,
 )
-from ._common import CEL, _compute_cycle_stats, _default_end, _default_start
+from ._common import _compute_cycle_stats, _default_end, _default_start
 
 router = APIRouter()
 
@@ -35,19 +39,18 @@ async def offset_drift(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
     # Get coord phase (phase 2) green events as cycle markers
-    query = (
-        select(CEL.event_time)
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code == 1,
-            CEL.event_param == 2,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .order_by(CEL.event_time)
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=[1],
+        event_param_in=[2],
     )
-    result = await session.execute(query)
-    times = [row.event_time for row in result.all()]
+    times = df["event_time"].tolist()
 
     if len(times) < 2:
         raise HTTPException(
@@ -89,17 +92,16 @@ async def pattern_history(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    query = (
-        select(CEL.event_time, CEL.event_param)
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code == 131,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .order_by(CEL.event_time)
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=[131],
     )
-    result = await session.execute(query)
-    rows = result.all()
+    rows = list(df.itertuples(index=False))
 
     items = []
     for i, row in enumerate(rows):
@@ -138,19 +140,18 @@ async def coordination_quality(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
     # Get coordinated phase green events
-    query = (
-        select(CEL.event_time)
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code == 1,
-            CEL.event_param == 2,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .order_by(CEL.event_time)
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=[1],
+        event_param_in=[2],
     )
-    result = await session.execute(query)
-    times = [row.event_time for row in result.all()]
+    times = df["event_time"].tolist()
 
     if len(times) < 2:
         raise HTTPException(

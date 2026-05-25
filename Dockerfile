@@ -108,6 +108,10 @@ COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /build/tsigma ./tsigma
 COPY --from=builder /build/alembic.ini ./alembic.ini
 COPY --from=builder /build/alembic ./alembic
+COPY scripts/install_duckdb_extensions.py ./scripts/
+
+# Pre-install DuckDB httpfs extension at build time (no runtime CDN fetch)
+RUN python scripts/install_duckdb_extensions.py
 
 # Cold-storage path (only used when TSIGMA_STORAGE_COLD_ENABLED=true)
 RUN mkdir -p /var/lib/tsigma/cold && chown -R tsigma:tsigma /var/lib/tsigma /app

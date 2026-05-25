@@ -6,10 +6,12 @@ with a FastAPI-compatible GraphQLRouter.
 """
 
 import logging
+import sys
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
+import pandas as pd
 import strawberry
 from fastapi import Depends
 from sqlalchemy import select
@@ -19,7 +21,6 @@ from strawberry.fastapi import GraphQLRouter
 from tsigma.dependencies import get_session
 from tsigma.models import (
     Approach,
-    ControllerEventLog,
     Corridor,
     Detector,
     Jurisdiction,
@@ -27,11 +28,14 @@ from tsigma.models import (
     Signal,
 )
 from tsigma.reports.registry import ReportRegistry
+from tsigma.reports.sdk.pagination import paginated_event_list
+from tsigma.reports.sdk.queries import fetch_events
 
 from .types import (
     ApproachType,
     CorridorType,
     DetectorType,
+    EventListPage,
     EventType,
     JurisdictionType,
     RegionType,
@@ -217,7 +221,9 @@ class Query:
             for c in result.scalars().all()
         ]
 
-    @strawberry.field(description="Query controller event log entries.")
+    @strawberry.field(
+        description="Query controller event log entries with opaque cursor pagination.",
+    )
     async def events(
         self,
         info: strawberry.types.Info,
@@ -225,33 +231,49 @@ class Query:
         start: datetime,
         end: datetime,
         event_codes: list[int] | None = None,
-        limit: int = 10000,
-    ) -> list[EventType]:
+        first: int | None = None,
+        after: str | None = None,
+    ) -> EventListPage:
+        # Tier-aware fetch: the SDK helper routes between hot and cold based
+        # on cold_tier.threshold_days. event_codes=None means "no event-code
+        # filter" (third predicate mode landed in B9). `signal_id` is re-attached
+        # below because the SDK DataFrame omits it — required for the cursor
+        # tuple (event_time, signal_id, event_code, event_param) to be stable.
         session: AsyncSession = info.context["session"]
-
-        stmt = (
-            select(ControllerEventLog)
-            .where(
-                ControllerEventLog.signal_id == signal_id,
-                ControllerEventLog.event_time >= start,
-                ControllerEventLog.event_time <= end,
-            )
-            .order_by(ControllerEventLog.event_time)
-            .limit(limit)
+        df = await fetch_events(
+            signal_id=signal_id,
+            start=start,
+            end=end,
+            event_codes=event_codes if event_codes else None,
         )
-        if event_codes:
-            stmt = stmt.where(ControllerEventLog.event_code.in_(event_codes))
 
-        result = await session.execute(stmt)
-        return [
+        # Re-attach signal_id on both empty and non-empty DataFrames so the
+        # cursor encoder has a value. Mirrors the Stage 1 REST pattern in
+        # tsigma/api/v1/signals.py::list_signal_events.
+        if df.empty:
+            df = df.assign(signal_id=pd.Series([], dtype=str))
+        else:
+            df = df.assign(signal_id=signal_id)
+
+        # paginated_event_list clamps the limit to api.max_page_size
+        # internally. When the client doesn't supply `first`, pass a sentinel
+        # large enough that the helper's clamp is the only ceiling — keeps
+        # the registry key as the single source of truth.
+        effective_limit = first if first is not None else sys.maxsize
+        records, next_cursor = await paginated_event_list(
+            df, after=after, limit=effective_limit, session=session
+        )
+
+        items = [
             EventType(
-                signal_id=e.signal_id,
-                event_time=e.event_time,
-                event_code=e.event_code,
-                event_param=e.event_param,
+                signal_id=str(r["signal_id"]),
+                event_time=r["event_time"],
+                event_code=int(r["event_code"]),
+                event_param=int(r["event_param"]),
             )
-            for e in result.scalars().all()
+            for r in records
         ]
+        return EventListPage(items=items, next_cursor=next_cursor)
 
     @strawberry.field(description="List all registered report plugins.")
     async def available_reports(self, info: strawberry.types.Info) -> list[ReportInfoType]:

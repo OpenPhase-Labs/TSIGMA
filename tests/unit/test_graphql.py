@@ -469,53 +469,84 @@ class TestCorridorsResolver:
 
 
 class TestEventsResolver:
-    """Tests for Query.events resolver."""
+    """Tests for Query.events resolver (tier-aware via SDK fetch_events as of B9,
+    cursor-paginated as of B12.4 — returns EventListPage)."""
 
     def test_returns_events(self):
         from datetime import datetime
 
-        evt = MagicMock(
-            signal_id="sig-1",
-            event_time=datetime(2025, 6, 15, 8, 0, 0),
-            event_code=1,
-            event_param=2,
-        )
-        scalars_mock = MagicMock()
-        scalars_mock.all.return_value = [evt]
-        result_mock = MagicMock()
-        result_mock.scalars.return_value = scalars_mock
+        import pandas as pd
 
+        from tsigma.api.graphql.types import EventListPage
+
+        df = pd.DataFrame(
+            {
+                "event_code": [1],
+                "event_param": [2],
+                "event_time": [datetime(2025, 6, 15, 8, 0, 0)],
+            }
+        )
         session = make_mock_session()
-        session.execute.return_value = result_mock
         info = _make_info(session)
 
-        query = Query()
-        result = _run(query.events(
-            info, signal_id="sig-1",
-            start=datetime(2025, 6, 15, 7, 0, 0),
-            end=datetime(2025, 6, 15, 9, 0, 0),
-        ))
+        with patch(
+            "tsigma.api.graphql.schema.fetch_events",
+            new=AsyncMock(return_value=df),
+        ) as mock_fetch, patch(
+            "tsigma.reports.sdk.pagination.settings_service.get_int",
+            new=AsyncMock(return_value=1000),
+        ):
+            query = Query()
+            result = _run(query.events(
+                info, signal_id="sig-1",
+                start=datetime(2025, 6, 15, 7, 0, 0),
+                end=datetime(2025, 6, 15, 9, 0, 0),
+            ))
 
-        assert len(result) == 1
-        assert result[0].event_code == 1
+        # SDK called with event_codes=None (no client-supplied filter)
+        assert mock_fetch.await_count == 1
+        assert mock_fetch.await_args.kwargs["event_codes"] is None
+        # New shape: EventListPage with items + next_cursor
+        assert isinstance(result, EventListPage)
+        assert len(result.items) == 1
+        assert result.items[0].event_code == 1
+        # Signal_id re-attached to the result row
+        assert result.items[0].signal_id == "sig-1"
+        # Single row fits well under default max_page_size → no next page
+        assert result.next_cursor is None
 
     def test_with_event_code_filter(self):
         from datetime import datetime
 
-        scalars_mock = MagicMock()
-        scalars_mock.all.return_value = []
-        result_mock = MagicMock()
-        result_mock.scalars.return_value = scalars_mock
+        import pandas as pd
 
+        from tsigma.api.graphql.types import EventListPage
+
+        df = pd.DataFrame(
+            {"event_code": [], "event_param": [], "event_time": []}
+        )
         session = make_mock_session()
-        session.execute.return_value = result_mock
         info = _make_info(session)
 
-        query = Query()
-        result = _run(query.events(
-            info, signal_id="sig-1",
-            start=datetime(2025, 6, 15, 7, 0, 0),
-            end=datetime(2025, 6, 15, 9, 0, 0),
-            event_codes=[1, 8],
-        ))
-        assert result == []
+        with patch(
+            "tsigma.api.graphql.schema.fetch_events",
+            new=AsyncMock(return_value=df),
+        ) as mock_fetch, patch(
+            "tsigma.reports.sdk.pagination.settings_service.get_int",
+            new=AsyncMock(return_value=1000),
+        ):
+            query = Query()
+            result = _run(query.events(
+                info, signal_id="sig-1",
+                start=datetime(2025, 6, 15, 7, 0, 0),
+                end=datetime(2025, 6, 15, 9, 0, 0),
+                event_codes=[1, 8],
+            ))
+
+        # SDK called with the client-supplied event_codes filter
+        assert mock_fetch.await_count == 1
+        assert mock_fetch.await_args.kwargs["event_codes"] == [1, 8]
+        # Empty DataFrame → empty page, no cursor
+        assert isinstance(result, EventListPage)
+        assert result.items == []
+        assert result.next_cursor is None

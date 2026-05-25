@@ -2,18 +2,24 @@
 
 from datetime import datetime
 
+import pandas as pd
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....auth.dependencies import require_access
 from ....dependencies import get_session
+from ....reports.sdk.aggregates import aggregate_events
+from ....reports.sdk.limits import (
+    require_max_aggregation_days,
+    require_max_lookback,
+)
+from ....reports.sdk.queries import fetch_events
 from ..analytics_schemas import (
     PhaseTerminationItem,
     SkippedPhaseItem,
     SplitMonitorItem,
 )
-from ._common import CEL, _default_end, _default_start
+from ._common import _default_end, _default_start
 
 router = APIRouter()
 
@@ -35,21 +41,26 @@ async def skipped_phases(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    # Count Phase Green (1) events per phase
-    query = (
-        select(
-            CEL.event_param.label("phase"),
-            func.count().label("green_count"),
-        )
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code == 1,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .group_by(CEL.event_param)
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
+    # Count Phase Green (event_code 1) events per phase via the tier-aware SDK.
+    df = await aggregate_events(
+        signal_id,
+        t_start,
+        t_end,
+        agg=[("count_if", "event_code = 1")],
+        group_by=["event_param"],
     )
-    result = await session.execute(query)
-    greens = {row.phase: row.green_count for row in result.all()}
+    df = df.rename(columns={"event_param": "phase", "agg_0": "green_count"})
+
+    greens = {
+        int(row.phase): int(row.green_count)
+        for row in df.itertuples(index=False)
+        if row.green_count is not None and not (
+            isinstance(row.green_count, float) and pd.isna(row.green_count)
+        )
+    }
 
     if not greens:
         return []
@@ -160,25 +171,24 @@ async def split_monitor(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    filters = [
-        CEL.signal_id == signal_id,
-        CEL.event_code.in_([1, 4, 5, 6, 8, 9]),
-        CEL.event_time.between(t_start, t_end),
-    ]
-    if phase is not None:
-        filters.append(CEL.event_param == phase)
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
 
-    query = (
-        select(CEL.event_code, CEL.event_param, CEL.event_time)
-        .where(*filters)
-        .order_by(CEL.event_param, CEL.event_time)
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=[1, 4, 5, 6, 8, 9],
+        event_param_in=[phase] if phase is not None else None,
     )
-    result = await session.execute(query)
-    events = result.all()
+    # fetch_events orders by event_time only; split_monitor groups by
+    # event_param (phase) then iterates events in time order within each.
+    if not df.empty:
+        df = df.sort_values(["event_param", "event_time"])
 
     # Group events by phase
     phases: dict[int, list] = {}
-    for evt in events:
+    for evt in df.itertuples(index=False):
         phases.setdefault(evt.event_param, []).append(
             (evt.event_code, evt.event_time)
         )
@@ -209,34 +219,42 @@ async def phase_terminations(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    query = (
-        select(
-            CEL.event_param.label("phase"),
-            func.count().filter(CEL.event_code == 1).label("total_cycles"),
-            func.count().filter(CEL.event_code == 4).label("gap_outs"),
-            func.count().filter(CEL.event_code == 5).label("max_outs"),
-            func.count().filter(CEL.event_code == 6).label("force_offs"),
-        )
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code.in_([1, 4, 5, 6]),
-            CEL.event_time.between(t_start, t_end),
-        )
-        .group_by(CEL.event_param)
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
+    df = await aggregate_events(
+        signal_id,
+        t_start,
+        t_end,
+        agg=[
+            ("count_if", "event_code = 1"),
+            ("count_if", "event_code = 4"),
+            ("count_if", "event_code = 5"),
+            ("count_if", "event_code = 6"),
+        ],
+        group_by=["event_param"],
     )
-    result = await session.execute(query)
+    df = df.rename(
+        columns={
+            "event_param": "phase",
+            "agg_0": "total_cycles",
+            "agg_1": "gap_outs",
+            "agg_2": "max_outs",
+            "agg_3": "force_offs",
+        }
+    )
 
     items = []
-    for row in result.all():
+    for row in df.itertuples(index=False):
         items.append(
             PhaseTerminationItem(
                 signal_id=signal_id,
-                phase=row.phase,
-                gap_outs=row.gap_outs,
-                max_outs=row.max_outs,
-                force_offs=row.force_offs,
+                phase=int(row.phase),
+                gap_outs=int(row.gap_outs or 0),
+                max_outs=int(row.max_outs or 0),
+                force_offs=int(row.force_offs or 0),
                 skips=0,
-                total_cycles=row.total_cycles,
+                total_cycles=int(row.total_cycles or 0),
             )
         )
 

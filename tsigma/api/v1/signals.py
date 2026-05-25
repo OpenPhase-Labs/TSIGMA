@@ -9,6 +9,7 @@ POST/PUT/DELETE require admin role.
 from datetime import datetime
 from typing import List, Optional
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +19,12 @@ from ...auth.sessions import SessionData
 from ...crypto import encrypt_sensitive_fields, has_encryption_key, redact_metadata
 from ...dependencies import get_audited_session, get_session
 from ...models import Signal, SignalAudit
-from ...models.event import ControllerEventLog
+from ...reports.sdk.limits import (
+    require_max_aggregation_days,
+    require_max_lookback,
+)
+from ...reports.sdk.pagination import paginated_event_list
+from ...reports.sdk.queries import fetch_events
 from .schemas import SignalCreate, SignalUpdate
 
 router = APIRouter()
@@ -334,20 +340,30 @@ async def list_signal_events(
             "(phase, detector channel, etc., depending on the event code)."
         ),
     ),
+    after: Optional[str] = Query(
+        None,
+        description=(
+            "Opaque cursor from a prior response's ``next_cursor``. "
+            "Pass it back unchanged to fetch the next page; omit on the "
+            "first request."
+        ),
+    ),
     limit: int = Query(
         _RAW_EVENTS_DEFAULT_LIMIT,
         ge=1,
         le=_RAW_EVENTS_MAX_LIMIT,
         description=(
             f"Max rows to return.  Default {_RAW_EVENTS_DEFAULT_LIMIT}, "
-            f"hard ceiling {_RAW_EVENTS_MAX_LIMIT}."
+            f"hard ceiling {_RAW_EVENTS_MAX_LIMIT}.  The "
+            "``api.max_page_size`` registry key is the final ceiling and "
+            "clamps this value regardless of what the client requests."
         ),
     ),
     session: AsyncSession = Depends(get_session),
     _access=Depends(require_access("signal_detail")),
 ):
     """
-    Raw IHR event log read for a single signal.
+    Raw IHR event log read for a single signal — tier-aware + paginated.
 
     Mirrors the GraphQL ``events`` resolver — same filters, same default
     limit, same ordering.  Use this for ad-hoc reporting, third-party
@@ -355,7 +371,13 @@ async def list_signal_events(
     GraphQL.  ATSPM 4.x exposed ``/api/data/controllerEventLogs*`` for
     the same purpose; ATSPM 5.x removed raw event access entirely.
 
-    Returns events ordered by ``event_time`` ascending.
+    Reads route through the tier-aware Report SDK
+    (``tsigma.reports.sdk.queries.fetch_events``), which transparently
+    unions hot and cold partitions when the requested window spans the
+    ``cold_tier.threshold_days`` boundary.  The response is a paginated
+    envelope ``{items, next_cursor}`` with rows ordered by ``event_time``
+    ascending; pass ``next_cursor`` back as ``after`` to fetch the next
+    page.
 
     Args:
         signal_id: Signal identifier.
@@ -363,20 +385,29 @@ async def list_signal_events(
         end: Inclusive upper bound (ISO-8601 datetime).
         event_codes: Optional CSV of event codes to filter on.
         event_param: Optional exact-match filter on event_param.
-        limit: Max rows to return (capped at ``_RAW_EVENTS_MAX_LIMIT``).
+        after: Opaque cursor from a prior response's ``next_cursor``.
+        limit: Max rows per page (clamped to ``api.max_page_size``).
 
     Returns:
-        List of ``{signal_id, event_time, event_code, event_param}`` rows.
+        ``{"items": [{signal_id, event_time, event_code, event_param}, ...],
+        "next_cursor": <str|null>}``.  ``next_cursor`` is ``null`` when the
+        page exhausts the remaining rows.
 
     Raises:
-        HTTPException: 400 if ``end`` is before ``start`` or
-            ``event_codes`` is malformed; 404 if the signal does not exist.
+        HTTPException: 400 if ``end`` is before ``start``, the
+            ``event_codes`` CSV is malformed, the ``after`` cursor is
+            invalid, ``start`` predates ``api.max_lookback_days``, or the
+            window exceeds ``api.max_aggregation_days``; 404 if the signal
+            does not exist.
     """
     if end < start:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="end must be greater than or equal to start",
         )
+
+    await require_max_lookback(start, session=session)
+    await require_max_aggregation_days(start, end, session=session)
 
     signal_result = await session.execute(
         select(Signal.signal_id).where(Signal.signal_id == signal_id)
@@ -401,28 +432,33 @@ async def list_signal_events(
                 detail=f"event_codes must be a comma-separated list of integers: {exc}",
             ) from exc
 
-    stmt = (
-        select(ControllerEventLog)
-        .where(
-            ControllerEventLog.signal_id == signal_id,
-            ControllerEventLog.event_time >= start,
-            ControllerEventLog.event_time <= end,
-        )
-        .order_by(ControllerEventLog.event_time)
-        .limit(limit)
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=start,
+        end=end,
+        event_codes=parsed_codes if parsed_codes else None,
+        event_param_in=[event_param] if event_param is not None else None,
     )
-    if parsed_codes:
-        stmt = stmt.where(ControllerEventLog.event_code.in_(parsed_codes))
-    if event_param is not None:
-        stmt = stmt.where(ControllerEventLog.event_param == event_param)
 
-    result = await session.execute(stmt)
-    return [
-        {
-            "signal_id": row.signal_id,
-            "event_time": row.event_time.isoformat(),
-            "event_code": row.event_code,
-            "event_param": row.event_param,
-        }
-        for row in result.scalars().all()
-    ]
+    # The SDK omits signal_id from its single-signal result; re-attach it
+    # so the cursor encoder (which keys on event_time, signal_id,
+    # event_code, event_param) has a value, and so the response rows
+    # carry the field clients expect. Works on both empty and non-empty
+    # DataFrames.
+    if df.empty:
+        df = df.assign(signal_id=pd.Series([], dtype=str))
+    else:
+        df = df.assign(signal_id=signal_id)
+
+    items, next_cursor = await paginated_event_list(
+        df, after=after, limit=limit, session=session
+    )
+
+    # Stringify event_time on each item — the response shape mirrors the
+    # pre-B12.2 endpoint, which returned ISO-8601 strings.
+    for item in items:
+        et = item.get("event_time")
+        if hasattr(et, "isoformat"):
+            item["event_time"] = et.isoformat()
+
+    return {"items": items, "next_cursor": next_cursor}

@@ -1,5 +1,10 @@
 import os
 os.environ.setdefault("TSIGMA_VALKEY_SETTINGS_INVALIDATION_ENABLED", "false")
+# Disable cold-tier routing by default in unit tests. Tier-aware fetch_events
+# (B7) consults this registry key; existing tests mock only `db_facade` and
+# would otherwise hit the cold path for old date windows. Tests that
+# specifically exercise tier routing mock settings_service directly.
+os.environ.setdefault("TSIGMA_COLD_TIER_QUERY_ENABLED", "false")
 """
 Pytest configuration and shared fixtures.
 

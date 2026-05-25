@@ -68,6 +68,20 @@ class EventType:
 
 
 @strawberry.type
+class EventListPage:
+    """Cursor-paginated page of controller event log entries.
+
+    Returned by ``Query.events``. ``next_cursor`` is an opaque
+    base64url-encoded token; pass it back as the ``after`` argument to
+    fetch the next page. ``None`` indicates the page exhausted the
+    remaining rows.
+    """
+
+    items: list[EventType]
+    next_cursor: str | None
+
+
+@strawberry.type
 class RegionType:
     """Regional grouping."""
 

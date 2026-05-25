@@ -879,9 +879,9 @@ class TestApproachVolumeWithData:
 class TestArrivalsOnGreenWithData:
 
     @pytest.mark.asyncio
-    @patch("tsigma.reports.arrivals_on_green.db_facade")
+    @patch("tsigma.reports.arrivals_on_green.fetch_events_split", new_callable=AsyncMock)
     @patch("tsigma.reports.arrivals_on_green.load_channel_to_phase", new_callable=AsyncMock)
-    async def test_arrivals_during_green(self, mock_ch_map, mock_facade):
+    async def test_arrivals_during_green(self, mock_ch_map, mock_fetch):
         """Detector-on during green is counted as arrival on green."""
         from tsigma.reports.arrivals_on_green import ArrivalsOnGreenParams, ArrivalsOnGreenReport
 
@@ -895,7 +895,7 @@ class TestArrivalsOnGreenWithData:
             _event(EVENT_YELLOW_CLEARANCE, 2, t0 + timedelta(seconds=30)),
             _event(EVENT_DETECTOR_ON, 5, t0 + timedelta(seconds=35)),
         ]
-        mock_facade.get_dataframe = AsyncMock(return_value=_events_to_df(events))
+        mock_fetch.return_value = _events_to_df(events)
 
         report = ArrivalsOnGreenReport()
         params = ArrivalsOnGreenParams(signal_id="SIG-001", start=_START_ISO, end=_END_ISO)
@@ -910,9 +910,9 @@ class TestArrivalsOnGreenWithData:
         assert r["aog_percentage"] == pytest.approx(66.7, abs=0.1)
 
     @pytest.mark.asyncio
-    @patch("tsigma.reports.arrivals_on_green.db_facade")
+    @patch("tsigma.reports.arrivals_on_green.fetch_events_split", new_callable=AsyncMock)
     @patch("tsigma.reports.arrivals_on_green.load_channel_to_phase", new_callable=AsyncMock)
-    async def test_all_arrivals_on_red(self, mock_ch_map, mock_facade):
+    async def test_all_arrivals_on_red(self, mock_ch_map, mock_fetch):
         """Detector-on only during red gives 0% AOG."""
         from tsigma.reports.arrivals_on_green import ArrivalsOnGreenParams, ArrivalsOnGreenReport
 
@@ -924,7 +924,7 @@ class TestArrivalsOnGreenWithData:
             _event(EVENT_PHASE_GREEN, 2, t0 + timedelta(seconds=10)),
             _event(EVENT_YELLOW_CLEARANCE, 2, t0 + timedelta(seconds=40)),
         ]
-        mock_facade.get_dataframe = AsyncMock(return_value=_events_to_df(events))
+        mock_fetch.return_value = _events_to_df(events)
 
         report = ArrivalsOnGreenReport()
         params = ArrivalsOnGreenParams(signal_id="SIG-001", start=_START_ISO, end=_END_ISO)

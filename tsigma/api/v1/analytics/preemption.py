@@ -3,17 +3,21 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....auth.dependencies import require_access
 from ....dependencies import get_session
+from ....reports.sdk.limits import (
+    require_max_aggregation_days,
+    require_max_lookback,
+)
+from ....reports.sdk.queries import fetch_events
 from ..analytics_schemas import (
     PreemptionRecoveryItem,
     PreemptionRecoveryResponse,
     PreemptionSummaryResponse,
 )
-from ._common import CEL, _default_end, _default_start
+from ._common import _default_end, _default_start
 
 router = APIRouter()
 
@@ -35,17 +39,16 @@ async def preemption_summary(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    query = (
-        select(CEL.event_code, CEL.event_param, CEL.event_time)
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code.in_([102, 104]),
-            CEL.event_time.between(t_start, t_end),
-        )
-        .order_by(CEL.event_time)
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=[102, 104],
     )
-    result = await session.execute(query)
-    events = result.all()
+    events = list(df.itertuples(index=False))
 
     # Pair begin/end events by preempt number
     begins: dict[int, datetime] = {}
@@ -98,21 +101,21 @@ async def preemption_recovery(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    # Get preemption end events and coord phase green events
-    query = (
-        select(CEL.event_code, CEL.event_param, CEL.event_time)
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_time.between(t_start, t_end),
-            (
-                (CEL.event_code == 104)
-                | ((CEL.event_code == 1) & (CEL.event_param == 2))
-            ),
-        )
-        .order_by(CEL.event_time)
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
+    # OR predicate: (event_code == 104) OR (event_code == 1 AND event_param == 2)
+    # cannot be expressed with (event_codes, event_param_in) — those compose
+    # as AND. Use the SDK-internal where_sql_fragment escape hatch (B8).
+    # The literal codes/params are constants; no user input is interpolated.
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=None,
+        where_sql_fragment="event_code = 104 OR (event_code = 1 AND event_param = 2)",
     )
-    result = await session.execute(query)
-    events = result.all()
+    events = list(df.itertuples(index=False))
 
     items = []
     preempt_end = None

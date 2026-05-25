@@ -13,3 +13,8 @@ htmlcov/
 # Agent workspace directories
 plans/
 specs/
+.claude/
+.zoocode/
+
+# MCP cache
+.playwright-mcp/

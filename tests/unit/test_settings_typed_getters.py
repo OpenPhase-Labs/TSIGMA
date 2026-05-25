@@ -80,6 +80,7 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("TSIGMA_STORAGE_COLD_ENABLED", raising=False)
     monkeypatch.delenv("TSIGMA_STORAGE_COLD_AFTER_DAYS", raising=False)
     monkeypatch.delenv("TSIGMA_API_MAX_AGGREGATION_DAYS", raising=False)
+    monkeypatch.delenv("TSIGMA_COLD_TIER_QUERY_ENABLED", raising=False)
 
 
 # ---------------------------------------------------------------------------

@@ -1,22 +1,66 @@
 """Health analytics endpoints (detector_health, signal_health)."""
 
+from dataclasses import dataclass
 from datetime import datetime
 
+import pandas as pd
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....auth.dependencies import require_access
 from ....dependencies import get_session
+from ....reports.sdk.aggregates import aggregate_events
+from ....reports.sdk.limits import (
+    require_max_aggregation_days,
+    require_max_lookback,
+)
+from ....reports.sdk.queries import fetch_events
 from ..analytics_schemas import (
     DetectorHealthFactors,
     DetectorHealthResponse,
     SignalHealthComponent,
     SignalHealthResponse,
 )
-from ._common import CEL, _default_end, _default_start
+from ._common import _default_end, _default_start
 
 router = APIRouter()
+
+
+@dataclass
+class _DetectorHealthRow:
+    """Lightweight row shape consumed by ``_stuck_penalty`` and scoring helpers.
+
+    Mirrors the columns the legacy SQLAlchemy aggregation returned so the
+    downstream scoring logic can stay unchanged after the SDK migration.
+    """
+
+    on_count: int
+    off_count: int
+    last_on: datetime | None
+    last_off: datetime | None
+
+
+def _coerce_timestamp(value):
+    """Convert a pandas/numpy datetime-ish value into a plain datetime or None.
+
+    pandas reads ``None`` cells as ``NaT`` in datetime columns; downstream
+    scoring helpers (``_stuck_penalty``) use truthy/comparison checks that
+    must observe ``None`` instead.
+    """
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    if hasattr(pd, "Timestamp") and isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.to_pydatetime()
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
 
 
 def _grade(score: float) -> str:
@@ -149,22 +193,50 @@ async def detector_health(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    query = (
-        select(
-            func.count().filter(CEL.event_code == 82).label("on_count"),
-            func.count().filter(CEL.event_code == 81).label("off_count"),
-            func.max(CEL.event_time).filter(CEL.event_code == 82).label("last_on"),
-            func.max(CEL.event_time).filter(CEL.event_code == 81).label("last_off"),
-        )
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_param == detector_channel,
-            CEL.event_code.in_([81, 82]),
-            CEL.event_time.between(t_start, t_end),
-        )
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
+    df = await aggregate_events(
+        signal_id,
+        t_start,
+        t_end,
+        agg=[
+            ("count_if", "event_code = 82"),
+            ("count_if", "event_code = 81"),
+            ("max_if", "event_time", "event_code = 82"),
+            ("max_if", "event_time", "event_code = 81"),
+        ],
+        filters={"event_param": detector_channel},
     )
-    result = await session.execute(query)
-    row = result.one()
+    df = df.rename(
+        columns={
+            "agg_0": "on_count",
+            "agg_1": "off_count",
+            "agg_2": "last_on",
+            "agg_3": "last_off",
+        }
+    )
+
+    if df.empty:
+        row = _DetectorHealthRow(
+            on_count=0, off_count=0, last_on=None, last_off=None
+        )
+    else:
+        r = df.iloc[0]
+        on_count_raw = r.get("on_count") if hasattr(r, "get") else None
+        off_count_raw = r.get("off_count") if hasattr(r, "get") else None
+        last_on_raw = r.get("last_on") if hasattr(r, "get") else None
+        last_off_raw = r.get("last_off") if hasattr(r, "get") else None
+        row = _DetectorHealthRow(
+            on_count=int(on_count_raw) if on_count_raw is not None and not (
+                isinstance(on_count_raw, float) and pd.isna(on_count_raw)
+            ) else 0,
+            off_count=int(off_count_raw) if off_count_raw is not None and not (
+                isinstance(off_count_raw, float) and pd.isna(off_count_raw)
+            ) else 0,
+            last_on=_coerce_timestamp(last_on_raw),
+            last_off=_coerce_timestamp(last_off_raw),
+        )
 
     on_count = row.on_count or 0
     off_count = row.off_count or 0
@@ -215,67 +287,71 @@ async def signal_health(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    # Detector health component: check for any stuck/chattering detectors
-    det_query = (
-        select(
-            CEL.event_param.label("channel"),
-            func.count().filter(CEL.event_code == 82).label("on_count"),
-            func.count().filter(CEL.event_code == 81).label("off_count"),
-        )
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code.in_([81, 82]),
-            CEL.event_time.between(t_start, t_end),
-        )
-        .group_by(CEL.event_param)
-    )
-    det_result = await session.execute(det_query)
-    det_rows = det_result.all()
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
 
+    # Detector health component — per-channel on/off counts (event_code 82/81).
+    det_df = await aggregate_events(
+        signal_id,
+        t_start,
+        t_end,
+        agg=[
+            ("count_if", "event_code = 82"),
+            ("count_if", "event_code = 81"),
+        ],
+        group_by=["event_param"],
+    )
+    det_df = det_df.rename(
+        columns={
+            "event_param": "channel",
+            "agg_0": "on_count",
+            "agg_1": "off_count",
+        }
+    )
+    det_rows = list(det_df.itertuples(index=False))
     det_score, issues = _score_detector_health(det_rows, t_start, t_end)
 
-    # Phase health component
-    phase_query = (
-        select(
-            CEL.event_param.label("phase"),
-            func.count().label("green_count"),
-        )
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code == 1,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .group_by(CEL.event_param)
+    # Phase health component — per-phase Phase Green (event_code 1) counts.
+    phase_df = await aggregate_events(
+        signal_id,
+        t_start,
+        t_end,
+        agg=[("count_if", "event_code = 1")],
+        group_by=["event_param"],
     )
-    phase_result = await session.execute(phase_query)
-    phase_score, phase_issues = _score_phase_health(phase_result.all())
+    phase_df = phase_df.rename(
+        columns={"event_param": "phase", "agg_0": "green_count"}
+    )
+    phase_rows = list(phase_df.itertuples(index=False))
+    phase_score, phase_issues = _score_phase_health(phase_rows)
     issues.extend(phase_issues)
 
-    # Coordination health
-    coord_query = (
-        select(CEL.event_time)
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_code == 1,
-            CEL.event_param == 2,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .order_by(CEL.event_time)
+    # Coordination health — Stage 2a: tier-aware via fetch_events.
+    coord_df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=[1],
+        event_param_in=[2],
     )
-    coord_result = await session.execute(coord_query)
-    coord_times = [r.event_time for r in coord_result.all()]
+    coord_times = coord_df["event_time"].tolist()
     coord_score = _score_coordination_health(coord_times)
 
-    # Communication health
-    comm_query = (
-        select(func.count())
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_time.between(t_start, t_end),
-        )
+    # Communication health — total event count over the window.
+    comm_df = await aggregate_events(
+        signal_id,
+        t_start,
+        t_end,
+        agg=[("count", "*")],
     )
-    comm_result = await session.execute(comm_query)
-    total_events = comm_result.scalar() or 0
+    if comm_df.empty:
+        total_events = 0
+    else:
+        raw = comm_df.iloc[0].get("agg_0", None)
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            total_events = 0
+        else:
+            total_events = int(raw)
 
     comm_score = 100
     period_hours = (t_end - t_start).total_seconds() / 3600

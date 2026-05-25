@@ -3,18 +3,23 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....auth.dependencies import require_access
 from ....dependencies import get_session
+from ....reports.sdk.aggregates import aggregate_events
+from ....reports.sdk.limits import (
+    require_max_aggregation_days,
+    require_max_lookback,
+)
+from ....reports.sdk.queries import fetch_events
 from ..analytics_schemas import (
     GapAnalysisItem,
     OccupancyBin,
     OccupancyResponse,
     StuckDetectorItem,
 )
-from ._common import CEL, _default_end, _default_start
+from ._common import _default_end, _default_start
 
 router = APIRouter()
 
@@ -37,90 +42,64 @@ async def stuck_detectors(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    # Find last ON event per detector channel
-    last_on = (
-        select(
-            CEL.signal_id,
-            CEL.event_param.label("detector_channel"),
-            func.max(CEL.event_time).label("last_on_time"),
-        )
-        .where(
-            CEL.event_code == 82,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .group_by(CEL.signal_id, CEL.event_param)
-    )
-    if signal_id:
-        last_on = last_on.where(CEL.signal_id == signal_id)
-    last_on = last_on.subquery("last_on")
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
 
-    # Find last OFF event per detector channel
-    last_off = (
-        select(
-            CEL.signal_id,
-            CEL.event_param.label("detector_channel"),
-            func.max(CEL.event_time).label("last_off_time"),
-        )
-        .where(
-            CEL.event_code == 81,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .group_by(CEL.signal_id, CEL.event_param)
-    )
-    if signal_id:
-        last_off = last_off.where(CEL.signal_id == signal_id)
-    last_off = last_off.subquery("last_off")
+    # Fleet-wide scan when signal_id omitted; otherwise scope to the one signal.
+    signals: str | None = signal_id if signal_id else "All"
 
-    # Count ON events per detector in the period
-    on_count = (
-        select(
-            CEL.signal_id,
-            CEL.event_param.label("detector_channel"),
-            func.count().label("event_count"),
-        )
-        .where(
-            CEL.event_code == 82,
-            CEL.event_time.between(t_start, t_end),
-        )
-        .group_by(CEL.signal_id, CEL.event_param)
+    # 1) Last ON event per (signal_id, channel) — event_code 82.
+    last_on_df = await aggregate_events(
+        signals,
+        t_start,
+        t_end,
+        agg=[("max_if", "event_time", "event_code = 82")],
+        group_by=["signal_id", "event_param"],
     )
-    if signal_id:
-        on_count = on_count.where(CEL.signal_id == signal_id)
-    on_count = on_count.subquery("on_count")
+    last_on_df = last_on_df.rename(columns={"agg_0": "last_on_time"})
 
-    # Join: stuck = last ON > last OFF (or no OFF at all)
+    # 2) Last OFF event per (signal_id, channel) — event_code 81.
+    last_off_df = await aggregate_events(
+        signals,
+        t_start,
+        t_end,
+        agg=[("max_if", "event_time", "event_code = 81")],
+        group_by=["signal_id", "event_param"],
+    )
+    last_off_df = last_off_df.rename(columns={"agg_0": "last_off_time"})
+
+    # 3) ON-event count per (signal_id, channel) — event_code 82.
+    on_count_df = await aggregate_events(
+        signals,
+        t_start,
+        t_end,
+        agg=[("count_if", "event_code = 82")],
+        group_by=["signal_id", "event_param"],
+    )
+    on_count_df = on_count_df.rename(columns={"agg_0": "event_count"})
+
+    if last_on_df.empty:
+        return []
+
+    # Index last_off and on_count by (signal_id, event_param) for fast lookup.
+    last_off_lookup: dict[tuple, datetime] = {}
+    if not last_off_df.empty:
+        for row in last_off_df.itertuples(index=False):
+            last_off_lookup[(row.signal_id, row.event_param)] = row.last_off_time
+
+    on_count_lookup: dict[tuple, int] = {}
+    if not on_count_df.empty:
+        for row in on_count_df.itertuples(index=False):
+            on_count_lookup[(row.signal_id, row.event_param)] = row.event_count
+
     threshold_seconds = threshold_minutes * 60
-    query = (
-        select(
-            last_on.c.signal_id,
-            last_on.c.detector_channel,
-            last_on.c.last_on_time,
-            last_off.c.last_off_time,
-            on_count.c.event_count,
-        )
-        .outerjoin(
-            last_off,
-            and_(
-                last_on.c.signal_id == last_off.c.signal_id,
-                last_on.c.detector_channel == last_off.c.detector_channel,
-            ),
-        )
-        .outerjoin(
-            on_count,
-            and_(
-                last_on.c.signal_id == on_count.c.signal_id,
-                last_on.c.detector_channel == on_count.c.detector_channel,
-            ),
-        )
-    )
-
-    result = await session.execute(query)
-    rows = result.all()
-
     items = []
-    for row in rows:
+    for row in last_on_df.itertuples(index=False):
         last_on_time = row.last_on_time
-        last_off_time = row.last_off_time
+        if last_on_time is None:
+            continue
+        key = (row.signal_id, row.event_param)
+        last_off_time = last_off_lookup.get(key)
 
         if last_off_time is None or last_on_time > last_off_time:
             duration = (t_end - last_on_time).total_seconds()
@@ -128,11 +107,11 @@ async def stuck_detectors(
                 items.append(
                     StuckDetectorItem(
                         signal_id=row.signal_id,
-                        detector_channel=row.detector_channel,
+                        detector_channel=row.event_param,
                         status="STUCK_ON",
                         duration_seconds=round(duration, 1),
                         last_event_time=last_on_time,
-                        event_count=row.event_count or 0,
+                        event_count=on_count_lookup.get(key, 0) or 0,
                     )
                 )
 
@@ -157,22 +136,21 @@ async def gap_analysis(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
-    filters = [
-        CEL.signal_id == signal_id,
-        CEL.event_code == 82,
-        CEL.event_time.between(t_start, t_end),
-    ]
-    if detector_channel is not None:
-        filters.append(CEL.event_param == detector_channel)
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
 
-    # Get all ON events ordered by time
-    query = (
-        select(CEL.event_param, CEL.event_time)
-        .where(*filters)
-        .order_by(CEL.event_param, CEL.event_time)
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=[82],
+        event_param_in=[detector_channel] if detector_channel is not None else None,
     )
-    result = await session.execute(query)
-    rows = result.all()
+    # fetch_events orders by event_time only; gap analysis groups by
+    # event_param then iterates in time order within each group.
+    if not df.empty:
+        df = df.sort_values(["event_param", "event_time"])
+    rows = list(df.itertuples(index=False))
 
     # Group by channel and compute gap stats
     channels: dict[int, list[datetime]] = {}
@@ -250,19 +228,18 @@ async def detector_occupancy(
     t_start = start or _default_start()
     t_end = end or _default_end()
 
+    await require_max_lookback(t_start, session=session)
+    await require_max_aggregation_days(t_start, t_end, session=session)
+
     # Get all ON/OFF events for this detector
-    query = (
-        select(CEL.event_code, CEL.event_time)
-        .where(
-            CEL.signal_id == signal_id,
-            CEL.event_param == detector_channel,
-            CEL.event_code.in_([81, 82]),
-            CEL.event_time.between(t_start, t_end),
-        )
-        .order_by(CEL.event_time)
+    df = await fetch_events(
+        signal_id=signal_id,
+        start=t_start,
+        end=t_end,
+        event_codes=[81, 82],
+        event_param_in=[detector_channel],
     )
-    result = await session.execute(query)
-    events = result.all()
+    events = list(df.itertuples(index=False))
 
     bin_delta = timedelta(minutes=bin_minutes)
     bins = []

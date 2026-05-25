@@ -5,8 +5,9 @@ Calculates the percentage of vehicle arrivals that occur during the green
 phase for each phase at a signal. A key measure of coordination quality.
 
 Uses pre-computed cycle_detector_arrival tables for historical queries
-(fast). Falls back to raw event processing via db_facade.get_dataframe()
-if aggregate tables are empty, with pandas-based aggregation.
+(fast). Falls back to raw event processing via the tier-aware SDK
+(fetch_events_split) if aggregate tables are empty, with pandas-based
+aggregation.
 """
 
 import logging
@@ -14,17 +15,15 @@ from typing import Optional
 
 import pandas as pd
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database.db import db_facade
-from ..models.event import ControllerEventLog as CEL
 from .registry import Report, ReportMetadata, ReportRegistry
 from .sdk import (
     EVENT_DETECTOR_ON,
     EVENT_PHASE_GREEN,
     EVENT_YELLOW_CLEARANCE,
     fetch_cycle_arrivals,
+    fetch_events_split,
     load_channel_to_phase,
     parse_time,
 )
@@ -118,7 +117,7 @@ class ArrivalsOnGreenReport(Report[ArrivalsOnGreenParams]):
     ) -> pd.DataFrame:
         """
         Build arrivals-on-green data from raw ControllerEventLog events
-        via db_facade.get_dataframe().
+        via the tier-aware SDK (fetch_events_split).
         """
         channel_to_phase = await load_channel_to_phase(session, signal_id, start)
         if not channel_to_phase:
@@ -140,27 +139,14 @@ class ArrivalsOnGreenReport(Report[ArrivalsOnGreenParams]):
     async def _fetch_raw_events(
         self, signal_id: str, start, end, channel_to_phase: dict[int, int],
     ) -> pd.DataFrame:
-        """Fetch phase + detector events via db_facade."""
-        det_channels = list(channel_to_phase.keys())
-
-        stmt = (
-            select(CEL.event_code, CEL.event_param, CEL.event_time)
-            .where(
-                CEL.signal_id == signal_id,
-                CEL.event_time >= start,
-                CEL.event_time <= end,
-                or_(
-                    CEL.event_code.in_([EVENT_PHASE_GREEN, EVENT_YELLOW_CLEARANCE]),
-                    and_(
-                        CEL.event_code.in_([EVENT_DETECTOR_ON]),
-                        CEL.event_param.in_(det_channels),
-                    ),
-                ),
-            )
-            .order_by(CEL.event_time)
+        """Fetch phase + detector events via tier-aware SDK (B8 fetch_events_split)."""
+        return await fetch_events_split(
+            signal_id,
+            start,
+            end,
+            phase_codes=[EVENT_PHASE_GREEN, EVENT_YELLOW_CLEARANCE],
+            det_channels=list(channel_to_phase.keys()),
         )
-
-        return await db_facade.get_dataframe(stmt)
 
 
 def _classify_arrivals(

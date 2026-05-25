@@ -65,6 +65,9 @@ dependencies = [
 
     # File watching
     "watchdog>=6.0",
+
+    # Cold-tier query
+    "duckdb>=1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -74,6 +77,7 @@ dev = [
     "pytest-cov>=6.0",
     "httpx",
     "ruff>=0.9",
+    "moto[s3,server]>=5.0",
 ]
 # Multi-dialect integration-test extras.  Each dialect's integration
 # tests prefer a dev-provided DB URL (TSIGMA_TEST_{PG,MSSQL,ORACLE,MYSQL}_URL)

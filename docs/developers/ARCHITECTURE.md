@@ -716,7 +716,8 @@ Plugins use shared helpers from `tsigma/collection/sdk/`:
 
 Report plugins use shared helpers from `tsigma/reports/sdk/`:
 
-- **Event queries**: `fetch_events()`, `fetch_events_split()` -- query `controller_event_log` by signal_id, event_time range, event codes; return DataFrames (no session parameter)
+- **Event queries**: `fetch_events()`, `fetch_events_split()` -- query `controller_event_log` by signal_id, event_time range, event codes; return DataFrames (no session parameter). Both helpers are **tier-aware** -- they transparently consult the cold tier for windows older than `cold_tier.threshold_days` (see [Tier-Aware Query Routing](#tier-aware-query-routing)). `fetch_events_split`'s OR-of-phases-and-detectors predicate is pushed into a single DuckDB scan on the cold side via `ColdTierQuery.fetch_events`'s `where_sql_fragment` mode.
+- **Event aggregation**: `aggregate_events()` -- tier-aware aggregation. Hot path translates the agg spec list to SQLAlchemy `func.count()` / `func.max()` / etc. with `.filter(text(expr))` for `_if` variants. Spanning windows compute both tier halves independently then re-aggregate via pandas `groupby().agg({col: combinator})` with `sum` for `count`/`count_if`/`sum`, `max` for `max`/`max_if`, and `min` for `min`.
 - **Cycle data**: `fetch_cycle_boundaries()`, `fetch_cycle_arrivals()`, `fetch_cycle_summary()` -- return DataFrames (no session parameter)
 - **Time bins**: `parse_time()`, `bin_timestamp()`, `bin_index()`, `total_bins()`
 - **Config lookups**: `load_channel_to_phase()`, `load_channel_to_approach()`, `load_channels_for_phase()`
@@ -854,6 +855,40 @@ SELECT * FROM controller_event_log         -- hot + warm (TimescaleDB)
 UNION ALL
 SELECT * FROM controller_event_log_cold;   -- cold (Parquet via FDW)
 ```
+
+### Tier-Aware Query Routing
+
+For databases without an in-DB cold reader (MS-SQL, Oracle, MySQL — and PostgreSQL deployments that don't install `parquet_fdw`/`duckdb_fdw`), TSIGMA's SDK helpers route between hot and cold tiers transparently. `tsigma.reports.sdk.queries.fetch_events` consults two runtime-registry keys on each call:
+
+- `cold_tier.query_enabled` (bool, default `true`)
+- `cold_tier.threshold_days` (int, default `180`)
+
+Decision tree for a request with window `[start, end]`:
+
+```
+not cold_tier.query_enabled           → hot-only (legacy behavior)
+end   < now - threshold_days          → cold-only (ColdTierQuery.fetch_events)
+start >= now - threshold_days         → hot-only
+otherwise (spanning the threshold)    → cold[start, threshold)
+                                      + hot[threshold, end]
+                                      → pd.concat + sort by event_time
+```
+
+The cold tier is read via `tsigma.database.cold_tier.ColdTierQuery`, which dispatches internally to `FilesystemBackend` or `S3Backend` depending on `TSIGMA_STORAGE_BACKEND`. See [STORAGE.md § Cold-Tier Query](../developers/STORAGE.md#cold-tier-query) for the read-path details.
+
+The GraphQL `events` query (`tsigma.api.graphql.schema.Query.events`) is also tier-aware — it routes through `fetch_events` rather than issuing a direct `select(ControllerEventLog)`. When the client omits the `event_codes` argument, the SDK's no-filter mode returns every row in the window across both tiers.
+
+The public REST event-list endpoint `GET /api/v1/signals/{signal_id}/events` (`tsigma.api.v1.signals.list_signal_events`) is tier-aware on the same routing rule as of B12.2. The handler also enforces the `api.max_lookback_days` and `api.max_aggregation_days` guards before issuing the read, and returns a paginated `{items, next_cursor}` envelope clamped to `api.max_page_size` — see [STORAGE.md § Tier-aware SDK](../developers/STORAGE.md#tier-aware-sdk) for the request/response shape.
+
+The row-iteration analytics REST endpoints (`/api/v1/analytics/coordination/{offset-drift,patterns,quality}`, `/api/v1/analytics/detectors/{gaps,occupancy}`, `/api/v1/analytics/phases/split-monitor`, `/api/v1/analytics/preemptions/{summary,recovery}`, and the coordination sub-component of `/api/v1/analytics/health/signal`) follow the same routing rule as of B12 Stage 2a — they consume CEL rows through `fetch_events` and enforce the `api.max_lookback_days` / `api.max_aggregation_days` guards before reading.
+
+The SQL-aggregation analytics REST endpoints (`/api/v1/analytics/detectors/stuck`, `/api/v1/analytics/health/detector`, the detector / phase / communication sub-components of `/api/v1/analytics/health/signal`, `/api/v1/analytics/phases/skipped`, `/api/v1/analytics/phases/terminations`) follow the same routing rule as of B12 Stage 2b — they consume CEL aggregations through `aggregate_events` (`tsigma.reports.sdk.aggregates`) and enforce the same `api.max_lookback_days` / `api.max_aggregation_days` guards before reading. After Stage 2b no analytics REST endpoint issues a direct `session.execute` for CEL aggregation.
+
+B12 Stage 2c extends tier-aware routing to internal report call-sites that still issued direct `db_facade.get_dataframe` queries against `ControllerEventLog`: `tsigma.reports.arrivals_on_green.ArrivalsOnGreenReport._fetch_raw_events` now dispatches through `fetch_events_split` for its phase + detector OR-predicate. The scheduler's short-horizon `signal_plan` job (`tsigma.scheduler.jobs.signal_plan`) is intentionally out of scope — its lookback is bounded to ≤ 2 hours and never crosses `cold_tier.threshold_days`, so hot-only is correct.
+
+B12 Stage 3 adds opaque-cursor pagination to the GraphQL `Query.events` resolver (`tsigma.api.graphql.schema`) — the resolver was already tier-aware from B9, but now returns an `EventListPage` envelope (`items`, `nextCursor`) clamped to `api.max_page_size` via `paginated_event_list`. The legacy `limit: Int = 10000` argument is replaced with `first: Int` (page size) and `after: String` (opaque cursor); see [STORAGE.md § Tier-aware SDK](../developers/STORAGE.md#tier-aware-sdk) for the cursor encoding.
+
+Operators can disable cold routing globally via `PUT /api/v1/settings/cold_tier.query_enabled` `false` — the change propagates across replicas via Phase A's Valkey pub/sub invalidation, no restart needed.
 
 ### Configuration
 
