@@ -48,8 +48,13 @@ def _make_client():
 
 
 def _patch_templates():
-    """Patch TemplateResponse to skip Jinja rendering (avoids missing globals)."""
-    def fake_template_response(template_name, context, **kwargs):
+    """Patch TemplateResponse to skip Jinja rendering (avoids missing globals).
+
+    Matches the Starlette 0.45+ signature ``TemplateResponse(request, name,
+    context=None, **kwargs)`` — updated alongside the ui.py call-site sweep
+    that flipped from the pre-0.45 ``(name, context)`` order.
+    """
+    def fake_template_response(request, template_name, context=None, **kwargs):
         return HTMLResponse(content=f"<html>{template_name}</html>")
     return patch("tsigma.api.ui.templates.TemplateResponse", side_effect=fake_template_response)
 

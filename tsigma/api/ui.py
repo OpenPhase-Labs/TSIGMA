@@ -49,7 +49,7 @@ templates = Jinja2Templates(directory=str(_template_dir))
 @_public_router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     """Login page."""
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html")
 
 
 # --- Authenticated (access policy: "ui") -----------------------------------
@@ -57,39 +57,40 @@ async def login_page(request: Request):
 @_authenticated_router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     """Main dashboard page."""
-    return templates.TemplateResponse("pages/dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "pages/dashboard.html")
 
 
 @_authenticated_router.get("/signals", response_class=HTMLResponse)
 async def signals_list(request: Request):
     """Signal list page."""
-    return templates.TemplateResponse("pages/signals/index.html", {"request": request})
+    return templates.TemplateResponse(request, "pages/signals/index.html")
 
 
 @_authenticated_router.get("/signals/{signal_id}", response_class=HTMLResponse)
 async def signal_detail(request: Request, signal_id: str):
     """Signal detail page."""
-    return templates.TemplateResponse("pages/signals/detail.html", {
-        "request": request,
-        "signal_id": signal_id,
-    })
+    return templates.TemplateResponse(
+        request,
+        "pages/signals/detail.html",
+        {"signal_id": signal_id},
+    )
 
 
 @_authenticated_router.get("/reports", response_class=HTMLResponse)
 async def reports_list(request: Request):
     """Report selection page."""
-    return templates.TemplateResponse("pages/reports/index.html", {"request": request})
+    return templates.TemplateResponse(request, "pages/reports/index.html")
 
 
 @_authenticated_router.get("/reports/{report_name}", response_class=HTMLResponse)
 async def report_viewer(request: Request, report_name: str):
     """Report viewer page."""
     signal_id = request.query_params.get("signal_id", "")
-    return templates.TemplateResponse("pages/reports/viewer.html", {
-        "request": request,
-        "report_name": report_name,
-        "signal_id": signal_id,
-    })
+    return templates.TemplateResponse(
+        request,
+        "pages/reports/viewer.html",
+        {"report_name": report_name, "signal_id": signal_id},
+    )
 
 
 # --- Admin only ------------------------------------------------------------
@@ -97,13 +98,13 @@ async def report_viewer(request: Request, report_name: str):
 @_admin_router.get("/admin/users", response_class=HTMLResponse)
 async def admin_users(request: Request):
     """User management page (admin only)."""
-    return templates.TemplateResponse("pages/admin/users.html", {"request": request})
+    return templates.TemplateResponse(request, "pages/admin/users.html")
 
 
 @_admin_router.get("/admin/settings", response_class=HTMLResponse)
 async def admin_settings(request: Request):
     """System settings page (admin only)."""
-    return templates.TemplateResponse("pages/admin/settings.html", {"request": request})
+    return templates.TemplateResponse(request, "pages/admin/settings.html")
 
 
 # --- Aggregate router (imported by app.py as `ui_router`) ------------------
