@@ -17,7 +17,7 @@ dependencies = [
     # Web framework
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
-    "starlette>=0.45",
+    "starlette>=1.0.1",   # >=1.0.1 mitigates PYSEC-2026-161 Host-header injection
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
 
@@ -40,7 +40,7 @@ dependencies = [
     "valkey>=6.0",
 
     # GraphQL
-    "strawberry-graphql[fastapi]>=0.262",
+    "strawberry-graphql[fastapi]>=0.315.4",   # >=0.315.4 mitigates CVE-2026-45739 GraphiQL header leak
 
     # HTTP clients
     "httpx>=0.28",
@@ -68,6 +68,9 @@ dependencies = [
 
     # Cold-tier query
     "duckdb>=1.1.0",
+
+    # Security floor for a transitive dep (pulled in by httpx, requests, etc.)
+    "idna>=3.15",   # >=3.15 mitigates CVE-2026-45409 idna.encode() DoS
 ]
 
 [project.optional-dependencies]
