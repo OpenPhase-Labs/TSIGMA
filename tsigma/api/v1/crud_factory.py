@@ -73,7 +73,7 @@ def _add_create_endpoint(
         status_code=status.HTTP_201_CREATED,
     )
     async def create(
-        body: create_schema,
+        body: create_schema,  # pyright: ignore[reportInvalidTypeForm]  # factory-provided Pydantic class; FastAPI introspects at registration
         session: AsyncSession = Depends(get_audited_session),
         _: SessionData = Depends(require_admin),
     ):
@@ -102,7 +102,7 @@ def _add_update_endpoint(router, prefix, response_schema, update_schema, get_or_
     @router.put(f"{prefix}/{{pk}}", response_model=response_schema)
     async def update(
         pk: str,
-        body: update_schema,
+        body: update_schema,  # pyright: ignore[reportInvalidTypeForm]  # factory-provided Pydantic class; FastAPI introspects at registration
         session: AsyncSession = Depends(get_audited_session),
         _: SessionData = Depends(require_admin),
     ):
