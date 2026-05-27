@@ -77,8 +77,9 @@ async def _get_db_for_api_key() -> AsyncSession:
     from tsigma.database.db import get_db_facade
 
     facade = get_db_facade()
-    session = facade._session_factory()
-    return session
+    if not facade._session_factory:
+        raise RuntimeError("DatabaseFacade not initialized")
+    return facade._session_factory()
 
 
 async def get_current_user_optional(
