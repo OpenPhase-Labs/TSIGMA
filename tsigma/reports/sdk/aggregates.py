@@ -33,7 +33,6 @@ from tsigma.database.db import db_facade
 from tsigma.models.event import ControllerEventLog as CEL
 from tsigma.storage.factory import get_cold_storage_backend
 
-
 # Cross-tier combinator per agg-spec kind. Each per-tier op is associative
 # & commutative, so the combinator is the same op (sum-of-sums for counts,
 # max-of-maxes, min-of-mins).

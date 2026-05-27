@@ -18,7 +18,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
