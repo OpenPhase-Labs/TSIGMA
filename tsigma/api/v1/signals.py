@@ -455,10 +455,13 @@ async def list_signal_events(
     )
 
     # Stringify event_time on each item — the response shape mirrors the
-    # pre-B12.2 endpoint, which returned ISO-8601 strings.
+    # pre-B12.2 endpoint, which returned ISO-8601 strings. Use isinstance
+    # so type-checkers can narrow (hasattr-based narrowing is unreliable
+    # across checkers); runtime semantics are identical because pandas
+    # Timestamp is a datetime subclass.
     for item in items:
         et = item.get("event_time")
-        if hasattr(et, "isoformat"):
+        if isinstance(et, datetime):
             item["event_time"] = et.isoformat()
 
     return {"items": items, "next_cursor": next_cursor}
