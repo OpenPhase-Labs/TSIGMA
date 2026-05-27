@@ -40,12 +40,15 @@ class _DetectorHealthRow:
     last_off: datetime | None
 
 
-def _coerce_timestamp(value):
+def _coerce_timestamp(value: object) -> datetime | None:
     """Convert a pandas/numpy datetime-ish value into a plain datetime or None.
 
     pandas reads ``None`` cells as ``NaT`` in datetime columns; downstream
     scoring helpers (``_stuck_penalty``) use truthy/comparison checks that
-    must observe ``None`` instead.
+    must observe ``None`` instead. Anything not None / NaN / pd.Timestamp /
+    datetime collapses to None so the return type is honest — downstream
+    code expects ``datetime | None`` and would crash on, e.g., a raw
+    numpy.datetime64 that didn't get pandas-converted on the way in.
     """
     if value is None:
         return None
@@ -60,7 +63,9 @@ def _coerce_timestamp(value):
             return None
     except (TypeError, ValueError):
         pass
-    return value
+    if isinstance(value, datetime):
+        return value
+    return None
 
 
 def _grade(score: float) -> str:
