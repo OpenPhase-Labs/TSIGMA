@@ -117,7 +117,7 @@ class OIDCAuthProvider(BaseAuthProvider):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token exchange failed",
-            )
+            ) from None
 
         access_token = token_data.get("access_token")
         if not access_token:
@@ -142,7 +142,7 @@ class OIDCAuthProvider(BaseAuthProvider):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Failed to retrieve user info",
-            )
+            ) from None
 
     def _extract_claims(self, userinfo: dict) -> tuple[str, str, "UserRole"]:
         """Extract sub, email, and role from OIDC userinfo."""

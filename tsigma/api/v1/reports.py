@@ -89,7 +89,7 @@ async def report_schema(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Report not found: {report_name}",
-        )
+        ) from None
 
     params_cls = _params_cls_for(report_cls)
     if params_cls is None:
@@ -121,7 +121,7 @@ async def run_report(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Report not found: {report_name}",
-        )
+        ) from None
 
     try:
         report = report_cls()
@@ -130,18 +130,18 @@ async def run_report(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
-        )
+        ) from exc
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Missing required parameter: {exc}",
-        )
+        ) from exc
     except Exception:
         logger.exception("Report '%s' failed", report_name)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Report execution failed: {report_name}",
-        )
+        ) from None
 
     # Report-level hook: let gating reports override the HTTP status
     # (e.g. the left-turn-gap-data-check uses 422 when overall_ready is
@@ -182,7 +182,7 @@ async def export_report(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Report not found: {report_name}",
-        )
+        ) from None
 
     try:
         report = report_cls()
@@ -191,18 +191,18 @@ async def export_report(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
-        )
+        ) from exc
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Missing required parameter: {exc}",
-        )
+        ) from exc
     except Exception:
         logger.exception("Report export '%s' failed", report_name)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Report export failed: {report_name}",
-        )
+        ) from None
 
     content_types = {
         "csv": "text/csv",

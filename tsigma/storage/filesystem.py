@@ -59,7 +59,7 @@ class FilesystemBackend(StorageBackend):
         try:
             data: bytes = await asyncio.to_thread(path.read_bytes)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Storage key not found: {key}")
+            raise FileNotFoundError(f"Storage key not found: {key}") from None
         return data
 
     async def delete(self, key: str) -> None:

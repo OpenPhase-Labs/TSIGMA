@@ -28,7 +28,7 @@ class S3Backend(StorageBackend):
             raise ImportError(
                 "The 's3' storage backend requires aiobotocore. "
                 "Install it with: pip install aiobotocore"
-            )
+            ) from None
 
         self._bucket = bucket
         self._region = region
@@ -94,10 +94,10 @@ class S3Backend(StorageBackend):
         try:
             response = await client.get_object(Bucket=self._bucket, Key=key)
         except client.exceptions.NoSuchKey:
-            raise FileNotFoundError(f"Storage key not found: {key}")
+            raise FileNotFoundError(f"Storage key not found: {key}") from None
         except Exception as exc:
             if _is_not_found(exc):
-                raise FileNotFoundError(f"Storage key not found: {key}")
+                raise FileNotFoundError(f"Storage key not found: {key}") from exc
             raise
 
         async with response["Body"] as stream:

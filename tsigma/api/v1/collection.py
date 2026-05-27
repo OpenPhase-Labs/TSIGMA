@@ -198,7 +198,7 @@ def _parse_soap_envelope(body: bytes) -> dict[str, str]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Malformed XML: {exc}",
-        )
+        ) from exc
 
     # Find <UploadControllerData> inside <s:Body>
     body_el = root.find(f"{{{_SOAP_NS}}}Body")
@@ -407,7 +407,7 @@ async def trigger_poll(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown polling method: {body.method}",
-        )
+        ) from None
 
     # Build config from signal metadata
     metadata = signal.signal_metadata or {}
