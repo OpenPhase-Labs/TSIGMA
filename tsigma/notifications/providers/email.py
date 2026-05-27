@@ -77,7 +77,7 @@ class EmailProvider(BaseNotificationProvider):
             logger.warning("Email provider: skipping send — incomplete configuration")
             return
 
-        import aiosmtplib
+        import aiosmtplib  # pyright: ignore[reportMissingImports]
 
         tag = severity.upper()
         full_subject = f"[{tag}] {subject}"

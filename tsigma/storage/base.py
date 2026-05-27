@@ -43,8 +43,17 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def list_files(self, prefix: str) -> AsyncIterator[StoredFile]:
-        """List all files under a prefix."""
+    def list_files(self, prefix: str) -> AsyncIterator[StoredFile]:
+        """List all files under a prefix.
+
+        Note: declared as a regular ``def`` (not ``async def``) so async
+        generator implementations in subclasses (which use ``yield``)
+        match the signature. Async generator functions return
+        ``AsyncGenerator[T, None]`` directly — they are AsyncIterators —
+        whereas an ``async def`` returning ``AsyncIterator[T]`` would be
+        a coroutine resolving to one, which is not the same type and
+        triggers ``reportIncompatibleMethodOverride``.
+        """
         ...
 
     @abstractmethod

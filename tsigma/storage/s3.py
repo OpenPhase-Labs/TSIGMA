@@ -23,7 +23,7 @@ class S3Backend(StorageBackend):
         try:
             # Import-as-presence-check for an optional dependency. The binding
             # is intentionally unused — we only care that the import succeeds.
-            import aiobotocore  # noqa: F401  # presence check; removing this import would defeat the runtime guard
+            import aiobotocore  # noqa: F401  # presence check; removing this import would defeat the runtime guard  # pyright: ignore[reportMissingImports]
         except ImportError:
             raise ImportError(
                 "The 's3' storage backend requires aiobotocore. "
@@ -47,7 +47,7 @@ class S3Backend(StorageBackend):
     async def _get_client(self):
         """Get or create the S3 client (lazy initialisation)."""
         if self._client is None:
-            from aiobotocore.session import AioSession
+            from aiobotocore.session import AioSession  # pyright: ignore[reportMissingImports]
 
             self._session = AioSession()
             kwargs = {
@@ -153,16 +153,14 @@ class S3Backend(StorageBackend):
 
 
 def _is_not_found(exc: Exception) -> bool:
-    """Check if an exception represents a 404 / not-found response."""
-    try:
-        from botocore.exceptions import ClientError
+    """Check if an exception represents a 404 / not-found response.
 
-        if isinstance(exc, ClientError):
-            code = exc.response.get("Error", {}).get("Code", "")
-            return code in ("404", "NoSuchKey")
-    except ImportError:
-        pass
-    return getattr(exc, "response", {}).get("Error", {}).get("Code", "") in (
-        "404",
-        "NoSuchKey",
-    )
+    Uses ``getattr`` against the ``response`` attribute uniformly so the
+    type checker doesn't need a botocore import to narrow exception
+    types. Works for botocore ``ClientError`` (which has a ``response``
+    dict) and any other exception that exposes the same attribute shape.
+    """
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    return response.get("Error", {}).get("Code", "") in ("404", "NoSuchKey")
