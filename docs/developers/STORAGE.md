@@ -149,7 +149,7 @@ The `cold_tier.*` keys (query routing) are consumed by the cold-tier query layer
 
 ## Cold-Tier Query
 
-The cold-tier query layer (`tsigma.database.cold_tier.ColdTierQuery`) reads partitioned Parquet archives written by the `export_cold` scheduler job. It works database-agnostically — PostgreSQL deployments can also use the unified FDW view (see [ARCHITECTURE.md](ARCHITECTURE.md#unified-cold-view-postgresql)), but every other database family (MS-SQL, Oracle, MySQL) relies on this application-layer reader.
+The cold-tier query layer (`tsigma.database.cold_tier.ColdTierQuery`) reads partitioned Parquet archives written by the `export_cold` scheduler job. It works database-agnostically — PostgreSQL deployments can also read cold Parquet in-database via `pg_duckdb` (preferred), `duckdb_fdw`, or `parquet_fdw` and expose the result through the unified view (see [ARCHITECTURE.md § Unified Cold View](ARCHITECTURE.md#unified-cold-view-postgresql)), but every other database family (MS-SQL, Oracle, MySQL) relies on this application-layer reader.
 
 ### Partition layout
 

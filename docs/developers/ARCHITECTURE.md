@@ -816,8 +816,8 @@ TSIGMA uses a three-tier data storage model for event data. The tier configurati
 │  Transparent SQL queries     │    │                              │
 ├──────────────────────────────┤    ├──────────────────────────────┤
 │  COLD (Parquet)              │    │  COLD (Parquet)              │
-│  Queryable via parquet_fdw   │    │  External tools only         │
-│  Age: cold_after – retention │    │  (DuckDB, Polars, etc.)      │
+│  Queryable via pg_duckdb     │    │  Queryable via app-layer     │
+│  Age: cold_after – retention │    │  DuckDB (TSIGMA SDK)         │
 │  Local, NAS, or S3 endpoint  │    │  Age: cold_after – retention │
 └──────────────────────────────┘    └──────────────────────────────┘
 ```
@@ -834,11 +834,11 @@ TSIGMA uses a three-tier data storage model for event data. The tier configurati
 
 | Database | Hot -> Warm | Hot/Warm -> Cold (export) | Cold queryable from DB? | Deployment |
 |----------|-----------|--------------------------|-------------------------|------------|
-| **PostgreSQL 18+ w/TimescaleDB** | Compression policy | Yes | Yes (`parquet_fdw` / `duckdb_fdw`) | **Preferred** |
-| **PostgreSQL 18+ (plain)** | -- | Yes | Yes (`parquet_fdw` / `duckdb_fdw`) | **Supported** |
-| **MS-SQL Server 2019+** | -- | Yes | No (external tools only) | **Supported** |
-| **Oracle 19c+** | -- | Yes | No (external tools only) | **Supported** |
-| **MySQL 8.0+** | -- | Yes | No (external tools only) | **Supported** |
+| **PostgreSQL 18+ w/TimescaleDB** | Compression policy | Yes | Yes (`pg_duckdb` — preferred; `duckdb_fdw` / `parquet_fdw` also work) | **Preferred** |
+| **PostgreSQL 18+ (plain)** | -- | Yes | Yes (`pg_duckdb` — preferred; `duckdb_fdw` / `parquet_fdw` also work) | **Supported** |
+| **MS-SQL Server 2019+** | -- | Yes | App-layer DuckDB only (TSIGMA SDK) | **Supported** |
+| **Oracle 19c+** | -- | Yes | App-layer DuckDB only (TSIGMA SDK) | **Supported** |
+| **MySQL 8.0+** | -- | Yes | App-layer DuckDB only (TSIGMA SDK) | **Supported** |
 | **SQLite** | -- | -- | -- | Dev only |
 
 > The Warm tier (TimescaleDB compression) only applies to PostgreSQL + TimescaleDB. All other databases skip directly from Hot to Cold. The Cold export itself is database-agnostic -- TSIGMA reads rows via SQLAlchemy and writes Parquet files. The difference is whether that cold data remains queryable from within the database (PostgreSQL via FDW) or requires external tools (MS-SQL, Oracle, MySQL).
@@ -847,18 +847,26 @@ TSIGMA uses a three-tier data storage model for event data. The tier configurati
 
 ### Unified Cold View (PostgreSQL)
 
-A unified view makes all tiers transparently queryable:
+PostgreSQL deployments can read cold Parquet partitions directly inside the database, making all tiers transparently queryable through a single view:
 
 ```sql
 CREATE VIEW controller_event_log_all AS
 SELECT * FROM controller_event_log         -- hot + warm (TimescaleDB)
 UNION ALL
-SELECT * FROM controller_event_log_cold;   -- cold (Parquet via FDW)
+SELECT * FROM controller_event_log_cold;   -- cold (Parquet)
 ```
+
+Three PostgreSQL extensions can supply the `controller_event_log_cold` foreign table / view:
+
+- **`pg_duckdb`** (MotherDuck + DuckDB Labs, MIT, actively maintained) — embeds DuckDB inside the Postgres backend process. Supports local filesystem and S3 / MinIO / Ceph via DuckDB's `httpfs` (`read_parquet('s3://...')` with secrets via `duckdb.create_simple_secret()`). **Recommended choice** for new deployments.
+- **`duckdb_fdw`** (community FDW, alitrack) — wraps DuckDB as a foreign data wrapper. Functionally similar to `pg_duckdb`; less active upstream development. Acceptable when a deployment already standardized on it.
+- **`parquet_fdw`** (Adjust) — native Parquet FDW. Primarily targets local filesystem; S3/MinIO support exists in some forks but is fragile. Acceptable for local-filesystem-only cold storage.
+
+TimescaleDB compatibility for `pg_duckdb` is not explicitly tested in the upstream README — verify with a smoke query in the target deployment before declaring it production-blessed. The two extensions hook into different Postgres planner layers and are expected to coexist, but verification is cheap insurance.
 
 ### Tier-Aware Query Routing
 
-For databases without an in-DB cold reader (MS-SQL, Oracle, MySQL — and PostgreSQL deployments that don't install `parquet_fdw`/`duckdb_fdw`), TSIGMA's SDK helpers route between hot and cold tiers transparently. `tsigma.reports.sdk.queries.fetch_events` consults two runtime-registry keys on each call:
+For databases without an in-DB cold reader (MS-SQL, Oracle, MySQL — and PostgreSQL deployments that don't install `pg_duckdb`, `duckdb_fdw`, or `parquet_fdw`), TSIGMA's SDK helpers route between hot and cold tiers transparently. `tsigma.reports.sdk.queries.fetch_events` consults two runtime-registry keys on each call:
 
 - `cold_tier.query_enabled` (bool, default `true`)
 - `cold_tier.threshold_days` (int, default `180`)

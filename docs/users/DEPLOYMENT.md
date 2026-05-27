@@ -288,33 +288,36 @@ When `TSIGMA_STORAGE_COLD_ENABLED=true`, queries that reach past `cold_tier.thre
 
 The TSIGMA application process reads Parquet via DuckDB and unions the result with hot/warm rows from the database, inside the SDK layer (`tsigma.reports.sdk.queries.fetch_events` and friends). Works against every supported database family. Requires `TSIGMA_COLD_TIER_QUERY_ENABLED=true` (the default) and the DuckDB `httpfs` extension if cold storage is S3 / MinIO / Ceph (pre-installed in the official image; see `scripts/install_duckdb_extensions.py`).
 
-#### In-database via FDW (preferred for PostgreSQL)
+#### In-database via Postgres extension (preferred for PostgreSQL)
 
-PostgreSQL deployments can read cold Parquet directly inside the database using either `parquet_fdw` or `duckdb_fdw`. The deployment exposes a unified view:
+PostgreSQL deployments can read cold Parquet directly inside the database using one of three extensions. The deployment exposes a unified view:
 
 ```sql
 CREATE VIEW controller_event_log_all AS
 SELECT * FROM controller_event_log         -- hot + warm (TimescaleDB)
 UNION ALL
-SELECT * FROM controller_event_log_cold;   -- cold (Parquet via FDW)
+SELECT * FROM controller_event_log_cold;   -- cold (Parquet)
 ```
 
-When this view is in place, set `TSIGMA_COLD_TIER_QUERY_ENABLED=false` so the SDK short-circuits to a single SQL query against the unified view — the FDW does the work and no application-layer DuckDB runs.
+When this view is in place, set `TSIGMA_COLD_TIER_QUERY_ENABLED=false` so the SDK short-circuits to a single SQL query against the unified view — the in-DB extension does the work and no application-layer DuckDB runs.
 
-#### Choosing between FDW variants for S3/MinIO
+#### Choosing the Postgres extension
 
-- **`parquet_fdw`** (Adjust): designed primarily for local filesystem. S3/MinIO support exists in some forks but is fragile — do not assume it works without testing in your environment.
-- **`duckdb_fdw`**: embeds DuckDB inside the Postgres backend process and uses DuckDB's `httpfs` extension for S3/MinIO. Functionally equivalent to the application-layer DuckDB path; the only difference is which process DuckDB runs in (Postgres backend vs TSIGMA application).
+- **`pg_duckdb`** (MotherDuck + DuckDB Labs, MIT, actively maintained) — embeds DuckDB inside the Postgres backend process. Supports local filesystem and S3 / MinIO / Ceph via DuckDB's `httpfs` (`read_parquet('s3://...')` with secrets via `duckdb.create_simple_secret()`). PG 14–18. **Recommended choice** for new deployments.
+- **`duckdb_fdw`** (community, alitrack) — wraps DuckDB as a foreign data wrapper. Functionally similar to `pg_duckdb`; less active upstream development. Acceptable when a deployment already standardized on it.
+- **`parquet_fdw`** (Adjust) — native Parquet FDW. Primarily targets local filesystem; S3/MinIO support exists in some forks but is fragile. Acceptable for local-filesystem-only cold storage.
+
+TimescaleDB compatibility for `pg_duckdb` is not explicitly tested upstream — verify with a smoke query in the target deployment before declaring it production-blessed. The two extensions hook into different Postgres planner layers and are expected to coexist, but verification is cheap insurance.
 
 #### Read-path matrix
 
 | Database family | Cold storage | Read paths available |
 |-----------------|--------------|----------------------|
-| PostgreSQL + TimescaleDB | Local filesystem | App-layer DuckDB, `parquet_fdw`, `duckdb_fdw` |
-| PostgreSQL + TimescaleDB | S3 / MinIO / Ceph | App-layer DuckDB, `duckdb_fdw` (recommended over `parquet_fdw`) |
-| PostgreSQL (plain, no Timescale) | Local filesystem | App-layer DuckDB, `parquet_fdw`, `duckdb_fdw` |
-| PostgreSQL (plain, no Timescale) | S3 / MinIO / Ceph | App-layer DuckDB, `duckdb_fdw` |
-| MS-SQL / Oracle / MySQL | Any | App-layer DuckDB only (no Parquet-reading FDW available) |
+| PostgreSQL + TimescaleDB | Local filesystem | App-layer DuckDB, `pg_duckdb` (preferred), `duckdb_fdw`, `parquet_fdw` |
+| PostgreSQL + TimescaleDB | S3 / MinIO / Ceph | App-layer DuckDB, `pg_duckdb` (preferred), `duckdb_fdw` |
+| PostgreSQL (plain, no Timescale) | Local filesystem | App-layer DuckDB, `pg_duckdb` (preferred), `duckdb_fdw`, `parquet_fdw` |
+| PostgreSQL (plain, no Timescale) | S3 / MinIO / Ceph | App-layer DuckDB, `pg_duckdb` (preferred), `duckdb_fdw` |
+| MS-SQL / Oracle / MySQL | Any | App-layer DuckDB only (no Parquet-reading extension available) |
 
 ---
 
