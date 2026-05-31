@@ -8,11 +8,11 @@ Most have seed data loaded during database initialization.
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, ForeignKey, Integer, SmallInteger, Text, func
+from sqlalchemy import Boolean, Integer, SmallInteger, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, tsigma_schema
+from .base import Base, schema_fk, tsigma_schema
 
 
 class DirectionType(Base):
@@ -153,7 +153,7 @@ class Region(Base):
     )
     parent_region_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("region.region_id", ondelete="CASCADE"),
+        schema_fk("config", "region.region_id", ondelete="CASCADE"),
     )
     description: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -178,7 +178,7 @@ class Corridor(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     jurisdiction_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("jurisdiction.jurisdiction_id"),
+        schema_fk("config", "jurisdiction.jurisdiction_id"),
     )
 
     __table_args__ = {"schema": tsigma_schema("config")}
@@ -224,7 +224,7 @@ class RoadsideSensorModel(Base):
     )
     vendor_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("roadside_sensor_vendor.vendor_id"),
+        schema_fk("config", "roadside_sensor_vendor.vendor_id"),
         nullable=False,
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)

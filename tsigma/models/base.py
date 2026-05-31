@@ -12,7 +12,7 @@ Models set their schema via `tsigma_schema()` in `__table_args__`.
 
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import ForeignKey, func
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -34,6 +34,28 @@ def tsigma_schema(logical_schema: str) -> str | None:
     if settings.db_type == "mysql":
         return None
     return logical_schema
+
+
+def schema_fk(logical_schema: str, target: str, **kwargs) -> ForeignKey:
+    """
+    Build a schema-aware ForeignKey.
+
+    Qualifies ``target`` with the resolved physical schema for ``logical_schema``
+    (the schema of the *referenced* table), so FK references resolve when tables
+    live in per-logical schemas (PostgreSQL / MS-SQL / Oracle). For MySQL,
+    ``tsigma_schema`` returns ``None`` and the colspec is left unqualified
+    (single database). Uses the same resolver as table placement, so the two
+    never drift.
+
+    Args:
+        logical_schema: Logical schema of the referenced table — one of
+            "config", "events", "aggregation", "identity".
+        target: Unqualified ``"table.column"`` reference.
+        **kwargs: Passed through to ``ForeignKey`` (e.g. ``ondelete``).
+    """
+    schema = tsigma_schema(logical_schema)
+    colspec = f"{schema}.{target}" if schema else target
+    return ForeignKey(colspec, **kwargs)
 
 
 class Base(DeclarativeBase):

@@ -4,6 +4,84 @@
 
 ---
 
+## Database Backends & Setup
+
+TSIGMA runs on PostgreSQL (preferred), MS-SQL, Oracle, or MySQL/MariaDB. Time-series
+partitioning and aggregate refresh differ by backend:
+
+| Backend | Partitioning + aggregate refresh | Status |
+|---------|----------------------------------|--------|
+| PostgreSQL **+ TimescaleDB** | Hypertables + continuous aggregates; TimescaleDB policies own refresh | Supported |
+| PostgreSQL (no TimescaleDB) | `pg_partman` partitioning + `pg_cron`-scheduled refresh | **Planned — not yet implemented** |
+| MS-SQL / Oracle / MySQL | Native range partitioning + APScheduler aggregation jobs | Supported |
+
+### Schema layout
+
+On PostgreSQL / MS-SQL / Oracle the tables live in four logical schemas —
+`config`, `events`, `aggregation`, `identity` — created automatically by the
+initial migration. MySQL/MariaDB has no schemas, so everything lands in the
+single database. Models are schema-qualified, but the audit-trigger functions
+and the `user_role` enum resolve unqualified at runtime, so set the role's
+`search_path` once:
+
+```sql
+ALTER ROLE tsigma SET search_path = config, events, aggregation, identity, public;
+```
+
+### Role, database, and init (all backends)
+
+```sql
+CREATE ROLE tsigma LOGIN PASSWORD '<strong-password>';
+CREATE DATABASE tsigma OWNER tsigma;
+-- then set search_path as above
+```
+
+```bash
+# .env: TSIGMA_PG_* connection + a non-default TSIGMA_AUTH_ADMIN_PASSWORD
+alembic upgrade head
+```
+
+### PostgreSQL + TimescaleDB
+
+TimescaleDB is an explicit, installer-declared mode (set `TSIGMA_ENABLE_TIMESCALEDB=true`).
+Install the **TSL/Community** package — **not** the Apache/OSS build, which lacks
+continuous aggregates and compression:
+
+```bash
+# ✅ Community (TSL) — has continuous aggregates + compression
+dnf install timescaledb-2-postgresql-18   # pulls timescaledb-2-loader-postgresql-18
+# ❌ avoid: timescaledb_18 / timescaledb-2-oss-postgresql-18  (Apache/OSS only)
+```
+
+```ini
+# postgresql.conf, then restart the server
+shared_preload_libraries = 'timescaledb'
+```
+
+```sql
+CREATE EXTENSION IF NOT EXISTS timescaledb;   -- in the tsigma database
+```
+
+With `TSIGMA_ENABLE_TIMESCALEDB=true`, the migration builds the `events.*`
+hypertables and `aggregation.*` continuous aggregates, and the APScheduler
+aggregation jobs defer to TimescaleDB's refresh policies.
+
+### Plain PostgreSQL (no TimescaleDB)
+
+Set `TSIGMA_ENABLE_TIMESCALEDB=false`. Partitioning of the event-log tables and
+scheduled aggregate refresh are handled by **`pg_partman` + `pg_cron`**.
+
+> **Planned — not yet implemented.** The flag is wired through config, the
+> migration, and the scheduler, but the `pg_partman`/`pg_cron` setup itself is
+> not built yet; with the flag off the event-log tables are created unpartitioned.
+
+### Related
+
+- Backfilling history from a legacy ATSPM (MS-SQL) via `tds_fdw` → [BACKFILL_GUIDE.md](BACKFILL_GUIDE.md)
+- Production hardening, assets, systemd/Kubernetes → [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md)
+
+---
+
 ## Docker Compose (Standard — Single Container)
 
 All components in one container. Suitable for most DOTs.
@@ -344,6 +422,7 @@ TimescaleDB compatibility for `pg_duckdb` is not explicitly tested upstream — 
 | `TSIGMA_PG_DATABASE` | `tsigma` | Database name |
 | `TSIGMA_PG_USER` | `tsigma` | Database user |
 | `TSIGMA_PG_PASSWORD` | _(required)_ | Database password |
+| `TSIGMA_ENABLE_TIMESCALEDB` | `false` | PostgreSQL-only: build hypertables + continuous aggregates and let TimescaleDB own refresh. Must be `false` for MS-SQL/Oracle/MySQL |
 | `TSIGMA_COLLECTOR_POLL_INTERVAL` | `300` | Controller poll interval (seconds) |
 | `TSIGMA_REFRESH_SCHEDULE` | `*/15 * * * *` | Materialized view refresh cron (Planned — not yet implemented) |
 | `TSIGMA_WATCHDOG_SCHEDULE` | `0 6 * * *` | Watchdog cron (Planned — not yet implemented) |

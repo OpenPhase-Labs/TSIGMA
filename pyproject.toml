@@ -7,7 +7,7 @@ name = "tsigma"
 version = "1.0.0"
 description = "Traffic Signal Intelligence: Gathering Metrics & Analytics"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 license = "MPL-2.0"
 authors = [
     { name = "OpenPhase Labs" },

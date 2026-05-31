@@ -10,7 +10,6 @@ from uuid import UUID
 
 from sqlalchemy import (
     Boolean,
-    ForeignKey,
     Index,
     Integer,
     SmallInteger,
@@ -21,7 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, tsigma_schema
+from .base import Base, schema_fk, tsigma_schema
 
 
 class Route(Base):
@@ -60,12 +59,12 @@ class RouteSignal(Base):
     )
     route_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("route.route_id"),
+        schema_fk("config", "route.route_id"),
         nullable=False,
     )
     signal_id: Mapped[str] = mapped_column(
         Text,
-        ForeignKey("signal.signal_id"),
+        schema_fk("config", "signal.signal_id"),
         nullable=False,
     )
     sequence_order: Mapped[int] = mapped_column(SmallInteger, nullable=False)
@@ -94,13 +93,13 @@ class RoutePhase(Base):
     )
     route_signal_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("route_signal.route_signal_id"),
+        schema_fk("config", "route_signal.route_signal_id"),
         nullable=False,
     )
     phase_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     direction_type_id: Mapped[int] = mapped_column(
         SmallInteger,
-        ForeignKey("direction_type.direction_type_id"),
+        schema_fk("config", "direction_type.direction_type_id"),
         nullable=False,
     )
     is_overlap: Mapped[bool] = mapped_column(
@@ -132,12 +131,12 @@ class RouteDistance(Base):
     )
     from_route_signal_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("route_signal.route_signal_id"),
+        schema_fk("config", "route_signal.route_signal_id"),
         nullable=False,
     )
     to_route_signal_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("route_signal.route_signal_id"),
+        schema_fk("config", "route_signal.route_signal_id"),
         nullable=False,
     )
     distance_feet: Mapped[int] = mapped_column(Integer, nullable=False)

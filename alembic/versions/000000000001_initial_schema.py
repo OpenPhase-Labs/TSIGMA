@@ -41,6 +41,77 @@ def upgrade() -> None:
     for stmt in dialect.create_schemas_sql():
         op.execute(sa.text(stmt))
 
+    # TimescaleDB is an explicit, installer-declared mode (PostgreSQL only).
+    _timescale = settings.enable_timescaledb and settings.db_type == "postgresql"
+
+    # ------------------------------------------------------------------
+    # Schema-placement + idempotency shim
+    #
+    # The op.create_table()/op.create_index() calls below (and in
+    # migration_aggregates_helpers) omit ``schema=``; inject it from an
+    # authoritative table->logical-schema map via the same resolver the models
+    # use (``dialect.schema()`` — None on MySQL, so tables land in the default
+    # database).  Also make create_table/create_index skip when the object
+    # already exists, so re-running upgrade head is a safe no-op.  Both shims
+    # are restored at the end of upgrade().  Cross-schema FK / index / trigger
+    # references resolve through the tsigma role's search_path.
+    # ------------------------------------------------------------------
+    _SCHEMA_BY_TABLE: dict[str, str] = {}
+    for _t in (
+        "alert_suppression", "approach", "approach_audit", "controller_type",
+        "corridor", "detection_hardware", "detector", "detector_audit",
+        "direction_type", "event_code_definition", "jurisdiction", "lane_type",
+        "movement_type", "region", "roadside_sensor", "roadside_sensor_audit",
+        "roadside_sensor_lane", "roadside_sensor_lane_audit",
+        "roadside_sensor_model", "roadside_sensor_vendor", "route",
+        "route_distance", "route_phase", "route_signal", "signal",
+        "signal_audit", "signal_plan", "system_setting",
+    ):
+        _SCHEMA_BY_TABLE[_t] = "config"
+    for _t in (
+        "approach_delay_15min", "approach_speed_15min", "arrival_on_red_hourly",
+        "coordination_quality_hourly", "cycle_boundary", "cycle_detector_arrival",
+        "cycle_summary_15min", "detector_occupancy_hourly",
+        "detector_volume_hourly", "phase_cycle_15min", "phase_left_turn_gap_15min",
+        "phase_pedestrian_15min", "phase_termination_hourly", "preemption_15min",
+        "priority_15min", "signal_event_count_15min", "split_failure_hourly",
+        "yellow_red_activation_15min",
+    ):
+        _SCHEMA_BY_TABLE[_t] = "aggregation"
+    for _t in ("controller_event_log", "polling_checkpoint", "roadside_event"):
+        _SCHEMA_BY_TABLE[_t] = "events"
+    for _t in ("api_key", "auth_audit_log", "auth_user", "system_setting_audit"):
+        _SCHEMA_BY_TABLE[_t] = "identity"
+
+    _orig_create_table = op.create_table
+    _orig_create_index = op.create_index
+
+    def _schema_of(table_name: str) -> str | None:
+        logical = _SCHEMA_BY_TABLE.get(table_name)
+        return dialect.schema(logical) if logical is not None else None
+
+    def _create_table_schema_aware(name, *cols, **kw):
+        if not kw.get("schema"):
+            schema = _schema_of(name)
+            if schema is not None:
+                kw["schema"] = schema
+        # Idempotent: skip if the table already exists (re-run / reset version).
+        if sa.inspect(op.get_bind()).has_table(name, schema=kw.get("schema")):
+            return
+        return _orig_create_table(name, *cols, **kw)
+
+    def _create_index_idempotent(index_name, table_name, *cols, **kw):
+        schema = kw.get("schema") or _schema_of(table_name)
+        insp = sa.inspect(op.get_bind())
+        if insp.has_table(table_name, schema=schema) and index_name in {
+            ix["name"] for ix in insp.get_indexes(table_name, schema=schema)
+        }:
+            return  # idempotent: index already present
+        return _orig_create_index(index_name, table_name, *cols, **kw)
+
+    op.create_table = _create_table_schema_aware
+    op.create_index = _create_index_idempotent
+
     # ------------------------------------------------------------------
     # Enum types
     # ------------------------------------------------------------------
@@ -690,7 +761,7 @@ def upgrade() -> None:
         sa.Column("password_hash", sa.Text, nullable=False),
         sa.Column(
             "role",
-            sa.Enum("ADMIN", "VIEWER", name="user_role", create_type=False),
+            user_role,
             nullable=False,
         ),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default="true"),
@@ -735,7 +806,7 @@ def upgrade() -> None:
         sa.Column("key_prefix", sa.Text, nullable=False),
         sa.Column(
             "role",
-            sa.Enum("admin", "viewer", name="user_role", create_type=False),
+            user_role,
             nullable=False,
         ),
         sa.Column(
@@ -1007,12 +1078,15 @@ def upgrade() -> None:
     # The scheduler jobs (_should_skip) detect TimescaleDB and disable
     # themselves, since the continuous aggregates handle refresh.
     # ------------------------------------------------------------------
-    op.execute(
+    _cycle_cagg_sql = (
         "DO $$ BEGIN "
-        "  DROP TABLE IF EXISTS cycle_summary_15min; "
-        "  DROP TABLE IF EXISTS cycle_detector_arrival; "
-        "  DROP TABLE IF EXISTS cycle_boundary; "
-        "  CREATE MATERIALIZED VIEW cycle_boundary "
+        "  IF NOT EXISTS (SELECT 1 FROM timescaledb_information.continuous_aggregates "
+        "                 WHERE view_schema = 'aggregation' "
+        "                   AND view_name = 'cycle_boundary') THEN "
+        "  DROP TABLE IF EXISTS aggregation.cycle_summary_15min; "
+        "  DROP TABLE IF EXISTS aggregation.cycle_detector_arrival; "
+        "  DROP TABLE IF EXISTS aggregation.cycle_boundary; "
+        "  CREATE MATERIALIZED VIEW aggregation.cycle_boundary "
         "  WITH (timescaledb.continuous) AS "
         "  SELECT "
         "    signal_id, "
@@ -1045,14 +1119,15 @@ def upgrade() -> None:
         "    END AS termination_type "
         "  FROM controller_event_log "
         "  WHERE event_code IN (1, 4, 5, 6, 8, 9, 10) "
-        "  GROUP BY signal_id, event_param, time_bucket('1 second', event_time); "
-        "  SELECT add_continuous_aggregate_policy('cycle_boundary', "
+        "  GROUP BY signal_id, event_param, time_bucket('1 second', event_time) "
+        "  WITH NO DATA; "
+        "  PERFORM add_continuous_aggregate_policy('aggregation.cycle_boundary', "
         "    start_offset => INTERVAL '2 hours', "
         "    end_offset => INTERVAL '1 minute', "
         "    schedule_interval => INTERVAL '15 minutes', "
         "    if_not_exists => true "
         "  ); "
-        "  CREATE TABLE cycle_detector_arrival ( "
+        "  CREATE TABLE aggregation.cycle_detector_arrival ( "
         "    signal_id TEXT NOT NULL, "
         "    phase INTEGER NOT NULL, "
         "    detector_channel INTEGER NOT NULL, "
@@ -1063,12 +1138,12 @@ def upgrade() -> None:
         "    PRIMARY KEY (signal_id, phase, detector_channel, arrival_time) "
         "  ); "
         "  CREATE INDEX idx_cda_signal_phase_arrival "
-        "    ON cycle_detector_arrival (signal_id, phase, arrival_time DESC); "
+        "    ON aggregation.cycle_detector_arrival (signal_id, phase, arrival_time DESC); "
         "  CREATE INDEX idx_cda_green_start "
-        "    ON cycle_detector_arrival (green_start DESC); "
+        "    ON aggregation.cycle_detector_arrival (green_start DESC); "
         "  CREATE INDEX idx_cda_arrival_time "
-        "    ON cycle_detector_arrival (arrival_time DESC); "
-        "  CREATE TABLE cycle_summary_15min ( "
+        "    ON aggregation.cycle_detector_arrival (arrival_time DESC); "
+        "  CREATE TABLE aggregation.cycle_summary_15min ( "
         "    signal_id TEXT NOT NULL, "
         "    phase INTEGER NOT NULL, "
         "    bin_start TIMESTAMPTZ NOT NULL, "
@@ -1083,13 +1158,14 @@ def upgrade() -> None:
         "    PRIMARY KEY (signal_id, phase, bin_start) "
         "  ); "
         "  CREATE INDEX idx_cs15_signal_phase_bin "
-        "    ON cycle_summary_15min (signal_id, phase, bin_start DESC); "
+        "    ON aggregation.cycle_summary_15min (signal_id, phase, bin_start DESC); "
         "  CREATE INDEX idx_cs15_bin "
-        "    ON cycle_summary_15min (bin_start DESC); "
-        "EXCEPTION WHEN undefined_function THEN "
-        "  RAISE NOTICE 'TimescaleDB not available — keeping regular tables for cycle aggregates'; "
+        "    ON aggregation.cycle_summary_15min (bin_start DESC); "
+        "  END IF; "
         "END $$;"
     )
+    if _timescale:
+        op.execute(_cycle_cagg_sql)
 
     # ------------------------------------------------------------------
     # TimescaleDB Continuous Aggregates for the second-batch tables.
@@ -1099,8 +1175,9 @@ def upgrade() -> None:
     # ``undefined_function`` EXCEPTION so non-TimescaleDB PostgreSQL
     # deployments retain the regular tables.
     # ------------------------------------------------------------------
-    for stmt in _second_batch_continuous_aggregates():
-        op.execute(stmt)
+    if _timescale:
+        for stmt in _second_batch_continuous_aggregates():
+            op.execute(stmt)
 
     # ------------------------------------------------------------------
     # Roadside sensor configuration tables — radar / LiDAR / video
@@ -1130,6 +1207,10 @@ def upgrade() -> None:
             f"roadside_event migration: unsupported dialect "
             f"{dialect_name!r} — supported: postgresql, mssql, oracle, mysql"
         )
+
+    # Restore op.create_table / op.create_index (the shims are process-local).
+    op.create_table = _orig_create_table
+    op.create_index = _orig_create_index
 
 
 # ---------------------------------------------------------------------------
@@ -1198,18 +1279,19 @@ def _create_event_log_postgresql(chunk_days: int) -> None:
             postgresql_using="gin",
             postgresql_where=sa.text("validation_metadata IS NOT NULL"),
         )
-    # TimescaleDB conversion is already idempotent via if_not_exists => true.
-    op.execute(
-        "DO $$ BEGIN "
-        "  PERFORM create_hypertable("
-        "    'controller_event_log', 'event_time', "
-        f"    chunk_time_interval => INTERVAL '{chunk_days} days', "
-        "    migrate_data => true, if_not_exists => true"
-        "  ); "
-        "EXCEPTION WHEN undefined_function THEN "
-        "  RAISE NOTICE 'TimescaleDB not available — skipping hypertable creation'; "
-        "END $$;"
-    )
+    # TimescaleDB hypertable — only when explicitly enabled (installer-declared,
+    # PostgreSQL-only). Idempotent via if_not_exists => true.
+    from tsigma.config import settings
+    if settings.enable_timescaledb:
+        op.execute(
+            "DO $$ BEGIN "
+            "  PERFORM create_hypertable("
+            "    'events.controller_event_log', 'event_time', "
+            f"    chunk_time_interval => INTERVAL '{chunk_days} days', "
+            "    migrate_data => true, if_not_exists => true"
+            "  ); "
+            "END $$;"
+        )
 
 
 def _create_event_log_mssql(chunk_days: int) -> None:
@@ -1409,15 +1491,16 @@ def _create_roadside_event_postgresql(chunk_days: int) -> None:
             "roadside_event",
             [sa.text("event_type"), sa.text("event_time DESC")],
         )
+    from tsigma.config import settings
+    if not settings.enable_timescaledb:
+        return
     op.execute(
         "DO $$ BEGIN "
         "  PERFORM create_hypertable("
-        "    'roadside_event', 'event_time', "
+        "    'events.roadside_event', 'event_time', "
         f"    chunk_time_interval => INTERVAL '{chunk_days} days', "
         "    migrate_data => true, if_not_exists => true"
         "  ); "
-        "EXCEPTION WHEN undefined_function THEN "
-        "  RAISE NOTICE 'TimescaleDB not available — skipping hypertable creation'; "
         "END $$;"
     )
 
@@ -1829,106 +1912,7 @@ def _create_roadside_sensor_tables() -> None:
 
 
 def downgrade() -> None:
-    # Roadside event stream (partitioned / hypertable — same drop pattern
-    # as controller_event_log: plain DROP TABLE is enough because the
-    # partition function / scheme (MS-SQL) and hypertable metadata
-    # (TimescaleDB) are tied to the table.
-    op.execute("DROP TABLE IF EXISTS roadside_event")
-
-    # Roadside sensor tables — audit tables first (no FK dependents),
-    # then the lane mapping, then the sensor, then the reference tables
-    # (no dependents remain after the main tables are dropped).
-    op.execute("DROP TABLE IF EXISTS roadside_sensor_lane_audit")
-    op.execute("DROP TABLE IF EXISTS roadside_sensor_audit")
-    op.execute("DROP TABLE IF EXISTS roadside_sensor_lane")
-    op.execute("DROP TABLE IF EXISTS roadside_sensor")
-    op.execute("DROP TABLE IF EXISTS roadside_sensor_model")
-    op.execute("DROP TABLE IF EXISTS roadside_sensor_vendor")
-
-    # PCD Cycle Aggregates
-    op.drop_table("cycle_summary_15min")
-    op.drop_table("cycle_detector_arrival")
-    op.drop_table("cycle_boundary")
-
-    # Second-batch aggregates (drop CAGGs first where they exist, then tables)
-    for view in (
-        "approach_speed_15min",
-        "phase_cycle_15min",
-        "phase_left_turn_gap_15min",
-        "phase_pedestrian_15min",
-        "preemption_15min",
-        "priority_15min",
-        "signal_event_count_15min",
-        "yellow_red_activation_15min",
-    ):
-        op.execute(
-            "DO $$ BEGIN "
-            f"  DROP MATERIALIZED VIEW IF EXISTS {view} CASCADE; "
-            "EXCEPTION "
-            "  WHEN undefined_table THEN NULL; "
-            "  WHEN undefined_function THEN NULL; "
-            "END $$;"
-        )
-        # Regular (non-CAGG) table drop — guarded by checkfirst.
-        op.execute(f"DROP TABLE IF EXISTS {view}")
-
-    # Aggregates
-    op.drop_table("phase_termination_hourly")
-    op.drop_table("coordination_quality_hourly")
-    op.drop_table("arrival_on_red_hourly")
-    op.drop_table("approach_delay_15min")
-    op.drop_table("split_failure_hourly")
-    op.drop_table("detector_occupancy_hourly")
-    op.drop_table("detector_volume_hourly")
-
-    # System
-    op.drop_table("system_setting")
-
-    # Alert suppression
-    op.drop_table("alert_suppression")
-
-    # Auth (drop api_key before auth_user due to FK)
-    op.drop_table("api_key")
-    op.drop_table("auth_user")
-
-    # Audit
-    op.drop_table("auth_audit_log")
-    op.drop_table("detector_audit")
-    op.drop_table("approach_audit")
-    op.drop_table("signal_audit")
-
-    # Event log
-    op.drop_table("controller_event_log")
-
-    # Route tables (reverse dependency order)
-    op.drop_table("route_distance")
-    op.drop_table("route_phase")
-    op.drop_table("route_signal")
-
-    # Checkpoint
-    op.drop_table("polling_checkpoint")
-
-    # Signal plan
-    op.drop_table("signal_plan")
-
-    # Core tables (reverse dependency order)
-    op.drop_table("detector")
-    op.drop_table("approach")
-    op.drop_table("signal")
-
-    # Corridor
-    op.drop_table("corridor")
-
-    # Reference tables
-    op.drop_table("region")
-    op.drop_table("route")
-    op.drop_table("event_code_definition")
-    op.drop_table("jurisdiction")
-    op.drop_table("detection_hardware")
-    op.drop_table("movement_type")
-    op.drop_table("lane_type")
-    op.drop_table("controller_type")
-    op.drop_table("direction_type")
-
-    # Enum types
-    sa.Enum(name="user_role").drop(op.get_bind(), checkfirst=True)
+    raise NotImplementedError(
+        "Destructive downgrades are not supported. "
+        "Write a new forward migration instead."
+    )

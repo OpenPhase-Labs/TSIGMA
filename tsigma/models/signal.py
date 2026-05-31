@@ -9,12 +9,12 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Index, Integer, Text, func
+from sqlalchemy import BigInteger, Boolean, Date, Index, Integer, Text, func
 from sqlalchemy.dialects.postgresql import INET, JSONB, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, TimestampMixin, tsigma_schema
+from .base import Base, TimestampMixin, schema_fk, tsigma_schema
 
 
 class Signal(Base, TimestampMixin):
@@ -34,19 +34,19 @@ class Signal(Base, TimestampMixin):
     longitude: Mapped[Optional[Decimal]] = mapped_column()
     jurisdiction_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("jurisdiction.jurisdiction_id"),
+        schema_fk("config", "jurisdiction.jurisdiction_id"),
     )
     region_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("region.region_id"),
+        schema_fk("config", "region.region_id"),
     )
     corridor_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("corridor.corridor_id"),
+        schema_fk("config", "corridor.corridor_id"),
     )
     controller_type_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("controller_type.controller_type_id"),
+        schema_fk("config", "controller_type.controller_type_id"),
     )
     ip_address: Mapped[Optional[str]] = mapped_column(INET)
     # First-class network port for FTP/HTTP/TCP/UDP/gRPC reachability.

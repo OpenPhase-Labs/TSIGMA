@@ -8,12 +8,12 @@ import enum
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Index, Text, text
+from sqlalchemy import Boolean, Enum, Index, Text, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tsigma.models.base import Base, TimestampMixin, tsigma_schema
+from tsigma.models.base import Base, TimestampMixin, schema_fk, tsigma_schema
 
 
 class UserRole(str, enum.Enum):
@@ -81,7 +81,7 @@ class ApiKey(TimestampMixin, Base):
     )
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("auth_user.id", ondelete="CASCADE"),
+        schema_fk("identity", "auth_user.id", ondelete="CASCADE"),
         nullable=False,
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)

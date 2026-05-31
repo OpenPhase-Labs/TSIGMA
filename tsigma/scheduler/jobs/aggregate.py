@@ -6,6 +6,9 @@ re-aggregates from raw ControllerEventLog events.  On PostgreSQL with
 TimescaleDB the jobs detect the extension at first run and disable
 themselves (continuous aggregates handle it natively).
 
+When TSIGMA_ENABLE_TIMESCALEDB is set (and the extension is present) the
+jobs disable themselves — continuous aggregates handle refresh natively.
+
 All SQL is generated via DatabaseFacade helpers so that it works
 across PostgreSQL, MS-SQL, Oracle, and MySQL.
 """
@@ -27,19 +30,33 @@ _timescaledb_active: bool = False
 
 
 async def _should_skip(session: AsyncSession) -> bool:
-    """Return True if TimescaleDB continuous aggregates handle this."""
+    """Return True when TimescaleDB continuous aggregates own refresh.
+
+    The installer-declared ``TSIGMA_ENABLE_TIMESCALEDB`` flag is the primary
+    signal; the runtime extension probe (``has_timescaledb``) is a secondary
+    guard so a misconfigured flag (enabled but extension absent) falls back to
+    running the app-level jobs instead of silently skipping aggregation.
+    """
     global _timescaledb_checked, _timescaledb_active
 
     if not settings.aggregation_enabled:
         return True
+
+    if not settings.enable_timescaledb:
+        return False
 
     if not _timescaledb_checked:
         _timescaledb_active = await db_facade.has_timescaledb(session)
         _timescaledb_checked = True
         if _timescaledb_active:
             logger.info(
-                "TimescaleDB detected — aggregation jobs disabled "
-                "(continuous aggregates handle this)"
+                "TimescaleDB enabled — aggregation jobs disabled "
+                "(continuous aggregates handle refresh)"
+            )
+        else:
+            logger.warning(
+                "TSIGMA_ENABLE_TIMESCALEDB is set but the timescaledb extension "
+                "is not present; running app-level aggregation jobs as fallback"
             )
 
     return _timescaledb_active

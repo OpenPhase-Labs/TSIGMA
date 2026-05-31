@@ -5,6 +5,7 @@ Pydantic settings with environment variable support.
 Configuration priority: Environment Variables > YAML > Database
 """
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,14 @@ class Settings(BaseSettings):
     pg_database: str = "tsigma"
     pg_user: str = "tsigma"
     pg_password: str = ""
+
+    # TimescaleDB — explicit, installer-declared deployment mode (PostgreSQL only).
+    # When True, the schema migration builds hypertables + continuous aggregates
+    # and the aggregation scheduler defers refresh to TimescaleDB policies. When
+    # False, plain-PostgreSQL partitioning/refresh applies (pg_partman + pg_cron).
+    # TimescaleDB has no MS-SQL/Oracle/MySQL adapter, so this must stay False for
+    # those engines (enforced below).
+    enable_timescaledb: bool = False
 
     # Component toggles
     enable_api: bool = True
@@ -252,6 +261,17 @@ class Settings(BaseSettings):
     secret_key_vault_url: str = ""    # Vault URL for key retrieval (e.g., HashiCorp Vault)
     secret_key_vault_path: str = ""   # Vault secret path (e.g., "secret/data/tsigma")
     secret_key_vault_field: str = "secret_key"  # Field name within the vault secret
+
+    @model_validator(mode="after")
+    def _validate_timescaledb(self) -> "Settings":
+        """TimescaleDB is PostgreSQL-only — reject it on other engines."""
+        if self.enable_timescaledb and self.db_type != "postgresql":
+            raise ValueError(
+                "TSIGMA_ENABLE_TIMESCALEDB requires TSIGMA_DB_TYPE=postgresql "
+                f"(got db_type={self.db_type!r}); TimescaleDB has no MS-SQL / "
+                "Oracle / MySQL adapter."
+            )
+        return self
 
 
 # Global settings instance

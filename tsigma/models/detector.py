@@ -7,11 +7,11 @@ Represents individual vehicle/pedestrian detectors on approaches.
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Index, Integer, SmallInteger, func
+from sqlalchemy import Index, Integer, SmallInteger, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, TimestampMixin, tsigma_schema
+from .base import Base, TimestampMixin, schema_fk, tsigma_schema
 
 
 class Detector(Base, TimestampMixin):
@@ -31,7 +31,7 @@ class Detector(Base, TimestampMixin):
     )
     approach_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("approach.approach_id"),
+        schema_fk("config", "approach.approach_id"),
         nullable=False,
     )
     detector_channel: Mapped[int] = mapped_column(SmallInteger, nullable=False)
@@ -42,15 +42,15 @@ class Detector(Base, TimestampMixin):
     lane_number: Mapped[Optional[int]] = mapped_column(SmallInteger)
     lane_type_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("lane_type.lane_type_id"),
+        schema_fk("config", "lane_type.lane_type_id"),
     )
     movement_type_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("movement_type.movement_type_id"),
+        schema_fk("config", "movement_type.movement_type_id"),
     )
     detection_hardware_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("detection_hardware.detection_hardware_id"),
+        schema_fk("config", "detection_hardware.detection_hardware_id"),
     )
     lat_lon_distance: Mapped[Optional[int]] = mapped_column(Integer)
 

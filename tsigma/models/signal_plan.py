@@ -20,11 +20,11 @@ on MSSQL, Oracle, and MySQL.
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Index, SmallInteger, Text, text
+from sqlalchemy import Index, SmallInteger, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, tsigma_schema
+from .base import Base, schema_fk, tsigma_schema
 
 
 class SignalPlan(Base):
@@ -43,7 +43,7 @@ class SignalPlan(Base):
 
     signal_id: Mapped[str] = mapped_column(
         Text,
-        ForeignKey("signal.signal_id"),
+        schema_fk("config", "signal.signal_id"),
         primary_key=True,
     )
     effective_from: Mapped[datetime] = mapped_column(

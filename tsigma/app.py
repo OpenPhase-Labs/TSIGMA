@@ -188,7 +188,10 @@ async def lifespan(app: FastAPI):
                     exc_info=True,
                 )
 
-        # Initialize active auth provider and mount its routes
+        # Initialize active auth provider and mount its routes.
+        # Importing the providers package triggers its auto-discovery
+        # __init__, which runs the @AuthProviderRegistry.register decorators.
+        import tsigma.auth.providers  # noqa: F401
         provider_cls = AuthProviderRegistry.get(settings.auth_mode)
         provider = provider_cls()
         await provider.initialize()

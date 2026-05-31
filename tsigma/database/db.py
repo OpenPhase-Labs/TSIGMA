@@ -282,7 +282,7 @@ END;
 $$ LANGUAGE plpgsql;
 """
         trigger_sql = f"""
-CREATE TRIGGER {table}_audit_trigger
+CREATE OR REPLACE TRIGGER {table}_audit_trigger
     AFTER INSERT OR UPDATE OR DELETE ON {table}
     FOR EACH ROW EXECUTE FUNCTION audit_{table}_changes();
 """

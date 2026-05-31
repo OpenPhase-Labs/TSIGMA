@@ -315,27 +315,29 @@ def _create_yellow_red_activation(insp) -> None:
 def _cagg_block(*, view: str, select_sql: str) -> str:
     """Build a DO-block that creates a continuous aggregate idempotently.
 
-    The regular table created by ``create_second_batch_aggregate_tables``
-    is dropped first so the CAGG can take over the name.  The policy
-    call uses ``if_not_exists => true`` so a re-run is safe.  The whole
-    block is wrapped in ``EXCEPTION WHEN undefined_function`` so non-
-    TimescaleDB PostgreSQL installs fall through cleanly and the regular
-    table is retained.
+    The regular ``aggregation`` table created by
+    ``create_second_batch_aggregate_tables`` is dropped first so the CAGG can
+    take over the name; the policy call uses ``if_not_exists => true`` so a
+    re-run is safe. Objects are schema-qualified to ``aggregation``. Only
+    invoked when TimescaleDB is enabled — the migration gates the call on
+    ``settings.enable_timescaledb`` — so no ``undefined_function`` fallback is
+    needed here.
     """
     return (
         "DO $$ BEGIN "
-        f"  DROP TABLE IF EXISTS {view}; "
-        f"  CREATE MATERIALIZED VIEW IF NOT EXISTS {view} "
+        f"  IF NOT EXISTS (SELECT 1 FROM timescaledb_information.continuous_aggregates "
+        f"                 WHERE view_schema = 'aggregation' AND view_name = '{view}') THEN "
+        f"  DROP TABLE IF EXISTS aggregation.{view}; "
+        f"  CREATE MATERIALIZED VIEW IF NOT EXISTS aggregation.{view} "
         "  WITH (timescaledb.continuous) AS "
-        f"  {select_sql}; "
-        f"  PERFORM add_continuous_aggregate_policy('{view}', "
+        f"  {select_sql} WITH NO DATA; "
+        f"  PERFORM add_continuous_aggregate_policy('aggregation.{view}', "
         "    start_offset => INTERVAL '2 hours', "
         "    end_offset => INTERVAL '1 minute', "
         "    schedule_interval => INTERVAL '15 minutes', "
         "    if_not_exists => true "
         "  ); "
-        "EXCEPTION WHEN undefined_function THEN "
-        f"  RAISE NOTICE 'TimescaleDB not available — keeping regular {view} table'; "
+        "  END IF; "
         "END $$;"
     )
 

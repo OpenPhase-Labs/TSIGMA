@@ -12,6 +12,7 @@ import re
 import struct
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from xml.etree.ElementTree import Element  # type only; parsing uses defusedxml below
 
 import defusedxml.ElementTree as ET
 
@@ -47,7 +48,7 @@ def _has_xml_markers(data: bytes) -> bool:
     return bool(_XML_MARKERS_RE.search(text[:2048]))
 
 
-def _detect_attr(element: ET.Element, names: set[str]) -> Optional[str]:
+def _detect_attr(element: Element, names: set[str]) -> Optional[str]:
     """Find which attribute name from a set exists on an element."""
     for attr in element.attrib:
         if attr.lower() in names:

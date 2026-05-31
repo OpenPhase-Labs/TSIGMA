@@ -21,7 +21,6 @@ from uuid import UUID
 from sqlalchemy import (
     TIMESTAMP,
     Boolean,
-    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -33,7 +32,7 @@ from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, TimestampMixin, tsigma_schema
+from .base import Base, TimestampMixin, schema_fk, tsigma_schema
 
 
 class RoadsideSensor(Base, TimestampMixin):
@@ -58,7 +57,7 @@ class RoadsideSensor(Base, TimestampMixin):
     # Vendor / model lookup — see tsigma.models.reference.RoadsideSensorModel.
     model_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("roadside_sensor_model.model_id"),
+        schema_fk("config", "roadside_sensor_model.model_id"),
         nullable=False,
     )
     # Each sensor is associated with exactly one signal (ATSPM 5x convention).
@@ -66,7 +65,7 @@ class RoadsideSensor(Base, TimestampMixin):
     # separate join table and are deferred until an actual use case.
     signal_id: Mapped[str] = mapped_column(
         Text,
-        ForeignKey("signal.signal_id"),
+        schema_fk("config", "signal.signal_id"),
         nullable=False,
     )
 
@@ -154,12 +153,12 @@ class RoadsideSensorLane(Base, TimestampMixin):
     )
     sensor_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("roadside_sensor.sensor_id", ondelete="CASCADE"),
+        schema_fk("config", "roadside_sensor.sensor_id", ondelete="CASCADE"),
         nullable=False,
     )
     approach_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("approach.approach_id"),
+        schema_fk("config", "approach.approach_id"),
         nullable=False,
     )
     lane_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)

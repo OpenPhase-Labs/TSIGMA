@@ -7,11 +7,11 @@ Represents a directional approach to an intersection (e.g., Northbound approach)
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, ForeignKey, Index, SmallInteger, Text, func
+from sqlalchemy import Boolean, Index, SmallInteger, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, TimestampMixin, tsigma_schema
+from .base import Base, TimestampMixin, schema_fk, tsigma_schema
 
 
 class Approach(Base, TimestampMixin):
@@ -31,12 +31,12 @@ class Approach(Base, TimestampMixin):
     )
     signal_id: Mapped[str] = mapped_column(
         Text,
-        ForeignKey("signal.signal_id"),
+        schema_fk("config", "signal.signal_id"),
         nullable=False,
     )
     direction_type_id: Mapped[int] = mapped_column(
         SmallInteger,
-        ForeignKey("direction_type.direction_type_id"),
+        schema_fk("config", "direction_type.direction_type_id"),
         nullable=False,
     )
     description: Mapped[Optional[str]] = mapped_column(Text)
