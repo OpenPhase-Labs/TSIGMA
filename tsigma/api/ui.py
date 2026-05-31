@@ -42,6 +42,10 @@ _admin_router = APIRouter(
 # Templates directory is tsigma/templates/ (sibling to api/)
 _template_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_template_dir))
+# base.html uses Flask's get_flashed_messages(); FastAPI's Jinja2 doesn't
+# provide it. Flash messaging isn't implemented, so register a no-op that
+# accepts the with_categories kwarg and returns no messages.
+templates.env.globals["get_flashed_messages"] = lambda with_categories=False: []
 
 
 # --- Public ----------------------------------------------------------------
