@@ -43,6 +43,19 @@ def upgrade() -> None:
 
     # TimescaleDB is an explicit, installer-declared mode (PostgreSQL only).
     _timescale = settings.enable_timescaledb and settings.db_type == "postgresql"
+    if _timescale and op.get_bind().execute(sa.text(
+        "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'"
+    )).scalar() is None:
+        # Secondary guard: the flag is on but the extension isn't installed.
+        # Build regular tables instead of failing on undefined TimescaleDB
+        # functions; the scheduler's has_timescaledb probe keeps app-level
+        # aggregation running.
+        logger.warning(
+            "TSIGMA_ENABLE_TIMESCALEDB is set but the timescaledb extension is "
+            "not installed; creating regular tables (no hypertables / continuous "
+            "aggregates)."
+        )
+        _timescale = False
 
     # ------------------------------------------------------------------
     # Schema-placement + idempotency shim
@@ -614,7 +627,7 @@ def upgrade() -> None:
     dialect_name = op.get_bind().dialect.name
 
     if dialect_name == "postgresql":
-        _create_event_log_postgresql(chunk_days)
+        _create_event_log_postgresql(chunk_days, _timescale)
     elif dialect_name == "mssql":
         _create_event_log_mssql(chunk_days)
     elif dialect_name == "oracle":
@@ -1195,7 +1208,7 @@ def upgrade() -> None:
     # See ``tsigma/models/roadside_event.py``.
     # ------------------------------------------------------------------
     if dialect_name == "postgresql":
-        _create_roadside_event_postgresql(chunk_days)
+        _create_roadside_event_postgresql(chunk_days, _timescale)
     elif dialect_name == "mssql":
         _create_roadside_event_mssql(chunk_days)
     elif dialect_name == "oracle":
@@ -1236,7 +1249,7 @@ def _existing_index_names(table_name: str) -> set[str]:
     return {idx["name"] for idx in insp.get_indexes(table_name)}
 
 
-def _create_event_log_postgresql(chunk_days: int) -> None:
+def _create_event_log_postgresql(chunk_days: int, timescale: bool) -> None:
     """PostgreSQL: standard table + optional TimescaleDB hypertable.
 
     Idempotent: skips table creation when it already exists and guards
@@ -1279,10 +1292,9 @@ def _create_event_log_postgresql(chunk_days: int) -> None:
             postgresql_using="gin",
             postgresql_where=sa.text("validation_metadata IS NOT NULL"),
         )
-    # TimescaleDB hypertable — only when explicitly enabled (installer-declared,
-    # PostgreSQL-only). Idempotent via if_not_exists => true.
-    from tsigma.config import settings
-    if settings.enable_timescaledb:
+    # TimescaleDB hypertable — only when enabled + extension present (the caller
+    # passes the verified flag). Idempotent via if_not_exists => true.
+    if timescale:
         op.execute(
             "DO $$ BEGIN "
             "  PERFORM create_hypertable("
@@ -1444,7 +1456,7 @@ def _create_event_log_mysql(chunk_days: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _create_roadside_event_postgresql(chunk_days: int) -> None:
+def _create_roadside_event_postgresql(chunk_days: int, timescale: bool) -> None:
     """PostgreSQL: standard table + optional TimescaleDB hypertable."""
     insp = sa.inspect(op.get_bind())
     if not insp.has_table("roadside_event"):
@@ -1491,8 +1503,7 @@ def _create_roadside_event_postgresql(chunk_days: int) -> None:
             "roadside_event",
             [sa.text("event_type"), sa.text("event_time DESC")],
         )
-    from tsigma.config import settings
-    if not settings.enable_timescaledb:
+    if not timescale:
         return
     op.execute(
         "DO $$ BEGIN "
