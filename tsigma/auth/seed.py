@@ -51,12 +51,15 @@ async def seed_admin(session: AsyncSession) -> None:
         logger.info("Admin user already exists, skipping seed")
         return
 
-    # Block startup if the admin password is an insecure default
+    # Block startup if the admin password is an insecure default.
+    # The specific bad value is intentionally NOT logged — operator can
+    # cross-reference FORBIDDEN_PASSWORDS in source if they need to know
+    # which default they hit, and operational logs stay free of credential
+    # literals (defensive logging hygiene, semgrep python-logger-credential-disclosure).
     if settings.auth_admin_password in FORBIDDEN_PASSWORDS:
         logger.critical(
-            "TSIGMA_AUTH_ADMIN_PASSWORD is set to an insecure default ('%s'). "
-            "Set a strong password via environment variable or .env file before starting.",
-            settings.auth_admin_password,
+            "TSIGMA_AUTH_ADMIN_PASSWORD is set to a known-insecure default. "
+            "Set a strong password via environment variable or .env file before starting."
         )
         raise SystemExit(
             "Refusing to start: TSIGMA_AUTH_ADMIN_PASSWORD must be changed "
