@@ -1256,21 +1256,50 @@ def _create_event_log_postgresql(chunk_days: int, timescale: bool) -> None:
     each index.  The TimescaleDB ``create_hypertable`` call already uses
     ``if_not_exists => true``.
     """
+    from datetime import date
+
+    from tsigma.database.db import DialectHelper
+
     insp = sa.inspect(op.get_bind())
-    if not insp.has_table("controller_event_log"):
-        op.create_table(
-            "controller_event_log",
-            sa.Column("signal_id", sa.Text, primary_key=True),
-            sa.Column(
-                "event_time",
-                postgresql.TIMESTAMP(timezone=True),
-                primary_key=True,
-            ),
-            sa.Column("event_code", sa.Integer, primary_key=True),
-            sa.Column("event_param", sa.Integer, primary_key=True),
-            sa.Column("device_id", sa.SmallInteger, nullable=False, server_default="1"),
-            sa.Column("validation_metadata", postgresql.JSONB, nullable=True),
-        )
+    if not insp.has_table("controller_event_log", schema="events"):
+        if timescale:
+            op.create_table(
+                "controller_event_log",
+                sa.Column("signal_id", sa.Text, primary_key=True),
+                sa.Column(
+                    "event_time",
+                    postgresql.TIMESTAMP(timezone=True),
+                    primary_key=True,
+                ),
+                sa.Column("event_code", sa.Integer, primary_key=True),
+                sa.Column("event_param", sa.Integer, primary_key=True),
+                sa.Column("device_id", sa.SmallInteger, nullable=False, server_default="1"),
+                sa.Column("validation_metadata", postgresql.JSONB, nullable=True),
+            )
+        else:
+            # Non-TimescaleDB PostgreSQL: native declarative range partitioning,
+            # maintained by the manage_partitions scheduler job. A DEFAULT
+            # partition catches out-of-window rows; an initial partition covers
+            # "today" so inserts route correctly before the job first runs.
+            op.execute(
+                "CREATE TABLE events.controller_event_log ("
+                "  signal_id TEXT NOT NULL, "
+                "  event_time TIMESTAMPTZ NOT NULL, "
+                "  event_code INTEGER NOT NULL, "
+                "  event_param INTEGER NOT NULL, "
+                "  device_id SMALLINT NOT NULL DEFAULT 1, "
+                "  validation_metadata JSONB, "
+                "  PRIMARY KEY (signal_id, event_time, event_code, event_param) "
+                ") PARTITION BY RANGE (event_time)"
+            )
+            op.execute(
+                "CREATE TABLE events.controller_event_log_default "
+                "PARTITION OF events.controller_event_log DEFAULT"
+            )
+            for _stmt in DialectHelper("postgresql").ensure_partition_sql(
+                "controller_event_log", date.today(), chunk_days,
+            ):
+                op.execute(_stmt)
     existing = _existing_index_names("controller_event_log")
     if "idx_cel_signal_time" not in existing:
         op.create_index(
@@ -1458,32 +1487,66 @@ def _create_event_log_mysql(chunk_days: int) -> None:
 
 def _create_roadside_event_postgresql(chunk_days: int, timescale: bool) -> None:
     """PostgreSQL: standard table + optional TimescaleDB hypertable."""
+    from datetime import date
+
+    from tsigma.database.db import DialectHelper
+
     insp = sa.inspect(op.get_bind())
-    if not insp.has_table("roadside_event"):
-        op.create_table(
-            "roadside_event",
-            sa.Column("signal_id", sa.Text, primary_key=True),
-            sa.Column(
-                "sensor_id",
-                postgresql.UUID(as_uuid=True),
-                primary_key=True,
-            ),
-            sa.Column(
-                "event_time",
-                postgresql.TIMESTAMP(timezone=True),
-                primary_key=True,
-            ),
-            sa.Column("event_type", sa.SmallInteger, primary_key=True),
-            sa.Column("mph", sa.Integer, nullable=True),
-            sa.Column("kph", sa.Integer, nullable=True),
-            sa.Column("length_feet", sa.Integer, nullable=True),
-            sa.Column("vehicle_class", sa.SmallInteger, nullable=True),
-            sa.Column("lane_number", sa.SmallInteger, nullable=True),
-            sa.Column("direction_id", sa.SmallInteger, nullable=True),
-            sa.Column("occupancy_pct", sa.Numeric(5, 2), nullable=True),
-            sa.Column("queue_length_feet", sa.Numeric(8, 2), nullable=True),
-            sa.Column("vendor_metadata", postgresql.JSONB, nullable=True),
-        )
+    if not insp.has_table("roadside_event", schema="events"):
+        if timescale:
+            op.create_table(
+                "roadside_event",
+                sa.Column("signal_id", sa.Text, primary_key=True),
+                sa.Column(
+                    "sensor_id",
+                    postgresql.UUID(as_uuid=True),
+                    primary_key=True,
+                ),
+                sa.Column(
+                    "event_time",
+                    postgresql.TIMESTAMP(timezone=True),
+                    primary_key=True,
+                ),
+                sa.Column("event_type", sa.SmallInteger, primary_key=True),
+                sa.Column("mph", sa.Integer, nullable=True),
+                sa.Column("kph", sa.Integer, nullable=True),
+                sa.Column("length_feet", sa.Integer, nullable=True),
+                sa.Column("vehicle_class", sa.SmallInteger, nullable=True),
+                sa.Column("lane_number", sa.SmallInteger, nullable=True),
+                sa.Column("direction_id", sa.SmallInteger, nullable=True),
+                sa.Column("occupancy_pct", sa.Numeric(5, 2), nullable=True),
+                sa.Column("queue_length_feet", sa.Numeric(8, 2), nullable=True),
+                sa.Column("vendor_metadata", postgresql.JSONB, nullable=True),
+            )
+        else:
+            # Non-TimescaleDB PostgreSQL: native declarative range partitioning
+            # (see _create_event_log_postgresql for the rationale).
+            op.execute(
+                "CREATE TABLE events.roadside_event ("
+                "  signal_id TEXT NOT NULL, "
+                "  sensor_id UUID NOT NULL, "
+                "  event_time TIMESTAMPTZ NOT NULL, "
+                "  event_type SMALLINT NOT NULL, "
+                "  mph INTEGER, "
+                "  kph INTEGER, "
+                "  length_feet INTEGER, "
+                "  vehicle_class SMALLINT, "
+                "  lane_number SMALLINT, "
+                "  direction_id SMALLINT, "
+                "  occupancy_pct NUMERIC(5, 2), "
+                "  queue_length_feet NUMERIC(8, 2), "
+                "  vendor_metadata JSONB, "
+                "  PRIMARY KEY (signal_id, sensor_id, event_time, event_type) "
+                ") PARTITION BY RANGE (event_time)"
+            )
+            op.execute(
+                "CREATE TABLE events.roadside_event_default "
+                "PARTITION OF events.roadside_event DEFAULT"
+            )
+            for _stmt in DialectHelper("postgresql").ensure_partition_sql(
+                "roadside_event", date.today(), chunk_days,
+            ):
+                op.execute(_stmt)
     existing = _existing_index_names("roadside_event")
     if "idx_re_sensor_time" not in existing:
         op.create_index(

@@ -12,7 +12,7 @@ partitioning and aggregate refresh differ by backend:
 | Backend | Partitioning + aggregate refresh | Status |
 |---------|----------------------------------|--------|
 | PostgreSQL **+ TimescaleDB** | Hypertables + continuous aggregates; TimescaleDB policies own refresh | Supported |
-| PostgreSQL (no TimescaleDB) | `pg_partman` partitioning + `pg_cron`-scheduled refresh | **Planned — not yet implemented** |
+| PostgreSQL (no TimescaleDB) | Native declarative range partitioning + `manage_partitions` scheduler job; APScheduler aggregation jobs | Supported |
 | MS-SQL / Oracle / MySQL | Native range partitioning + APScheduler aggregation jobs | Supported |
 
 ### Schema layout
@@ -68,12 +68,13 @@ aggregation jobs defer to TimescaleDB's refresh policies.
 
 ### Plain PostgreSQL (no TimescaleDB)
 
-Set `TSIGMA_ENABLE_TIMESCALEDB=false`. Partitioning of the event-log tables and
-scheduled aggregate refresh are handled by **`pg_partman` + `pg_cron`**.
-
-> **Planned — not yet implemented.** The flag is wired through config, the
-> migration, and the scheduler, but the `pg_partman`/`pg_cron` setup itself is
-> not built yet; with the flag off the event-log tables are created unpartitioned.
+Set `TSIGMA_ENABLE_TIMESCALEDB=false`. The event-log tables (`events.controller_event_log`,
+`events.roadside_event`) are created with **native declarative range partitioning**
+on `event_time` — a `DEFAULT` partition plus the current day's partition — and the
+**`manage_partitions` scheduler job** keeps a rolling window (creates
+`partition_lookahead_days` ahead, drops past `partition_retention_days`) using the
+same dialect-agnostic framework as MS-SQL/Oracle/MySQL. Aggregate refresh runs via
+the APScheduler aggregation jobs. No `pg_partman` or `pg_cron` required.
 
 ### Related
 

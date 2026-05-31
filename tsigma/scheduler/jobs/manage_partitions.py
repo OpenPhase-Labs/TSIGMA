@@ -50,10 +50,10 @@ _MANAGED_TABLES = ("controller_event_log", "roadside_event")
 )
 async def manage_partitions(session: AsyncSession) -> None:
     """Keep a rolling window of event-log partitions on non-PG dialects."""
-    if settings.db_type == "postgresql":
+    if settings.db_type == "postgresql" and settings.enable_timescaledb:
         logger.debug(
-            "Skipping manage_partitions — PostgreSQL uses TimescaleDB chunks "
-            "(db_type=%s)", settings.db_type,
+            "Skipping manage_partitions — TimescaleDB owns partitioning "
+            "(db_type=%s, enable_timescaledb=True)", settings.db_type,
         )
         return
 

@@ -444,7 +444,24 @@ VALUES ({old_id_list}, @app_user, 'DELETE', JSON_OBJECT());
         is not partitioned yet and ``manage_partitions`` will skip it.
         """
         if self.db_type == "postgresql":
-            return None
+            # Native declarative partitioning (non-TimescaleDB PostgreSQL).
+            # Child partitions are named "<table>_<pname>" for global uniqueness;
+            # strip the "<table>_" prefix so the name matches partition_name().
+            evt = self.schema("events")
+            return (
+                "SELECT "
+                f"substring(c.relname FROM char_length('{table}_') + 1) "
+                "  AS partition_name, "
+                "substring(pg_get_expr(c.relpartbound, c.oid) "
+                "  FROM 'TO \\(''(.+)''\\)') AS boundary_iso "
+                "FROM pg_inherits i "
+                "JOIN pg_class c ON c.oid = i.inhrelid "
+                "JOIN pg_class p ON p.oid = i.inhparent "
+                "JOIN pg_namespace n ON n.oid = p.relnamespace "
+                f"WHERE p.relname = '{table}' AND n.nspname = '{evt}' "
+                "AND pg_get_expr(c.relpartbound, c.oid) <> 'DEFAULT' "
+                "ORDER BY boundary_iso"
+            )
         if self.db_type == "mssql":
             func = self.partition_function_name(table)
             return (
@@ -488,7 +505,17 @@ VALUES ({old_id_list}, @app_user, 'DELETE', JSON_OBJECT());
         statements (scheme NEXT USED + function SPLIT RANGE).  MySQL returns
         one ``ALTER TABLE ... ADD PARTITION``.
         """
-        if self.db_type in ("postgresql", "oracle"):
+        if self.db_type == "postgresql":
+            evt = self.schema("events")
+            pname = self.partition_name(start, interval_days)
+            end = start + timedelta(days=interval_days)
+            return [
+                f"CREATE TABLE IF NOT EXISTS {evt}.{table}_{pname} "
+                f"PARTITION OF {evt}.{table} "
+                f"FOR VALUES FROM ('{start.isoformat()}') TO ('{end.isoformat()}')"
+            ]
+        if self.db_type == "oracle":
+            # INTERVAL partitioning creates partitions automatically on insert.
             return []
         boundary = (start + timedelta(days=interval_days))
         if self.db_type == "mssql":
@@ -519,7 +546,8 @@ VALUES ({old_id_list}, @app_user, 'DELETE', JSON_OBJECT());
         Oracle and MySQL use ``ALTER TABLE DROP PARTITION``.
         """
         if self.db_type == "postgresql":
-            return []
+            evt = self.schema("events")
+            return [f"DROP TABLE IF EXISTS {evt}.{table}_{partition_name}"]
         if self.db_type == "mssql":
             # We don't have the boundary value from the partition_name alone,
             # so callers pass the boundary ISO string as ``partition_name`` for
