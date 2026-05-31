@@ -79,6 +79,7 @@ async def _handle_invalidate_message(message: dict) -> None:
     settings_cache.invalidate()
     logger.debug("Settings cache invalidated by pub/sub for key %r", key)
 
+
 # ---------------------------------------------------------------------------
 # Access policy categories — must match the keys seeded into the database.
 # ---------------------------------------------------------------------------
@@ -103,21 +104,21 @@ ACCESS_VALUES = frozenset({"public", "authenticated"})
 DEFAULT_ACCESS_POLICY: list[dict[str, Any]] = [
     {
         "key": "access_policy.analytics",
-        "value": "authenticated",
+        "value": "public",
         "category": "access_policy",
         "description": "Access level for analytics endpoints (public or authenticated)",
         "editable": True,
     },
     {
         "key": "access_policy.reports",
-        "value": "authenticated",
+        "value": "public",
         "category": "access_policy",
         "description": "Access level for report generation and export (public or authenticated)",
         "editable": True,
     },
     {
         "key": "access_policy.signal_detail",
-        "value": "authenticated",
+        "value": "public",
         "category": "access_policy",
         "description": (
             "Access level for signal/approach/detector read endpoints"
@@ -127,7 +128,7 @@ DEFAULT_ACCESS_POLICY: list[dict[str, Any]] = [
     },
     {
         "key": "access_policy.health",
-        "value": "authenticated",
+        "value": "public",
         "category": "access_policy",
         "description": "Access level for health dashboard endpoints (public or authenticated)",
         "editable": True,
@@ -141,7 +142,7 @@ DEFAULT_ACCESS_POLICY: list[dict[str, Any]] = [
     },
     {
         "key": "access_policy.ui",
-        "value": "authenticated",
+        "value": "public",
         "category": "access_policy",
         "description": "Access level for web UI pages (public or authenticated)",
         "editable": True,
@@ -354,8 +355,8 @@ def register(
     python_type: type,
     default: Any,
     *,
-    min: Any = None,  # noqa: A002 — matches the field name on RegistryEntry
-    max: Any = None,  # noqa: A002
+    min: Any = None,  # matches the field name on RegistryEntry
+    max: Any = None,
     description: str = "",
     category: str = "",
 ) -> RegistryEntry:
@@ -460,7 +461,7 @@ async def get_float(key: str, session: AsyncSession) -> float:
     return await _resolve(entry, session)
 
 
-async def set(  # noqa: A001 — matches the builtin name intentionally for symmetry with get_*
+async def set(  # matches the builtin name intentionally for symmetry with get_*
     key: str,
     value: Any,
     session: AsyncSession,
