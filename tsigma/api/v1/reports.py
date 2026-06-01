@@ -51,10 +51,10 @@ async def list_reports(
     return [
         {
             "name": name,
-            "description": cls.description,
-            "category": cls.category,
-            "estimated_time": cls.estimated_time,
-            "export_formats": cls.export_formats,
+            "description": cls.metadata.description,
+            "category": cls.metadata.category,
+            "estimated_time": cls.metadata.estimated_time,
+            "export_formats": cls.metadata.export_formats,
         }
         for name, cls in reports.items()
     ]
