@@ -31,7 +31,7 @@ async def compress_chunks(session: AsyncSession) -> None:
                 SELECT chunk_schema || '.' || chunk_name AS chunk_full_name
                 FROM timescaledb_information.chunks
                 WHERE is_compressed = false
-                  AND range_end < now() - :warm_interval ::interval
+                  AND range_end < now() - cast(:warm_interval as text)::interval
                 ORDER BY range_end ASC
             """),
             {"warm_interval": settings.storage_warm_after},
