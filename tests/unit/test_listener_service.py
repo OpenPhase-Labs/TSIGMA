@@ -361,7 +361,7 @@ class TestStartStop:
     @pytest.mark.asyncio
     async def test_stop_swallows_individual_stop_failures(self):
         instances: list = []
-        synth = self._make_listener_class("tcp_server", instances)
+        self._make_listener_class("tcp_server", instances)
 
         sf = MagicMock()
         sf.return_value.__aenter__ = AsyncMock(return_value=MagicMock())

@@ -225,7 +225,7 @@ async def test_split_all_cold_window_calls_cold_path_only():
             hot_mock=hot_mock,
             cold_mock=cold_mock,
         )
-        df = await fetch_events_split("SIG_001", start, end, **_SPLIT_KWARGS)
+        await fetch_events_split("SIG_001", start, end, **_SPLIT_KWARGS)
 
     assert hot_mock.await_count == 0
     assert cold_mock.await_count == 1

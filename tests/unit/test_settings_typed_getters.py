@@ -22,10 +22,10 @@ import pytest
 from tests._helpers import make_mock_session
 from tsigma.models.system_setting import SystemSetting
 from tsigma.settings_service import (
+    _REGISTRY,
     RegistryEntry,
     SettingsCache,
     UnknownSettingError,
-    _REGISTRY,
     get_bool,
     get_float,
     get_int,
@@ -33,7 +33,6 @@ from tsigma.settings_service import (
     register,
     settings_cache,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

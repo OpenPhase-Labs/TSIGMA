@@ -5,7 +5,7 @@ Tests that the default admin user is created on first startup,
 skipped if one already exists, and rejected if the password is insecure.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

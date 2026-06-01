@@ -1,7 +1,6 @@
 """Smoke test for the DuckDB httpfs install script."""
 
 import importlib
-import sys
 
 import pytest
 

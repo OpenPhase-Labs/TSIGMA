@@ -5,7 +5,7 @@ Tests the APScheduler abstraction layer that provides consistent
 job lifecycle management for all TSIGMA services.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 

@@ -12,7 +12,6 @@ from tsigma.reports.sdk.limits import (
     require_max_signals_per_request,
 )
 
-
 # ---------------------------------------------------------------------------
 # require_max_aggregation_days
 # ---------------------------------------------------------------------------

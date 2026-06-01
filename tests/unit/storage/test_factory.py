@@ -1,9 +1,6 @@
 """Tests for the cold storage backend factory."""
 
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 
 def test_get_cold_storage_backend_filesystem(monkeypatch, tmp_path):
@@ -31,7 +28,7 @@ def test_get_cold_storage_backend_s3(monkeypatch):
     with patch("tsigma.storage.s3.S3Backend") as MockS3Backend:
         from tsigma.storage.factory import get_cold_storage_backend
 
-        backend = get_cold_storage_backend()
+        get_cold_storage_backend()
 
         MockS3Backend.assert_called_once_with(
             bucket="my-bucket",

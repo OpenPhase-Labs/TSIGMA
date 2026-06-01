@@ -15,10 +15,10 @@ directly.
 
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Locate the root conftest source
 # ---------------------------------------------------------------------------
+
 
 def _conftest_source() -> str:
     """Return the raw text of ``tests/conftest.py``."""
