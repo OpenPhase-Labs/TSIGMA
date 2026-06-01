@@ -3,6 +3,7 @@
 from datetime import date, datetime
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 import pytest
 
@@ -43,7 +44,7 @@ def cold_tree(tmp_path: Path) -> Path:
                     "device_id": ["dev1", "dev1", "dev1"],
                 }
             )
-            df.to_parquet(part_dir / "events.parquet", index=False)
+            duckdb.from_df(df).write_parquet(str(part_dir / "events.parquet"))
     return tmp_path
 
 

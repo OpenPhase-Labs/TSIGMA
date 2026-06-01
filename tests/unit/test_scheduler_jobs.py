@@ -836,6 +836,7 @@ class TestExportCold:
             ),
             patch("tsigma.scheduler.jobs.export_cold.settings") as mock_settings,
             patch("tsigma.scheduler.jobs.export_cold.pd") as mock_pd,
+            patch("tsigma.scheduler.jobs.export_cold.duckdb"),
         ):
             mock_settings.storage_cold_path = "/tmp/tsigma_cold_test"
 

@@ -8,10 +8,11 @@ and pointing `S3Backend.endpoint_url` at it bypasses that path entirely and
 exercises the actual aiobotocore call stack.
 """
 
-import io
+import tempfile
 from datetime import date, datetime
 
 import boto3
+import duckdb
 import pandas as pd
 import pytest
 import pytest_asyncio
@@ -44,13 +45,13 @@ def _put_partition(s3_client, bucket: str, signal_id: str, d: str) -> None:
             "device_id": ["dev1", "dev1", "dev1"],
         }
     )
-    buf = io.BytesIO()
-    df.to_parquet(buf, index=False)
-    buf.seek(0)
+    with tempfile.NamedTemporaryFile(suffix=".parquet") as tf:
+        duckdb.from_df(df).write_parquet(tf.name)
+        body = open(tf.name, "rb").read()
     s3_client.put_object(
         Bucket=bucket,
         Key=f"{signal_id}/{d}/events.parquet",
-        Body=buf.getvalue(),
+        Body=body,
     )
 
 

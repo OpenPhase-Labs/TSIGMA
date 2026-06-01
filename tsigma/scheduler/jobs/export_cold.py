@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,7 +75,9 @@ async def export_cold(session: AsyncSession) -> None:
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / "events.parquet"
 
-            group.drop(columns=["event_date"]).to_parquet(out_path, index=False)
+            duckdb.from_df(
+                group.drop(columns=["event_date"])
+            ).write_parquet(str(out_path))
             total_exported += len(group)
             logger.info("Exported %d events to %s", len(group), out_path)
 
