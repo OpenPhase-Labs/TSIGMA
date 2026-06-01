@@ -81,6 +81,8 @@ dev = [
     "httpx",
     "ruff>=0.9",
     "moto[s3,server]>=5.0",
+    "pysnmp>=7.1",
+    "aiobotocore>=2.15",
 ]
 # Multi-dialect integration-test extras.  Each dialect's integration
 # tests prefer a dev-provided DB URL (TSIGMA_TEST_{PG,MSSQL,ORACLE,MYSQL}_URL)
