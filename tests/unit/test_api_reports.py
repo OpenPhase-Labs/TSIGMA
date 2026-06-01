@@ -74,10 +74,10 @@ def _make_fake_report_cls(execute_result=None, export_result=None):
     instance.execute = AsyncMock(return_value=execute_result)
     instance.export = AsyncMock(return_value=export_result or b"csv,data\n1,2")
     cls.return_value = instance
-    cls.description = "Test report"
-    cls.category = "standard"
-    cls.estimated_time = "fast"
-    cls.export_formats = ["csv", "json"]
+    cls.metadata.description = "Test report"
+    cls.metadata.category = "standard"
+    cls.metadata.estimated_time = "fast"
+    cls.metadata.export_formats = ["csv", "json"]
     # The real preferred_http_status hook returns None for "use 200";
     # MagicMock's default return is another MagicMock, which would
     # confuse the API handler's isinstance check.

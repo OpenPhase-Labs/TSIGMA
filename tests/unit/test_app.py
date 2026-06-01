@@ -65,6 +65,7 @@ def _apply_mock_settings(mock_settings, **overrides):
         "auth_mode": "local",
         "cors_origins": "",
         "log_level": "INFO",
+        "effective_log_level": "INFO",
         "log_format": "json",
         "valkey_url": "",
         "valkey_settings_invalidation_enabled": False,

@@ -1,10 +1,3 @@
-import os
-os.environ.setdefault("TSIGMA_VALKEY_SETTINGS_INVALIDATION_ENABLED", "false")
-# Disable cold-tier routing by default in unit tests. Tier-aware fetch_events
-# (B7) consults this registry key; existing tests mock only `db_facade` and
-# would otherwise hit the cold path for old date windows. Tests that
-# specifically exercise tier routing mock settings_service directly.
-os.environ.setdefault("TSIGMA_COLD_TIER_QUERY_ENABLED", "false")
 """
 Pytest configuration and shared fixtures.
 
@@ -18,12 +11,35 @@ Set TSIGMA_TEST_DB_URL to enable them:
 Integration tests are skipped automatically when this variable is not set.
 """
 
+import os
+import tempfile
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from tsigma.app import create_app
-from tsigma.models.base import Base
+# These TSIGMA_* env vars must be set before importing tsigma.config/app so the
+# Settings model picks them up; the tsigma imports below are intentionally placed
+# after this setup. Disable cold-tier routing by default in unit tests: tier-aware
+# fetch_events (B7) consults this registry key; existing tests mock only
+# `db_facade` and would otherwise hit the cold path for old date windows. Tests
+# that specifically exercise tier routing mock settings_service directly.
+os.environ.setdefault("TSIGMA_VALKEY_SETTINGS_INVALIDATION_ENABLED", "false")
+os.environ.setdefault("TSIGMA_COLD_TIER_QUERY_ENABLED", "false")
+
+# Build the global Settings() against real defaults, not this host's .env.
+# tsigma.config constructs `settings = Settings()` at import time and resolves
+# env_file=".env" relative to the cwd, so a developer's local .env (e.g.
+# TSIGMA_DEBUG=true) would otherwise leak debug-only behavior — Report-Only CSP,
+# uvicorn reload — into the whole suite. Import from an empty directory so the
+# .env is not found. OS env vars (set above, or by a test) still take precedence.
+_real_cwd = os.getcwd()
+os.chdir(tempfile.mkdtemp(prefix="tsigma-test-noenv-"))
+try:
+    from tsigma.app import create_app
+    from tsigma.models.base import Base
+finally:
+    os.chdir(_real_cwd)
 
 # ---------------------------------------------------------------------------
 # Unit test fixtures

@@ -33,11 +33,12 @@ def _mock_rows(rows: list[tuple[str, str]]) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_skips_postgresql():
-    """PostgreSQL uses TimescaleDB — job returns early without touching DB."""
+    """PostgreSQL + TimescaleDB — job returns early without touching DB."""
     from tsigma.scheduler.jobs import manage_partitions as mp
 
     session = make_mock_session()
-    with patch.object(mp.settings, "db_type", "postgresql"):
+    with patch.object(mp.settings, "db_type", "postgresql"), \
+         patch.object(mp.settings, "enable_timescaledb", True):
         await mp.manage_partitions(session)
     session.execute.assert_not_called()
 
