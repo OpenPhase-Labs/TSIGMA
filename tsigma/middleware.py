@@ -115,7 +115,22 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     Adds security headers (CSP, X-Frame-Options, etc.).
 
     Protects against XSS, clickjacking, and other attacks.
+
+    The CSP itself is identical in all environments. In debug mode it is sent
+    Report-Only, so the browser logs violations to the console instead of
+    enforcing them — the local frontend stack runs while still surfacing
+    everything that production would block. A warning is emitted once at
+    startup whenever debug is enabled.
     """
+
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+        if settings.debug:
+            logger.warning(
+                "DEBUG mode: Content-Security-Policy is Report-Only — "
+                "violations are logged but NOT enforced. Do not use in "
+                "production."
+            )
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
@@ -130,8 +145,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         """
         response = await call_next(request)
 
-        # Content Security Policy
-        response.headers["Content-Security-Policy"] = (
+        # Content Security Policy. The policy is identical everywhere; in debug
+        # it is sent Report-Only so violations are reported to the console
+        # instead of enforced — the local frontend stack runs, prod still blocks.
+        csp = (
             "default-src 'self'; "
             "script-src 'self'; "
             "style-src 'self'; "
@@ -140,6 +157,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "connect-src 'self'; "
             "frame-ancestors 'none'"
         )
+        if settings.debug:
+            response.headers["Content-Security-Policy-Report-Only"] = csp
+        else:
+            response.headers["Content-Security-Policy"] = csp
 
         # Additional security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
