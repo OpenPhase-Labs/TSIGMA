@@ -51,7 +51,6 @@ class TestSettings:
         settings = Settings()
         assert settings.event_log_partition_interval_days == 1
         assert settings.storage_warm_after == "7 days"
-        assert settings.storage_retention == "2 years"
 
     def test_auth_defaults(self):
         """Test default authentication settings."""

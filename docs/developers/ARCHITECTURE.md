@@ -913,8 +913,10 @@ TSIGMA_STORAGE_COLD_ENABLED=true
 TSIGMA_STORAGE_COLD_AFTER_DAYS=180        # Export to Parquet after this many days
 TSIGMA_STORAGE_COLD_PATH=/var/lib/tsigma/cold
 
-# Retention — drop data entirely
-TSIGMA_STORAGE_RETENTION=2 years
+# Retention — drop old data (off by default). On native PostgreSQL the
+# partition-management job drops partitions older than this many days;
+# TimescaleDB deployments add a retention policy manually (see DATABASE.md).
+# TSIGMA_PARTITION_RETENTION_DAYS=730
 ```
 
 ### Compression Settings (Warm Tier)
@@ -1398,9 +1400,9 @@ class Settings(BaseSettings):
     enable_scheduler: bool = True
 
     # Storage tiers
-    timescale_chunk_interval: str = "1 day"
+    event_log_partition_interval_days: int = 1
     storage_warm_after: str = "7 days"
-    storage_retention: str = "2 years"
+    partition_retention_days: int | None = None
 
     # Collector
     collector_max_concurrent: int = 50

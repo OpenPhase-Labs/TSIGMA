@@ -22,9 +22,11 @@ data:
   TSIGMA_ENABLE_COLLECTOR: {{ .Values.components.collector | quote }}
   TSIGMA_ENABLE_SCHEDULER: {{ .Values.components.scheduler | quote }}
 
-  TSIGMA_TIMESCALE_CHUNK_INTERVAL: {{ .Values.storage.timescaleChunkInterval | quote }}
+  TSIGMA_EVENT_LOG_PARTITION_INTERVAL_DAYS: {{ .Values.storage.eventLogPartitionIntervalDays | quote }}
   TSIGMA_STORAGE_WARM_AFTER: {{ .Values.storage.warmAfter | quote }}
-  TSIGMA_STORAGE_RETENTION: {{ .Values.storage.retention | quote }}
+  {{- if .Values.storage.partitionRetentionDays }}
+  TSIGMA_PARTITION_RETENTION_DAYS: {{ .Values.storage.partitionRetentionDays | quote }}
+  {{- end }}
 
   TSIGMA_STORAGE_COLD_ENABLED: {{ .Values.storage.cold.enabled | quote }}
   TSIGMA_STORAGE_COLD_AFTER_DAYS: {{ .Values.storage.cold.afterDays | quote }}

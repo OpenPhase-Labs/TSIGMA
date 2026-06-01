@@ -349,8 +349,13 @@ Cold storage endpoint is configurable: local filesystem, NAS mount, or S3-compat
 
 ### Data Retention
 
+TSIGMA does not auto-drop event data by default. On native PostgreSQL (and
+MS-SQL / Oracle / MySQL), set `TSIGMA_PARTITION_RETENTION_DAYS` and the
+partition-management job drops partitions older than that many days. On
+TimescaleDB, add a retention policy manually:
+
 ```sql
--- TimescaleDB retention policy (from TSIGMA_STORAGE_RETENTION)
+-- TimescaleDB retention policy (operator-managed; optional)
 SELECT add_retention_policy('controller_event_log', INTERVAL '2 years');
 ```
 

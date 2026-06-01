@@ -112,11 +112,10 @@ class Settings(BaseSettings):
     partition_lookahead_days: int = 7
     # Drop partitions older than this many days on MS-SQL / Oracle / MySQL.
     # ``None`` disables auto-drop (partitions grow without bound — safest
-    # default for pre-production).  Align with ``storage_retention`` when
-    # ready to enable retention in production.
+    # default for pre-production).  Set a positive value to enable retention
+    # in production.
     partition_retention_days: int | None = None
     storage_warm_after: str = "7 days"
-    storage_retention: str = "2 years"
 
     # Cold tier (On-Prem only).
     # ``storage_cold_enabled`` and ``storage_cold_after`` are runtime-settings

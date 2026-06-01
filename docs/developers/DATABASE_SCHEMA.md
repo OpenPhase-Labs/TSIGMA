@@ -206,7 +206,7 @@ CREATE TABLE controller_event_log (
 );
 
 -- Convert to TimescaleDB hypertable
--- Chunk interval is configured at app initialization via TSIGMA_TIMESCALE_CHUNK_INTERVAL
+-- Chunk interval is configured at app initialization via TSIGMA_EVENT_LOG_PARTITION_INTERVAL_DAYS
 --
 -- Recommended intervals based on real-world testing (9,000 signals):
 --   Small agency (< 500 signals):  INTERVAL '1 week'  (lower overhead)
@@ -219,17 +219,17 @@ CREATE TABLE controller_event_log (
 -- Conclusion: Daily chunks compress 7x faster with same compression ratio
 
 -- Executed during app initialization (tsigma/database/init.py)
--- Chunk interval from environment variable: TSIGMA_TIMESCALE_CHUNK_INTERVAL
--- Valid values: '1 day', '1 week'
--- Default: '1 day' (recommended for production based on 9K signal testing)
+-- Chunk interval from environment variable: TSIGMA_EVENT_LOG_PARTITION_INTERVAL_DAYS
+-- Valid values: integer number of days (e.g. 1 or 7)
+-- Default: 1 (recommended for production based on 9K signal testing)
 --
--- Python example (in database initialization):
---   chunk_interval = os.getenv('TSIGMA_TIMESCALE_CHUNK_INTERVAL', '1 day')
+-- Python example (tsigma/database/init.py):
+--   chunk_days = settings.event_log_partition_interval_days  # default 1
 --   await session.execute(text(f"""
 --       SELECT create_hypertable(
 --           'controller_event_log',
 --           'event_time',
---           chunk_time_interval => INTERVAL '{chunk_interval}',
+--           chunk_time_interval => INTERVAL '{chunk_days} days',
 --           if_not_exists => TRUE
 --       )
 --   """))
@@ -238,7 +238,7 @@ CREATE TABLE controller_event_log (
 SELECT create_hypertable(
     'controller_event_log',
     'event_time',
-    chunk_time_interval => INTERVAL '1 day',  -- Configurable via TSIGMA_TIMESCALE_CHUNK_INTERVAL
+    chunk_time_interval => INTERVAL '1 day',  -- Configurable via TSIGMA_EVENT_LOG_PARTITION_INTERVAL_DAYS
     if_not_exists => TRUE
 );
 
@@ -1092,9 +1092,9 @@ HOT (uncompressed) ──► WARM (compressed) ──► COLD (Parquet) ──�
 |------------|-----------|------------------|-----------------|
 | Hot → Warm | TimescaleDB compression policy | 7 days | `TSIGMA_STORAGE_WARM_AFTER` |
 | Warm → Cold | Parquet export scheduler job | 180 days | `TSIGMA_STORAGE_COLD_AFTER_DAYS` |
-| Cold → Drop | TimescaleDB retention policy | 2 years | `TSIGMA_STORAGE_RETENTION` |
+| Cold → Drop | Native-PG partition drop, or manual TimescaleDB retention policy | off by default | `TSIGMA_PARTITION_RETENTION_DAYS` (native PG) |
 
-**Note:** SaaS deployments skip the Cold tier. Warm data is retained until `TSIGMA_STORAGE_RETENTION`, then dropped.
+**Note:** SaaS deployments skip the Cold tier. TSIGMA does not configure an automatic drop by default — add a TimescaleDB retention policy to enable one.
 
 ```sql
 -- =============================================================================
@@ -1139,22 +1139,13 @@ CREATE SERVER parquet_srv FOREIGN DATA WRAPPER parquet_fdw;
 -- RETENTION — drop data entirely
 -- =============================================================================
 
--- Retention policy configured at app initialization
--- Environment variable: TSIGMA_STORAGE_RETENTION
--- Default: '2 years'
---
--- Python example (in database initialization):
---   retention = os.getenv('TSIGMA_STORAGE_RETENTION', '2 years')
---   await session.execute(text(f"""
---       SELECT add_retention_policy(
---           'controller_event_log',
---           INTERVAL '{retention}',
---           if_not_exists => TRUE
---       )
---   """))
---
--- For manual creation (development/testing):
+-- TSIGMA does not configure a retention policy automatically. To enable
+-- automatic drops on TimescaleDB, add a retention policy manually:
 SELECT add_retention_policy('controller_event_log', INTERVAL '2 years', if_not_exists => TRUE);
+
+-- On native PostgreSQL (and MS-SQL / Oracle / MySQL), set
+-- TSIGMA_PARTITION_RETENTION_DAYS instead; the partition-management job drops
+-- partitions older than that many days (unset = keep everything).
 
 -- NOTE: Aggregation retention policies are managed by the report plugins that create them
 -- Example from plugin:

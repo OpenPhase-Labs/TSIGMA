@@ -136,9 +136,12 @@ database:
 # Storage / TimescaleDB tuning
 # ---------------------------------------------------------------------------
 storage:
-  timescaleChunkInterval: "1 day"
+  # Width of each event-table partition / TimescaleDB chunk, in days.
+  eventLogPartitionIntervalDays: 1
   warmAfter: "7 days"
-  retention: "2 years"
+  # Drop event partitions older than N days (native PostgreSQL only; TimescaleDB
+  # uses a manual retention policy). null = keep everything (default).
+  partitionRetentionDays: null
 
   cold:
     enabled: false

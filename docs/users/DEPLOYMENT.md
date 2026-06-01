@@ -321,7 +321,9 @@ services:
       - TSIGMA_STORAGE_COLD_ENABLED=true
       - TSIGMA_STORAGE_COLD_AFTER_DAYS=180
       - TSIGMA_STORAGE_COLD_FORMAT=parquet
-      - TSIGMA_STORAGE_RETENTION=2 years
+      # Retention is off by default. Native-PostgreSQL deployments can drop old
+      # partitions; TimescaleDB needs a manual retention policy (see DATABASE.md):
+      # - TSIGMA_PARTITION_RETENTION_DAYS=730
       # Cold endpoint — filesystem
       - TSIGMA_STORAGE_BACKEND=filesystem
       - TSIGMA_STORAGE_COLD_PATH=/var/lib/tsigma/cold
@@ -356,7 +358,8 @@ services:
     environment:
       - TSIGMA_STORAGE_WARM_AFTER=7 days
       - TSIGMA_STORAGE_COLD_ENABLED=false
-      - TSIGMA_STORAGE_RETENTION=1 year
+      # Retention: add a TimescaleDB retention policy to drop old data
+      # (not driven by a TSIGMA env var on TimescaleDB deployments).
 ```
 
 ### Cold-Tier Read Paths
@@ -479,7 +482,7 @@ Set these only on processes that have the matching `TSIGMA_ENABLE_*_LISTENER` (o
 | `TSIGMA_STORAGE_S3_BUCKET` | — | S3 bucket for cold storage |
 | `TSIGMA_STORAGE_S3_REGION` | `us-east-1` | S3 region |
 | `TSIGMA_STORAGE_S3_ENDPOINT` | — | Custom S3 endpoint (MinIO/Ceph) |
-| `TSIGMA_STORAGE_RETENTION` | `2 years` | Drop data entirely after this age |
+| `TSIGMA_PARTITION_RETENTION_DAYS` | — (unset) | Drop event partitions older than N days (native PostgreSQL only; unset keeps all data) |
 
 ### Runtime Settings (registry-derived overrides)
 
