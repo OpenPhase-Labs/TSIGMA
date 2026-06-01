@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
     so that get_session() can provide sessions to route handlers.
     """
     # Startup
-    setup_logging(settings.log_level, settings.log_format)
+    setup_logging(settings.effective_log_level, settings.log_format)
 
     if (settings.enable_api or settings.enable_collector
             or settings.enable_scheduler):

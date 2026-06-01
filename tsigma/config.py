@@ -273,6 +273,15 @@ class Settings(BaseSettings):
             )
         return self
 
+    @property
+    def effective_log_level(self) -> str:
+        """Log level actually used at runtime.
+
+        Debug mode forces ``DEBUG`` regardless of the configured ``log_level``;
+        otherwise the configured level applies.
+        """
+        return "DEBUG" if self.debug else self.log_level
+
 
 # Global settings instance
 settings = Settings()

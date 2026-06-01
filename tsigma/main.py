@@ -22,8 +22,10 @@ def main() -> None:
         host=settings.api_host,
         port=settings.api_port,
         reload=settings.debug,
-        log_level=settings.log_level.lower(),
-        log_config=build_log_config(settings.log_level, settings.log_format),
+        log_level=settings.effective_log_level.lower(),
+        log_config=build_log_config(
+            settings.effective_log_level, settings.log_format
+        ),
     )
 
 
