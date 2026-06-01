@@ -84,7 +84,7 @@
       const props = e.features[0].properties;
       new maplibregl.Popup({ closeButton: false, className: 'tsigma-popup' })
         .setLngLat(e.lngLat)
-        .setHTML('<div class=\"text-sm\"><strong>' + props.signal_id + '</strong><br>' + props.primary_street + '</div>')
+        .setHTML('<div class=&quot;text-sm&quot;><strong>' + props.signal_id + '</strong><br>' + props.primary_street + '</div>')
         .addTo(this.map);
     });
 
