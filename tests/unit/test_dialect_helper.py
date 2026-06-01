@@ -22,7 +22,7 @@ class TestAuditTriggerSqlPostgresql:
         assert len(stmts) == 2
         assert "CREATE OR REPLACE FUNCTION" in stmts[0]
         assert "audit_signal_changes" in stmts[0]
-        assert "CREATE TRIGGER" in stmts[1]
+        assert "CREATE OR REPLACE TRIGGER" in stmts[1]
         assert "signal_audit_trigger" in stmts[1]
 
     def test_multi_column_pk(self):
@@ -483,9 +483,12 @@ class TestPartitionName:
 class TestListPartitionsSql:
     """list_partitions_sql returns introspection queries per dialect."""
 
-    def test_postgresql_returns_none(self):
+    def test_postgresql_returns_partition_query(self):
         helper = DialectHelper("postgresql")
-        assert helper.list_partitions_sql("controller_event_log") is None
+        sql = helper.list_partitions_sql("controller_event_log")
+        assert sql is not None
+        assert "pg_inherits" in sql
+        assert "controller_event_log" in sql
 
     def test_mssql_references_partition_function(self):
         helper = DialectHelper("mssql")
@@ -514,12 +517,18 @@ class TestListPartitionsSql:
 class TestEnsurePartitionSql:
     """ensure_partition_sql returns the right SQL for each dialect."""
 
-    def test_postgresql_returns_empty(self):
+    def test_postgresql_creates_partition(self):
         from datetime import date
         helper = DialectHelper("postgresql")
-        assert helper.ensure_partition_sql(
+        stmts = helper.ensure_partition_sql(
             "controller_event_log", date(2026, 4, 23), 1
-        ) == []
+        )
+        assert len(stmts) == 1
+        assert (
+            "CREATE TABLE IF NOT EXISTS events.controller_event_log_p_20260423"
+            in stmts[0]
+        )
+        assert "PARTITION OF events.controller_event_log" in stmts[0]
 
     def test_oracle_returns_empty_for_interval_partitioning(self):
         from datetime import date
@@ -555,9 +564,12 @@ class TestEnsurePartitionSql:
 class TestDropPartitionSql:
     """drop_partition_sql across dialects."""
 
-    def test_postgresql_returns_empty(self):
+    def test_postgresql_drops_partition(self):
         helper = DialectHelper("postgresql")
-        assert helper.drop_partition_sql("controller_event_log", "p_20260423") == []
+        stmts = helper.drop_partition_sql("controller_event_log", "p_20260423")
+        assert stmts == [
+            "DROP TABLE IF EXISTS events.controller_event_log_p_20260423"
+        ]
 
     def test_mssql_uses_merge_range(self):
         helper = DialectHelper("mssql")

@@ -4,7 +4,17 @@ Tests for configuration management.
 Tests that settings load from environment variables correctly.
 """
 
+import pytest
+
 from tsigma.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dotenv(monkeypatch, tmp_path):
+    """Run from a directory with no .env so default-value tests see real
+    defaults, not this host's .env. Env-override tests use monkeypatch.setenv,
+    which is read regardless of cwd."""
+    monkeypatch.chdir(tmp_path)
 
 
 class TestSettings:

@@ -73,10 +73,15 @@ class TestConstants:
         """Test default seed data has one row per category."""
         assert len(DEFAULT_ACCESS_POLICY) == len(ACCESS_CATEGORIES)
 
-    def test_default_policy_all_authenticated(self):
-        """Test all defaults are 'authenticated'."""
-        for row in DEFAULT_ACCESS_POLICY:
-            assert row["value"] == "authenticated"
+    def test_default_policy_view_categories_public(self):
+        """View categories default to public; management stays authenticated."""
+        by_key = {r["key"]: r["value"] for r in DEFAULT_ACCESS_POLICY}
+        for key in (
+            "access_policy.ui", "access_policy.analytics", "access_policy.reports",
+            "access_policy.signal_detail", "access_policy.health",
+        ):
+            assert by_key[key] == "public"
+        assert by_key["access_policy.management"] == "authenticated"
 
     def test_management_not_editable(self):
         """Test management default seed row is not editable."""
