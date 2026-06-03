@@ -12,27 +12,36 @@
 
     var approachVolume = {};
     var _chart = null;
-
-    var DIRECTION_COLORS = {
-        NB: "#3b82f6",
-        SB: "#ef4444",
-        EB: "#22c55e",
-        WB: "#f59e0b",
-        NEB: "#8b5cf6",
-        SEB: "#ec4899",
-        NWB: "#06b6d4",
-        SWB: "#f97316",
-    };
+    var _lastData = null;
+    var _themeBound = false;
 
     approachVolume.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Approach volume container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) approachVolume.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     approachVolume.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
+        var DIRECTION_COLORS = {
+            NB: T.brand,
+            SB: T.error,
+            EB: T.success,
+            WB: T.warning,
+            NEB: T.ring,
+            SEB: T.phaseYellow,
+            NWB: T.phaseGreen,
+            SWB: T.mutedForeground,
+        };
         if (!_chart) throw new Error("Approach volume chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -41,7 +50,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -57,7 +66,7 @@
 
         var directions = Object.keys(dirMap);
         var colorIdx = 0;
-        var defaultColors = ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4", "#f97316"];
+        var defaultColors = [T.brand, T.success, T.warning, T.error, T.phaseGreen, T.phaseYellow, T.ring, T.mutedForeground];
 
         var series = directions.map(function (dir) {
             var points = dirMap[dir].sort(function (a, b) {

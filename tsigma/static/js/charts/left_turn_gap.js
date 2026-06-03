@@ -12,16 +12,26 @@
 
     var leftTurnGap = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     leftTurnGap.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Left turn gap container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) leftTurnGap.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     leftTurnGap.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Left turn gap chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -30,7 +40,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -99,7 +109,7 @@
                     data: sorted.map(function (d) {
                         return [d.cycle_start, d.sufficient_gaps || 0];
                     }),
-                    itemStyle: { color: "#4ade80" },
+                    itemStyle: { color: T.phaseGreen },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -109,7 +119,7 @@
                     data: sorted.map(function (d) {
                         return [d.cycle_start, d.marginal_gaps || 0];
                     }),
-                    itemStyle: { color: "#fbbf24" },
+                    itemStyle: { color: T.phaseYellow },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -119,7 +129,7 @@
                     data: sorted.map(function (d) {
                         return [d.cycle_start, d.insufficient_gaps || 0];
                     }),
-                    itemStyle: { color: "#ef4444" },
+                    itemStyle: { color: T.phaseRed },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -129,7 +139,7 @@
                     data: sorted.map(function (d) {
                         return [d.cycle_start, d.avg_gap_duration || 0];
                     }),
-                    itemStyle: { color: "#6366f1" },
+                    itemStyle: { color: T.brand },
                     lineStyle: { width: 2 },
                     symbol: "circle",
                     symbolSize: 4,

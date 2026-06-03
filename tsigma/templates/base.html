@@ -1,15 +1,31 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-950">
+<html lang="en" class="h-full bg-surface">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}TSIGMA{% endblock %}</title>
 
+  <!-- No-FOUC: set light/dark BEFORE the body paints. Reads the persisted
+       choice, else the OS preference. -->
+  <script>
+    (function () {
+      try {
+        var m = localStorage.getItem('tsigma-mode')
+          || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-mode', m);
+      } catch (e) {}
+    })();
+  </script>
+
   <!-- MapLibre GL CSS -->
   <link rel="stylesheet" href="/static/vendor/maplibre/maplibre-gl.css">
 
-  <!-- Tailwind CSS -->
-  <script src="/static/vendor/tailwind/tailwind.min.js"></script>
+  <!-- Compiled Tailwind v4 (agency-agnostic; utilities bound to CSS vars) -->
+  <link rel="stylesheet" href="/static/css/tailwind.css">
+
+  <!-- Active theme + mode token values, injected AFTER tailwind.css so they
+       win (light in :root, dark under [data-mode="dark"]). -->
+  <style>{{ theme_token_style | safe }}</style>
 
   <!-- Alpine.js -->
   <script defer src="/static/vendor/alpine/alpine.min.js"></script>
@@ -23,9 +39,15 @@
   <!-- TSIGMA shared helpers (tsigma.charts.resize, etc.) -->
   <script src="/static/js/common.js"></script>
 
+  <!-- TSIGMA theme bridge: design tokens -> ECharts/MapLibre, re-themed on toggle -->
+  <script src="/static/js/theme.js"></script>
+
   {% block head %}{% endblock %}
+
+  <!-- Custom CSS loads LAST: the per-theme escape hatch for deep overrides. -->
+  <link rel="stylesheet" href="/static/css/custom.css">
 </head>
-<body x-data="{ sidebarOpen: false }" class="h-full text-gray-100 antialiased">
+<body x-data="{ sidebarOpen: false }" class="h-full bg-surface text-foreground antialiased">
 
   <!-- Fetch current user into global -->
   <script>
@@ -50,11 +72,11 @@
         <div class="px-4 pt-4 space-y-2">
           {% for category, message in messages %}
             <div x-data="{ show: true }" x-show="show" x-transition
-                 class="flex items-center justify-between p-3 rounded-md text-sm
-                        {% if category == 'error' %}bg-red-900/50 text-red-300 border border-red-800
-                        {% elif category == 'success' %}bg-green-900/50 text-green-300 border border-green-800
-                        {% elif category == 'warning' %}bg-yellow-900/50 text-yellow-300 border border-yellow-800
-                        {% else %}bg-blue-900/50 text-blue-300 border border-blue-800{% endif %}">
+                 class="flex items-center justify-between p-3 rounded-xl text-sm border
+                        {% if category == 'error' %}bg-error/10 text-error border-error/30
+                        {% elif category == 'success' %}bg-success/10 text-success border-success/30
+                        {% elif category == 'warning' %}bg-warning/10 text-warning border-warning/30
+                        {% else %}bg-brand/10 text-brand border-brand/30{% endif %}">
               <span>{{ message }}</span>
               <button @click="show = false" class="ml-4 opacity-60 hover:opacity-100">&times;</button>
             </div>
@@ -69,11 +91,22 @@
     </main>
 
     <!-- Footer -->
-    <footer class="border-t border-gray-800 px-4 py-3 text-xs text-gray-600 flex items-center justify-between">
+    <footer class="border-t border-border px-4 py-3 text-xs text-muted-foreground flex items-center justify-between">
       <span>TSIGMA &mdash; Traffic Signal Intelligence: Gathering Metrics &amp; Analytics</span>
       <span>v0.1.0</span>
     </footer>
   </div>
+
+  <!-- Light/dark toggle + theme-change broadcast (charts/maps listen). -->
+  <script>
+    function tsigmaToggleMode() {
+      var el = document.documentElement;
+      var m = el.getAttribute('data-mode') === 'dark' ? 'light' : 'dark';
+      el.setAttribute('data-mode', m);
+      try { localStorage.setItem('tsigma-mode', m); } catch (e) {}
+      document.dispatchEvent(new CustomEvent('tsigma:themechange', { detail: { mode: m } }));
+    }
+  </script>
 
   {% block scripts %}{% endblock %}
 </body>

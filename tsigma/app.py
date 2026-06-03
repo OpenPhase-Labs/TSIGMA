@@ -11,8 +11,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
 import tsigma.database.db as _db_module
@@ -431,10 +430,28 @@ def create_app() -> FastAPI:
             dependencies=[Depends(require_access("analytics"))],
         )
 
-    # --- Static files --------------------------------------------------------
-    static_dir = Path(__file__).resolve().parent / "static"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    # --- Static files (theme-aware) ------------------------------------------
+    # The active theme's static/ shadows the built-in defaults file-by-file
+    # (logo, favicon, fonts, custom.css), falling back to the default when a
+    # file is not overridden. Single-agency: resolved once at startup.
+    static_default = Path(__file__).resolve().parent / "static"
+    if static_default.exists():
+        from .theming.static import resolve_static_dirs, resolve_static_file
+
+        themes_root = static_default.parent.parent / "themes"
+        static_dirs = resolve_static_dirs(
+            settings.theme, themes_root=themes_root, default_static=static_default
+        )
+
+        @app.get("/static/{path:path}", include_in_schema=False)
+        async def static_files(path: str):
+            resolved = resolve_static_file(path, static_dirs)
+            if resolved is None:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"detail": "Not found"},
+                )
+            return FileResponse(str(resolved))
 
     # --- Web UI routes (must be AFTER API routes to avoid path conflicts) ----
     if settings.enable_api:

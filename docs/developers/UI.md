@@ -1,6 +1,10 @@
 # Web UI
 
 > Part of [TSIGMA Architecture](../ARCHITECTURE.md)
+> **Theming, colors & white-label:** see [THEMING.md](THEMING.md). Production
+> templates use semantic token utilities (`bg-surface`, `text-foreground`,
+> `bg-brand`, …) — never literal grays/colors. The examples below illustrate
+> data/interaction patterns, not the final color classes.
 
 ---
 
@@ -13,13 +17,13 @@
 | **Vanilla JavaScript** | Data fetching, chart updates | Native browser |
 | **ECharts** | Charts and visualizations | Vendor downloaded |
 | **MapLibre GL JS** | Interactive maps | Vendor downloaded |
-| **Tailwind CSS** | Utility-first styling | Vendor downloaded |
+| **Tailwind CSS v4** | Utility-first styling (compiled to a committed stylesheet) | See [THEMING.md](THEMING.md) |
 | **WebSocket** | Real-time updates (optional) | Native browser API |
 
 ## Key Principles
 
-- **Zero build step** - No npm, no webpack, no bundlers
-- **Air-gapped compatible** - All libraries committed to repo
+- **Zero build step for deployers** - no npm/webpack/bundlers at runtime; the only build is a developer-side Tailwind CSS compile whose output is committed (see [THEMING.md](THEMING.md))
+- **Air-gapped compatible** - libraries, the compiled CSS, and self-hosted fonts are all committed to the repo
 - **Efficient chart updates** - Update data without destroying charts
 - **JSON APIs** - All data fetching uses REST APIs returning JSON
 
@@ -57,11 +61,13 @@ tsigma/static/vendor/
 │   └── alpine.min.js           # Alpine.js 3.13.5
 ├── echarts/
 │   └── echarts.min.js          # ECharts 5.4.3
-├── maplibre/
-│   ├── maplibre-gl.js          # MapLibre GL JS 3.6.2
-│   └── maplibre-gl.css
-└── tailwind/
-    └── tailwind.min.js         # Tailwind CSS CDN build
+└── maplibre/
+    ├── maplibre-gl.js          # MapLibre GL JS 3.6.2
+    └── maplibre-gl.css
+
+# Tailwind is NOT a runtime vendor lib: it is compiled to the committed
+# tsigma/static/css/tailwind.css (Tailwind v4). Self-hosted web fonts live in
+# tsigma/static/fonts/. See THEMING.md.
 ```
 
 **Download script** (run once):
@@ -83,8 +89,7 @@ curl -o $VENDOR_DIR/maplibre/maplibre-gl.js \
 curl -o $VENDOR_DIR/maplibre/maplibre-gl.css \
   https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css
 
-curl -o $VENDOR_DIR/tailwind/tailwind.min.js \
-  https://cdn.tailwindcss.com/3.4.1
+# Tailwind is compiled (not downloaded at runtime) — see THEMING.md.
 ```
 
 ## Example: JSON API + Chart Update

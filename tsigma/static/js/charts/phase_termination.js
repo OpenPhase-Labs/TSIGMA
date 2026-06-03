@@ -12,6 +12,8 @@
 
     var phaseTermination = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
     var MAX_GRID_PHASES = 8;
 
     phaseTermination.init = function (containerId) {
@@ -19,10 +21,18 @@
         if (!el) throw new Error("Phase termination container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) phaseTermination.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     phaseTermination.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Phase termination chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -31,7 +41,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -113,10 +123,10 @@
             });
 
             var seriesDefs = [
-                { name: "Gap Out", key: "gap_out_count", color: "#4ade80" },
-                { name: "Max Out", key: "max_out_count", color: "#ef4444" },
-                { name: "Force Off", key: "force_off_count", color: "#fbbf24" },
-                { name: "Skip", key: "skip_count", color: "#9ca3af" },
+                { name: "Gap Out", key: "gap_out_count", color: T.phaseGreen },
+                { name: "Max Out", key: "max_out_count", color: T.phaseRed },
+                { name: "Force Off", key: "force_off_count", color: T.phaseYellow },
+                { name: "Skip", key: "skip_count", color: T.mutedForeground },
             ];
 
             seriesDefs.forEach(function (sd) {

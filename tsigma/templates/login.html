@@ -1,13 +1,27 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-950">
+<html lang="en" class="h-full bg-surface">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sign In - TSIGMA</title>
-  <script src="/static/vendor/tailwind/tailwind.min.js"></script>
+
+  <!-- No-FOUC: set light/dark before paint. -->
+  <script>
+    (function () {
+      try {
+        var m = localStorage.getItem('tsigma-mode')
+          || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-mode', m);
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="stylesheet" href="/static/css/tailwind.css">
+  <style>{{ theme_token_style | safe }}</style>
   <script defer src="/static/vendor/alpine/alpine.min.js"></script>
+  <link rel="stylesheet" href="/static/css/custom.css">
 </head>
-<body class="h-full flex items-center justify-center text-gray-100 antialiased">
+<body class="h-full flex items-center justify-center bg-surface text-foreground antialiased">
 
   <div x-data="{
     mode: 'loading',
@@ -61,45 +75,45 @@
   }" class="w-full max-w-sm px-4">
 
     <!-- Card -->
-    <div class="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-8">
+    <div class="bg-surface-raised border border-border rounded-2xl shadow-md p-8">
       <!-- Logo / Title -->
       <div class="text-center mb-8">
-        <h1 class="text-3xl font-bold text-white tracking-tight">TSIGMA</h1>
-        <p class="text-sm text-gray-500 mt-1">Traffic Signal Intelligence Platform</p>
+        <h1 class="font-display text-3xl font-bold text-foreground tracking-tight">TSIGMA</h1>
+        <p class="text-sm text-muted-foreground mt-1">Traffic Signal Intelligence Platform</p>
       </div>
 
       <!-- Loading state -->
       <div x-show="mode === 'loading'" class="text-center py-4">
-        <div class="inline-block w-6 h-6 border-2 border-gray-600 border-t-blue-500 rounded-full animate-spin"></div>
+        <div class="inline-block w-6 h-6 border-2 border-border border-t-brand rounded-full animate-spin"></div>
       </div>
 
       <!-- Local auth form -->
       <template x-if="mode === 'local'">
         <form @submit.prevent="login()" class="space-y-4">
           <!-- Error message -->
-          <div x-show="error" x-transition class="p-3 bg-red-900/50 border border-red-800 rounded-md text-sm text-red-300">
+          <div x-show="error" x-transition class="p-3 bg-error/10 border border-error/30 rounded-xl text-sm text-error">
             <span x-text="error"></span>
           </div>
 
           <div>
-            <label for="username" class="block text-sm font-medium text-gray-400 mb-1">Username</label>
+            <label for="username" class="block text-sm font-medium text-foreground mb-1.5">Username</label>
             <input id="username" type="text" x-model="username" required autocomplete="username"
-                   class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-md text-white placeholder-gray-500
-                          focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                   class="w-full px-3 py-2.5 bg-surface border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground
+                          focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring"
                    placeholder="Enter your username">
           </div>
 
           <div>
-            <label for="password" class="block text-sm font-medium text-gray-400 mb-1">Password</label>
+            <label for="password" class="block text-sm font-medium text-foreground mb-1.5">Password</label>
             <input id="password" type="password" x-model="password" required autocomplete="current-password"
-                   class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-md text-white placeholder-gray-500
-                          focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                   class="w-full px-3 py-2.5 bg-surface border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground
+                          focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring"
                    placeholder="Enter your password">
           </div>
 
           <button type="submit" :disabled="loading"
-                  class="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50
-                         text-white text-sm font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900">
+                  class="w-full py-2.5 bg-brand text-brand-foreground hover:brightness-110 disabled:opacity-50
+                         text-sm font-semibold rounded-lg transition focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-surface">
             <span x-show="!loading">Sign In</span>
             <span x-show="loading" class="flex items-center justify-center gap-2">
               <span class="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
@@ -113,16 +127,16 @@
       <template x-if="mode === 'oidc'">
         <div class="space-y-4">
           <a :href="oidcUrl"
-             class="block w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md
-                    text-center transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900">
+             class="block w-full py-2.5 bg-brand text-brand-foreground hover:brightness-110 text-sm font-semibold rounded-lg
+                    text-center transition focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-surface">
             Sign in with SSO
           </a>
-          <p class="text-xs text-center text-gray-500">You will be redirected to your identity provider.</p>
+          <p class="text-xs text-center text-muted-foreground">You will be redirected to your identity provider.</p>
         </div>
       </template>
     </div>
 
-    <p class="text-center text-xs text-gray-600 mt-6">TSIGMA v0.1.0</p>
+    <p class="text-center text-xs text-muted-foreground mt-6">TSIGMA v0.1.0</p>
   </div>
 
 </body>

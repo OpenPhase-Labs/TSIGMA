@@ -1,0 +1,54 @@
+# TSIGMA default theme — Modern Airy ("Indigo Continuity").
+# Semantic + phase tokens, light and dark. Values are CSS colors.
+# Agency themes override these via their own themes/<name>/theme.toml.
+
+[meta]
+name = "default"
+display_name = "TSIGMA Modern Airy"
+
+[fonts]
+display = "Bricolage Grotesque"
+body = "IBM Plex Sans"
+mono = "IBM Plex Mono"
+
+[semantic.light]
+surface = "#f9fafb"
+surface-raised = "#ffffff"
+foreground = "#111827"
+muted-foreground = "#6b7280"
+border = "#e5e7eb"
+ring = "#6366f1"
+brand = "#6366f1"
+brand-foreground = "#ffffff"
+success = "#16a34a"
+success-foreground = "#ffffff"
+warning = "#d97706"
+warning-foreground = "#ffffff"
+error = "#dc2626"
+error-foreground = "#ffffff"
+
+[semantic.dark]
+surface = "#0a0a0f"
+surface-raised = "#15151f"
+foreground = "#ececf1"
+muted-foreground = "#9ca3af"
+border = "#26262f"
+ring = "#818cf8"
+brand = "#818cf8"
+brand-foreground = "#0a0a0f"
+success = "#22c55e"
+success-foreground = "#052e13"
+warning = "#f59e0b"
+warning-foreground = "#2a1a00"
+error = "#f87171"
+error-foreground = "#2a0a0a"
+
+[phase.light]
+green = "#16a34a"
+yellow = "#f59e0b"
+red = "#dc2626"
+
+[phase.dark]
+green = "#4ade80"
+yellow = "#fbbf24"
+red = "#f87171"

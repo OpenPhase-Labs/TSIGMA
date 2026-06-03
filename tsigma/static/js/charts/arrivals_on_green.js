@@ -12,6 +12,8 @@
 
     var arrivalsOnGreen = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     /**
      * Initialize an ECharts instance.
@@ -23,6 +25,12 @@
         if (!el) throw new Error("AOG container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) arrivalsOnGreen.render(_lastData);
+            });
+        }
         return _chart;
     };
 
@@ -30,9 +38,10 @@
      * Return a color based on AOG percentage thresholds.
      */
     function aogColor(pct) {
-        if (pct >= 70) return "#4ade80"; // green
-        if (pct >= 40) return "#fbbf24"; // yellow/amber
-        return "#ef4444";                // red
+        var T = tsigma.theme.tokens();
+        if (pct >= 70) return T.phaseGreen; // green
+        if (pct >= 40) return T.phaseYellow; // yellow/amber
+        return T.phaseRed;                // red
     }
 
     /**
@@ -40,6 +49,8 @@
      * @param {Array<Object>} data  List of AOG objects per phase.
      */
     arrivalsOnGreen.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("AOG chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -48,7 +59,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -106,12 +117,12 @@
                             return d.arrivals_on_green + "/" + d.total_arrivals;
                         },
                         fontSize: 10,
-                        color: "#374151",
+                        color: T.border,
                     },
                     markLine: {
                         silent: true,
                         symbol: "none",
-                        lineStyle: { type: "dashed", color: "#22c55e", width: 2 },
+                        lineStyle: { type: "dashed", color: T.phaseGreen, width: 2 },
                         data: [
                             {
                                 yAxis: 70,

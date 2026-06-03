@@ -49,6 +49,7 @@
   },
 
   addMarkers() {
+    const _t = tsigma.theme.tokens();
     const features = this.signals
       .filter(s => s.latitude && s.longitude)
       .map(s => ({
@@ -73,9 +74,18 @@
       source: 'signals',
       paint: {
         'circle-radius': 6,
-        'circle-color': ['case', ['get', 'enabled'], '#22c55e', '#ef4444'],
+        'circle-color': ['case', ['get', 'enabled'], _t.success, _t.error],
         'circle-stroke-width': 2,
-        'circle-stroke-color': '#1f2937'
+        'circle-stroke-color': _t.surfaceRaised
+      }
+    });
+
+    // Re-apply marker colors when the light/dark toggle fires.
+    tsigma.theme.onChange((t) => {
+      if (this.map && this.map.getLayer('signal-points')) {
+        this.map.setPaintProperty('signal-points', 'circle-color',
+          ['case', ['get', 'enabled'], t.success, t.error]);
+        this.map.setPaintProperty('signal-points', 'circle-stroke-color', t.surfaceRaised);
       }
     });
 
@@ -109,14 +119,15 @@
     const hours = Array.from({ length: 24 }, (_, i) => i + ':00');
     const data = Array.from({ length: 24 }, () => Math.floor(Math.random() * 500 + 100));
 
-    this.chart.setOption({
-      backgroundColor: 'transparent',
-      textStyle: { color: '#9ca3af' },
-      tooltip: { trigger: 'axis' },
-      grid: { left: 50, right: 20, top: 20, bottom: 40 },
-      xAxis: { type: 'category', data: hours, axisLine: { lineStyle: { color: '#374151' } } },
-      yAxis: { type: 'value', axisLine: { lineStyle: { color: '#374151' } }, splitLine: { lineStyle: { color: '#1f2937' } } },
-      series: [{ data, type: 'bar', itemStyle: { color: '#3b82f6' }, barWidth: '60%' }]
+    // Re-themed automatically on the light/dark toggle (data stays stable).
+    tsigma.theme.register(this.chart, (t) => {
+      this.chart.setOption(Object.assign({}, tsigma.theme.echartsBase(), {
+        tooltip: { trigger: 'axis' },
+        grid: { left: 50, right: 20, top: 20, bottom: 40 },
+        xAxis: Object.assign({ type: 'category', data: hours }, tsigma.theme.axis()),
+        yAxis: Object.assign({ type: 'value' }, tsigma.theme.axis()),
+        series: [{ data, type: 'bar', itemStyle: { color: t.brand }, barWidth: '60%' }]
+      }));
     });
 
     window.addEventListener('resize', () => this.chart.resize());
@@ -125,43 +136,43 @@
 
   <!-- Summary cards -->
   <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
-      <p class="text-sm text-gray-400">Total Signals</p>
-      <p class="text-2xl font-bold text-white mt-1" x-text="totalSignals">--</p>
+    <div class="bg-surface-raised border border-border rounded-2xl p-5">
+      <p class="text-sm text-muted-foreground">Total Signals</p>
+      <p class="text-2xl font-bold text-foreground mt-1" x-text="totalSignals">--</p>
     </div>
-    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
-      <p class="text-sm text-gray-400">Active Signals</p>
-      <p class="text-2xl font-bold text-green-400 mt-1" x-text="activeSignals">--</p>
+    <div class="bg-surface-raised border border-border rounded-2xl p-5">
+      <p class="text-sm text-muted-foreground">Active Signals</p>
+      <p class="text-2xl font-bold text-success mt-1" x-text="activeSignals">--</p>
     </div>
-    <div class="bg-gray-800 border border-gray-700 rounded-lg p-5">
-      <p class="text-sm text-gray-400">Issues Detected</p>
-      <p class="text-2xl font-bold text-red-400 mt-1" x-text="issueCount">--</p>
+    <div class="bg-surface-raised border border-border rounded-2xl p-5">
+      <p class="text-sm text-muted-foreground">Issues Detected</p>
+      <p class="text-2xl font-bold text-error mt-1" x-text="issueCount">--</p>
     </div>
   </div>
 
   <!-- Map -->
-  <div class="bg-gray-800 border border-gray-700 rounded-lg p-4 mb-6">
-    <h2 class="text-sm font-semibold text-gray-300 mb-3">Signal Locations</h2>
+  <div class="bg-surface-raised border border-border rounded-2xl p-4 mb-6">
+    <h2 class="text-sm font-semibold text-foreground mb-3">Signal Locations</h2>
     <div id="dashboard-map" class="w-full h-96 rounded-md overflow-hidden"></div>
   </div>
 
   <!-- Event volume chart + Quick links -->
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-    <div class="lg:col-span-2 bg-gray-800 border border-gray-700 rounded-lg p-4">
-      <h2 class="text-sm font-semibold text-gray-300 mb-3">Event Volume (Today)</h2>
+    <div class="lg:col-span-2 bg-surface-raised border border-border rounded-2xl p-4">
+      <h2 class="text-sm font-semibold text-foreground mb-3">Event Volume (Today)</h2>
       <div id="volume-chart" class="w-full h-64"></div>
     </div>
 
-    <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
-      <h2 class="text-sm font-semibold text-gray-300 mb-3">Quick Links</h2>
+    <div class="bg-surface-raised border border-border rounded-2xl p-4">
+      <h2 class="text-sm font-semibold text-foreground mb-3">Quick Links</h2>
       <div class="space-y-2">
-        <a href="/reports" class="block px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded-md transition-colors">
+        <a href="/reports" class="block px-3 py-2 text-sm text-foreground hover:text-foreground hover:bg-foreground/5 rounded-md transition-colors">
           View All Reports
         </a>
-        <a href="/signals" class="block px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded-md transition-colors">
+        <a href="/signals" class="block px-3 py-2 text-sm text-foreground hover:text-foreground hover:bg-foreground/5 rounded-md transition-colors">
           Signal Inventory
         </a>
-        <a href="/admin/settings" class="block px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded-md transition-colors">
+        <a href="/admin/settings" class="block px-3 py-2 text-sm text-foreground hover:text-foreground hover:bg-foreground/5 rounded-md transition-colors">
           System Settings
         </a>
       </div>

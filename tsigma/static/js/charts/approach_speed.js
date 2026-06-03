@@ -12,16 +12,26 @@
 
     var approachSpeed = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     approachSpeed.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Approach speed container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) approachSpeed.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     approachSpeed.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Approach speed chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -30,7 +40,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -51,7 +61,7 @@
         var markLineConfig = speedLimit != null ? {
             silent: true,
             symbol: "none",
-            lineStyle: { type: "dashed", color: "#ef4444", width: 2 },
+            lineStyle: { type: "dashed", color: T.phaseRed, width: 2 },
             data: [
                 {
                     xAxis: speedLimit,
@@ -105,7 +115,7 @@
                     name: "15th Percentile",
                     type: "bar",
                     data: data.map(function (d) { return d.p15_speed || 0; }),
-                    itemStyle: { color: "#93c5fd" },
+                    itemStyle: { color: T.mutedForeground },
                     barGap: "10%",
                     label: {
                         show: true,
@@ -119,7 +129,7 @@
                     name: "Average",
                     type: "bar",
                     data: data.map(function (d) { return d.avg_speed || 0; }),
-                    itemStyle: { color: "#3b82f6" },
+                    itemStyle: { color: T.brand },
                     label: {
                         show: true,
                         position: "right",
@@ -131,7 +141,7 @@
                     name: "85th Percentile",
                     type: "bar",
                     data: data.map(function (d) { return d.p85_speed || 0; }),
-                    itemStyle: { color: "#1d4ed8" },
+                    itemStyle: { color: T.ring },
                     label: {
                         show: true,
                         position: "right",

@@ -1,6 +1,8 @@
 /* ==========================================================
    TSIGMA Custom CSS
-   Minimal overrides — most styling handled by Tailwind CDN.
+   Minimal overrides — most styling handled by the compiled Tailwind v4
+   stylesheet. Loaded LAST as the per-theme escape hatch. Colors reference
+   the semantic tokens so overrides track light/dark and per-agency themes.
    ========================================================== */
 
 /* ---- Loading spinner ---- */
@@ -11,15 +13,16 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    background: rgba(255, 255, 255, 0.8);
+    /* Surface-tinted scrim: light overlay in light mode, dark in dark mode. */
+    background: color-mix(in srgb, var(--color-surface) 80%, transparent);
     z-index: 20;
 }
 
 .tsigma-spinner {
     width: 28px;
     height: 28px;
-    border: 3px solid #e5e7eb;
-    border-top-color: #6366f1;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-brand);
     border-radius: 50%;
     animation: tsigma-spin 0.7s linear infinite;
 }

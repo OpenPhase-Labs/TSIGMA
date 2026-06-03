@@ -13,12 +13,8 @@
 
     var timeSpaceDiagram = {};
     var _chart = null;
-
-    var STATE_COLORS = {
-        green: "#22c55e",
-        yellow: "#eab308",
-        red: "#ef4444",
-    };
+    var _lastData = null;
+    var _themeBound = false;
 
     var BAR_HEIGHT_PX = 14;
 
@@ -27,10 +23,23 @@
         if (!el) throw new Error("Time-space diagram container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) timeSpaceDiagram.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     timeSpaceDiagram.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
+        var STATE_COLORS = {
+            green: T.phaseGreen,
+            yellow: T.phaseYellow,
+            red: T.phaseRed,
+        };
         if (!_chart) throw new Error("Time-space diagram chart not initialized");
         if (!data || !data.signals || data.signals.length === 0) {
             _chart.clear();
@@ -39,7 +48,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -97,8 +106,8 @@
                 name: sl.speed_mph + " mph",
                 type: "line",
                 data: lineData,
-                lineStyle: { type: "dashed", width: 1.5, color: "#6b7280" },
-                itemStyle: { color: "#6b7280" },
+                lineStyle: { type: "dashed", width: 1.5, color: T.mutedForeground },
+                itemStyle: { color: T.mutedForeground },
                 symbol: "none",
                 z: 5,
             };
@@ -201,7 +210,7 @@
                                 shape: rectShape,
                                 style: api.style({
                                     fill: color,
-                                    stroke: "#374151",
+                                    stroke: T.border,
                                     lineWidth: 0.5,
                                 }),
                             };

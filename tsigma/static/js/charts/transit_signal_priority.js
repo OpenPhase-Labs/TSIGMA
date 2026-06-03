@@ -13,16 +13,26 @@
 
     var transitSignalPriority = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     transitSignalPriority.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Transit signal priority container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) transitSignalPriority.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     transitSignalPriority.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Transit signal priority chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -31,7 +41,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -58,7 +68,7 @@
                 type: "bar",
                 stack: "tsp",
                 data: requests,
-                itemStyle: { color: "#3b82f6" },
+                itemStyle: { color: T.brand },
                 yAxisIndex: 0,
             },
             {
@@ -66,7 +76,7 @@
                 type: "bar",
                 stack: "tsp",
                 data: adjustments,
-                itemStyle: { color: "#22c55e" },
+                itemStyle: { color: T.phaseGreen },
                 yAxisIndex: 0,
             },
             {
@@ -74,7 +84,7 @@
                 type: "bar",
                 stack: "tsp",
                 data: checkouts,
-                itemStyle: { color: "#f59e0b" },
+                itemStyle: { color: T.warning },
                 yAxisIndex: 0,
             },
         ];
@@ -85,7 +95,7 @@
                 name: "Avg Green (with TSP)",
                 type: "line",
                 data: greenWithTsp,
-                itemStyle: { color: "#8b5cf6" },
+                itemStyle: { color: T.ring },
                 lineStyle: { width: 2 },
                 symbol: "circle",
                 symbolSize: 4,
@@ -100,7 +110,7 @@
                 name: "Avg Green (without TSP)",
                 type: "line",
                 data: greenWithoutTsp,
-                itemStyle: { color: "#ef4444" },
+                itemStyle: { color: T.phaseRed },
                 lineStyle: { width: 2, type: "dashed" },
                 symbol: "diamond",
                 symbolSize: 4,

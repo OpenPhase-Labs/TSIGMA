@@ -11,35 +11,44 @@
 
     var turningMovementCounts = {};
     var _chart = null;
-
-    var DIRECTION_COLORS = {
-        NB: "#3b82f6",
-        SB: "#ef4444",
-        EB: "#22c55e",
-        WB: "#f59e0b",
-        NBL: "#2563eb",
-        NBT: "#3b82f6",
-        NBR: "#60a5fa",
-        SBL: "#dc2626",
-        SBT: "#ef4444",
-        SBR: "#f87171",
-        EBL: "#16a34a",
-        EBT: "#22c55e",
-        EBR: "#4ade80",
-        WBL: "#d97706",
-        WBT: "#f59e0b",
-        WBR: "#fbbf24",
-    };
+    var _lastData = null;
+    var _themeBound = false;
 
     turningMovementCounts.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Turning movement counts container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) turningMovementCounts.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     turningMovementCounts.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
+        var DIRECTION_COLORS = {
+            NB: T.brand,
+            SB: T.error,
+            EB: T.success,
+            WB: T.warning,
+            NBL: T.brand,
+            NBT: T.brand,
+            NBR: T.ring,
+            SBL: T.error,
+            SBT: T.phaseRed,
+            SBR: T.error,
+            EBL: T.success,
+            EBT: T.phaseGreen,
+            EBR: T.success,
+            WBL: T.warning,
+            WBT: T.warning,
+            WBR: T.phaseYellow,
+        };
         if (!_chart) throw new Error("Turning movement counts chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -48,7 +57,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -76,7 +85,7 @@
         });
 
         var colorIdx = 0;
-        var defaultColors = ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4", "#f97316"];
+        var defaultColors = [T.brand, T.success, T.warning, T.error, T.phaseGreen, T.phaseYellow, T.ring, T.mutedForeground];
 
         var series = directions.map(function (dir) {
             var color = DIRECTION_COLORS[dir] || defaultColors[colorIdx++ % defaultColors.length];

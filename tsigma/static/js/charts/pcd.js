@@ -12,6 +12,8 @@
 
     var pcd = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     /**
      * Initialize an ECharts instance inside the given container.
@@ -23,6 +25,12 @@
         if (!el) throw new Error("PCD container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) pcd.render(_lastData);
+            });
+        }
         return _chart;
     };
 
@@ -33,6 +41,8 @@
      *   purdue-diagram report endpoint.
      */
     pcd.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("PCD chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -41,7 +51,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -177,15 +187,15 @@
             ],
             grid: { left: 60, right: 30, top: 50, bottom: 70 },
             series: [
-                makeBandSeries("Green", greenBands, "#4ade80"),
-                makeBandSeries("Yellow", yellowBands, "#fbbf24"),
-                makeBandSeries("Red", redBands, "#ef4444"),
+                makeBandSeries("Green", greenBands, T.phaseGreen),
+                makeBandSeries("Yellow", yellowBands, T.phaseYellow),
+                makeBandSeries("Red", redBands, T.phaseRed),
                 {
                     name: "Detector Activations",
                     type: "scatter",
                     data: detectorPoints,
                     symbolSize: 5,
-                    itemStyle: { color: "#1e3a5f" },
+                    itemStyle: { color: T.brand },
                     z: 10,
                 },
             ],

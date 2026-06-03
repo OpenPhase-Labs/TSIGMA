@@ -12,16 +12,26 @@
 
     var redLightMonitor = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     redLightMonitor.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Red light monitor container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) redLightMonitor.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     redLightMonitor.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Red light monitor chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -30,7 +40,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -76,7 +86,7 @@
                           "/" + totalCycles + " (" + violationPct + "%)",
                     left: "center",
                     top: 25,
-                    textStyle: { fontSize: 11, color: "#6b7280", fontWeight: "normal" },
+                    textStyle: { fontSize: 11, color: T.mutedForeground, fontWeight: "normal" },
                 },
             ],
             tooltip: {
@@ -136,14 +146,14 @@
                     type: "scatter",
                     data: violationData,
                     symbolSize: 8,
-                    itemStyle: { color: "#ef4444" },
+                    itemStyle: { color: T.phaseRed },
                 },
                 {
                     name: "Clean Cycles",
                     type: "scatter",
                     data: cleanData,
                     symbolSize: 5,
-                    itemStyle: { color: "#9ca3af", opacity: 0.5 },
+                    itemStyle: { color: T.mutedForeground, opacity: 0.5 },
                 },
             ],
         };

@@ -12,6 +12,8 @@
 
     var splitFailure = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
     var DEFAULT_THRESHOLD = 0.79;
 
     splitFailure.init = function (containerId) {
@@ -19,10 +21,18 @@
         if (!el) throw new Error("Split failure container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) splitFailure.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     splitFailure.render = function (data, options) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Split failure chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -31,7 +41,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -78,7 +88,7 @@
                           " (" + failurePct + "%)",
                     left: "center",
                     top: 25,
-                    textStyle: { fontSize: 11, color: "#6b7280", fontWeight: "normal" },
+                    textStyle: { fontSize: 11, color: T.mutedForeground, fontWeight: "normal" },
                 },
             ],
             tooltip: {
@@ -130,14 +140,14 @@
                     type: "scatter",
                     data: greenNormal,
                     symbolSize: 6,
-                    itemStyle: { color: "#4ade80" },
+                    itemStyle: { color: T.phaseGreen },
                 },
                 {
                     name: "Red Start Occ.",
                     type: "scatter",
                     data: redNormal,
                     symbolSize: 6,
-                    itemStyle: { color: "#ef4444" },
+                    itemStyle: { color: T.phaseRed },
                 },
                 {
                     name: "Green (Failure)",
@@ -145,7 +155,7 @@
                     data: greenFailure,
                     symbol: "rect",
                     symbolSize: 10,
-                    itemStyle: { color: "#166534", borderColor: "#000", borderWidth: 1 },
+                    itemStyle: { color: T.success, borderColor: T.border, borderWidth: 1 },
                 },
                 {
                     name: "Red (Failure)",
@@ -153,7 +163,7 @@
                     data: redFailure,
                     symbol: "rect",
                     symbolSize: 10,
-                    itemStyle: { color: "#991b1b", borderColor: "#000", borderWidth: 1 },
+                    itemStyle: { color: T.error, borderColor: T.border, borderWidth: 1 },
                 },
                 {
                     name: "Threshold",
@@ -162,7 +172,7 @@
                     markLine: {
                         silent: true,
                         symbol: "none",
-                        lineStyle: { type: "dashed", color: "#6366f1", width: 1.5 },
+                        lineStyle: { type: "dashed", color: T.brand, width: 1.5 },
                         data: [
                             {
                                 yAxis: threshold,

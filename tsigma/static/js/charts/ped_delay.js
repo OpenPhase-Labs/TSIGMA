@@ -12,6 +12,8 @@
 
     var pedDelay = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     /**
      * Initialize an ECharts instance.
@@ -23,6 +25,12 @@
         if (!el) throw new Error("Ped delay container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) pedDelay.render(_lastData);
+            });
+        }
         return _chart;
     };
 
@@ -31,6 +39,8 @@
      * @param {Array<Object>} data  List of ped delay objects per phase.
      */
     pedDelay.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Ped delay chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -39,7 +49,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -93,7 +103,7 @@
                     name: "Avg Delay",
                     type: "bar",
                     data: avgDelays,
-                    itemStyle: { color: "#6366f1" },
+                    itemStyle: { color: T.brand },
                     barMaxWidth: 40,
                     label: {
                         show: true,
@@ -102,7 +112,7 @@
                             return data[params.dataIndex].presses + " presses";
                         },
                         fontSize: 10,
-                        color: "#4b5563",
+                        color: T.mutedForeground,
                     },
                 },
                 {
@@ -129,7 +139,7 @@
                                         y2: coordMax[1],
                                     },
                                     style: {
-                                        stroke: "#4338ca",
+                                        stroke: T.brand,
                                         lineWidth: 2,
                                     },
                                 },
@@ -143,7 +153,7 @@
                                         y2: coordMin[1],
                                     },
                                     style: {
-                                        stroke: "#4338ca",
+                                        stroke: T.brand,
                                         lineWidth: 2,
                                     },
                                 },
@@ -157,7 +167,7 @@
                                         y2: coordMax[1],
                                     },
                                     style: {
-                                        stroke: "#4338ca",
+                                        stroke: T.brand,
                                         lineWidth: 2,
                                     },
                                 },

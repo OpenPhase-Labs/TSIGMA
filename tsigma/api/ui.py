@@ -19,6 +19,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from ..auth.dependencies import require_access, require_admin
+from ..config import settings
+from ..theming.resolver import resolve_template_dirs
+from ..theming.tokens import token_style_for
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +42,24 @@ _admin_router = APIRouter(
     dependencies=[Depends(require_admin)],
 )
 
-# Templates directory is tsigma/templates/ (sibling to api/)
+# Templates directory is tsigma/templates/ (sibling to api/). The active theme
+# (TSIGMA_THEME) is resolved once at startup: an agency theme's templates shadow
+# the defaults via the ChoiceLoader, falling back to these built-in defaults.
 _template_dir = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(_template_dir))
+_themes_root = _template_dir.parent.parent / "themes"
+_template_dirs = resolve_template_dirs(
+    settings.theme, themes_root=_themes_root, default_templates=_template_dir
+)
+templates = Jinja2Templates(directory=[str(d) for d in _template_dirs])
 # base.html uses Flask's get_flashed_messages(); FastAPI's Jinja2 doesn't
 # provide it. Flash messaging isn't implemented, so register a no-op that
 # accepts the with_categories kwarg and returns no messages.
 templates.env.globals["get_flashed_messages"] = lambda with_categories=False: []
+# Per-theme/per-mode CSS custom properties, rendered once and injected inline
+# in base.html <head> (after tailwind.css) so theme + light/dark values win.
+templates.env.globals["theme_token_style"] = token_style_for(
+    settings.theme, themes_root=_themes_root
+)
 
 
 # --- Public ----------------------------------------------------------------

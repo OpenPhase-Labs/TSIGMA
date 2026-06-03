@@ -12,6 +12,8 @@
 
     var timingAndActuations = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     // NTCIP 1202 phase event codes
     var PHASE_GREEN = 1;
@@ -19,21 +21,28 @@
     var PHASE_RED = 10;
     var DETECTOR_ON = 81;
 
-    var STATE_COLORS = {
-        green: "#4ade80",
-        yellow: "#fbbf24",
-        red: "#ef4444",
-    };
-
     timingAndActuations.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Timing and actuations container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) timingAndActuations.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     timingAndActuations.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
+        var STATE_COLORS = {
+            green: T.phaseGreen,
+            yellow: T.phaseYellow,
+            red: T.phaseRed,
+        };
         if (!_chart) throw new Error("Timing and actuations chart not initialized");
         if (!data || (!data.events && !data.phase_summary)) {
             _chart.clear();
@@ -42,7 +51,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -56,7 +65,7 @@
                     text: "No event data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -197,7 +206,7 @@
                                 height: bandHeight,
                             },
                             style: {
-                                fill: STATE_COLORS[state] || "#9ca3af",
+                                fill: STATE_COLORS[state] || T.mutedForeground,
                             },
                         };
                     },
@@ -214,7 +223,7 @@
                     data: detectorData,
                     symbolSize: [2, 12],
                     symbol: "rect",
-                    itemStyle: { color: "#1e3a5f", opacity: 0.6 },
+                    itemStyle: { color: T.brand, opacity: 0.6 },
                     z: 10,
                 },
             ],

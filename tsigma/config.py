@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     pg_user: str = "tsigma"
     pg_password: str = ""
 
+    # --- Theming ---
+    # Active theme directory name under themes/. "default" uses the built-in
+    # tsigma/templates + tsigma/static as the only (fallback) layer.
+    theme: str = "default"
+
     # TimescaleDB — explicit, installer-declared deployment mode (PostgreSQL only).
     # When True, the schema migration builds hypertables + continuous aggregates
     # and the aggregation scheduler defers refresh to TimescaleDB policies. When

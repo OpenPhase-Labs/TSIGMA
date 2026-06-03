@@ -1,0 +1,78 @@
+# ============================================================================
+# TSIGMA agency theme template
+# ----------------------------------------------------------------------------
+# Copy this folder to  themes/<your-agency>/ , edit the values below, then set
+#     TSIGMA_THEME=<your-agency>
+# and restart TSIGMA. No code changes, no CSS rebuild — the UI (and charts)
+# rebrand at startup.
+#
+# Every token below is REQUIRED in BOTH [semantic.light] and [semantic.dark]
+# (plus [phase.*]); a missing one raises a clear error at startup. Values may
+# be any CSS color. Templates and charts reference only these semantic names,
+# so changing a value here recolors the whole interface consistently.
+#
+# Optional, alongside this file (served when the per-theme static mount is
+# enabled): static/custom.css, static/<logo>, static/fonts/… , and
+# templates/… overrides that shadow the defaults.
+# ============================================================================
+
+[meta]
+name = "example"                 # must match the folder name and TSIGMA_THEME
+display_name = "Example Agency"
+
+[fonts]
+# Font-family names. Leave as-is to inherit the Modern Airy defaults, or point
+# at your own web fonts (place the woff2 in this theme's static/fonts/).
+display = "Bricolage Grotesque"  # headings
+body = "IBM Plex Sans"           # body text
+mono = "IBM Plex Mono"           # numbers / metrics
+
+# ---- LIGHT MODE ------------------------------------------------------------
+[semantic.light]
+surface = "#f9fafb"              # page background
+surface-raised = "#ffffff"       # cards, nav, panels
+foreground = "#111827"           # primary text
+muted-foreground = "#6b7280"     # secondary text, labels
+border = "#e5e7eb"               # borders, dividers
+ring = "#6366f1"                 # focus ring (usually same as brand)
+brand = "#6366f1"                # ← YOUR BRAND COLOR (buttons, links, chart series)
+brand-foreground = "#ffffff"     # text/icons on top of brand
+success = "#16a34a"
+success-foreground = "#ffffff"
+warning = "#d97706"
+warning-foreground = "#ffffff"
+error = "#dc2626"
+error-foreground = "#ffffff"
+
+# ---- DARK MODE -------------------------------------------------------------
+# Same token names, tuned for a dark background. Brand is usually a LIGHTER
+# shade here so it stays legible on dark surfaces.
+[semantic.dark]
+surface = "#0a0a0f"
+surface-raised = "#15151f"
+foreground = "#ececf1"
+muted-foreground = "#9ca3af"
+border = "#26262f"
+ring = "#818cf8"
+brand = "#818cf8"                # ← lighter brand for dark mode
+brand-foreground = "#0a0a0f"
+success = "#22c55e"
+success-foreground = "#052e13"
+warning = "#f59e0b"
+warning-foreground = "#2a1a00"
+error = "#f87171"
+error-foreground = "#2a0a0a"
+
+# ---- PHASE / SIGNAL COLORS -------------------------------------------------
+# Traffic-signal phase colors for charts (PCD, phase termination, etc.). Kept
+# SEPARATE from brand so a green phase always reads green regardless of your
+# brand color. Tune per mode for contrast.
+[phase.light]
+green = "#16a34a"
+yellow = "#f59e0b"
+red = "#dc2626"
+
+[phase.dark]
+green = "#4ade80"
+yellow = "#fbbf24"
+red = "#f87171"

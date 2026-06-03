@@ -184,3 +184,18 @@ class TestValkeySettingsInvalidationFlag:
         )
         settings = Settings()
         assert settings.valkey_settings_invalidation_enabled is True
+
+
+def test_theme_setting_defaults_to_default():
+    """TSIGMA_THEME defaults to the built-in 'default' theme."""
+    from tsigma.config import Settings
+    s = Settings()
+    assert s.theme == "default"
+
+
+def test_theme_setting_reads_env(monkeypatch):
+    """TSIGMA_THEME env var overrides the theme name."""
+    monkeypatch.setenv("TSIGMA_THEME", "acme")
+    from tsigma.config import Settings
+    s = Settings()
+    assert s.theme == "acme"

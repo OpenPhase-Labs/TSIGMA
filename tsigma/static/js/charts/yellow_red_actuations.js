@@ -12,16 +12,26 @@
 
     var yellowRedActuations = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     yellowRedActuations.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Yellow/Red actuations container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) yellowRedActuations.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     yellowRedActuations.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Yellow/Red actuations chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -30,7 +40,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -97,7 +107,7 @@
                     data: sorted.map(function (d) {
                         return [d.cycle_start, d.green_actuations || 0];
                     }),
-                    itemStyle: { color: "#4ade80" },
+                    itemStyle: { color: T.phaseGreen },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -107,7 +117,7 @@
                     data: sorted.map(function (d) {
                         return [d.cycle_start, d.yellow_actuations || 0];
                     }),
-                    itemStyle: { color: "#fbbf24" },
+                    itemStyle: { color: T.phaseYellow },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -117,7 +127,7 @@
                     data: sorted.map(function (d) {
                         return [d.cycle_start, d.red_actuations || 0];
                     }),
-                    itemStyle: { color: "#ef4444" },
+                    itemStyle: { color: T.phaseRed },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -126,7 +136,7 @@
                     markLine: {
                         silent: true,
                         symbol: "none",
-                        lineStyle: { type: "dashed", color: "#6366f1", width: 2 },
+                        lineStyle: { type: "dashed", color: T.brand, width: 2 },
                         data: [
                             {
                                 yAxis: avgTotal,

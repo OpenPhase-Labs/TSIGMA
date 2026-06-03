@@ -11,21 +11,30 @@
 
     var bikeVolume = {};
     var _chart = null;
-
-    var BIKE_COLORS = [
-        "#22c55e", "#06b6d4", "#3b82f6", "#10b981",
-        "#0ea5e9", "#14b8a6", "#059669", "#0284c7",
-    ];
+    var _lastData = null;
+    var _themeBound = false;
 
     bikeVolume.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Bike volume container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) bikeVolume.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     bikeVolume.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
+        var BIKE_COLORS = [
+            T.brand, T.success, T.warning, T.error,
+            T.phaseGreen, T.phaseYellow, T.ring, T.mutedForeground,
+        ];
         if (!_chart) throw new Error("Bike volume chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -34,7 +43,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;

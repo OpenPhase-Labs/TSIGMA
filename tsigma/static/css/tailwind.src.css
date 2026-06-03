@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/* Self-hosted web fonts (air-gap friendly; no CDN). woff2 in static/fonts/.
+   Bricolage Grotesque is a variable font (wght axis); IBM Plex Sans/Mono are
+   static per-weight. Agency themes may override these via their own CSS. */
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("/static/fonts/bricolage-grotesque-latin-wght-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-sans-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+}
+
+/* Dark mode keys off our attribute, not the default .dark class / media query.
+   Color tokens auto-switch via the injected [data-mode="dark"] block, so
+   `dark:` variants are only needed for non-color tweaks (shadows, etc.). */
+@custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
+
+/* Agency-agnostic theme contract: semantic utilities (bg-surface,
+   text-foreground, border-border, bg-brand, ring-ring, bg-success, …) bind to
+   these CSS vars. The values here are the Modern Airy ("Indigo Continuity")
+   LIGHT defaults; the real per-theme/per-mode values are injected at render
+   time by tsigma/theming/tokens.py as a :root{…}/[data-mode="dark"]{…} <style>
+   block that loads AFTER this compiled file, so theme + mode values win.
+   Keep these in sync with tsigma/theming/default_theme.toml [semantic.light]. */
+@theme {
+  /* Fonts (default theme; agency-overridable). Web-font files are served from
+     static/ and declared via @font-face in base.html — self-hosted, not a CDN,
+     for air-gap. */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-surface: #f9fafb;
+  --color-surface-raised: #ffffff;
+  --color-foreground: #111827;
+  --color-muted-foreground: #6b7280;
+  --color-border: #e5e7eb;
+  --color-ring: #6366f1;
+  --color-brand: #6366f1;
+  --color-brand-foreground: #ffffff;
+  --color-success: #16a34a;
+  --color-success-foreground: #ffffff;
+  --color-warning: #d97706;
+  --color-warning-foreground: #ffffff;
+  --color-error: #dc2626;
+  --color-error-foreground: #ffffff;
+}

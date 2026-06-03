@@ -12,16 +12,26 @@
 
     var linkPivot = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     linkPivot.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Link pivot container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) linkPivot.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     linkPivot.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Link pivot chart not initialized");
         if (!data || !data.offsets || data.offsets.length === 0) {
             _chart.clear();
@@ -30,7 +40,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -91,7 +101,7 @@
                     name: "Avg Offset",
                     type: "bar",
                     data: avgValues,
-                    itemStyle: { color: "#3b82f6" },
+                    itemStyle: { color: T.brand },
                     label: {
                         show: true,
                         position: "right",
@@ -112,7 +122,7 @@
                         var halfHeight = api.size([0, 1])[1] * 0.15;
 
                         var style = api.style({
-                            stroke: "#1e3a5f",
+                            stroke: T.brand,
                             fill: null,
                             lineWidth: 1.5,
                         });

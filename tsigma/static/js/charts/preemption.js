@@ -12,6 +12,8 @@
 
     var preemption = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     /**
      * Initialize an ECharts instance.
@@ -23,6 +25,12 @@
         if (!el) throw new Error("Preemption container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) preemption.render(_lastData);
+            });
+        }
         return _chart;
     };
 
@@ -31,6 +39,8 @@
      * @param {Array<Object>} data  List of preemption type objects.
      */
     preemption.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Preemption chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -39,7 +49,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -113,7 +123,7 @@
                     data: counts,
                     xAxisIndex: 0,
                     yAxisIndex: 0,
-                    itemStyle: { color: "#f97316" },
+                    itemStyle: { color: T.warning },
                     barMaxWidth: 40,
                     label: {
                         show: true,
@@ -127,7 +137,7 @@
                     data: avgDurations,
                     xAxisIndex: 1,
                     yAxisIndex: 1,
-                    itemStyle: { color: "#fbbf24" },
+                    itemStyle: { color: T.phaseYellow },
                     barMaxWidth: 40,
                     label: {
                         show: true,
@@ -162,7 +172,7 @@
                                         x2: topCoord[0],
                                         y2: topCoord[1],
                                     },
-                                    style: { stroke: "#d97706", lineWidth: 2 },
+                                    style: { stroke: T.warning, lineWidth: 2 },
                                 },
                                 {
                                     type: "line",
@@ -172,7 +182,7 @@
                                         x2: catCoord[0] + barWidth / 2,
                                         y2: catCoord[1],
                                     },
-                                    style: { stroke: "#d97706", lineWidth: 2 },
+                                    style: { stroke: T.warning, lineWidth: 2 },
                                 },
                                 {
                                     type: "line",
@@ -182,7 +192,7 @@
                                         x2: topCoord[0] + barWidth / 2,
                                         y2: topCoord[1],
                                     },
-                                    style: { stroke: "#d97706", lineWidth: 2 },
+                                    style: { stroke: T.warning, lineWidth: 2 },
                                 },
                             ],
                         };

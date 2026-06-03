@@ -1,0 +1,65 @@
+{#-
+  Modern Airy UI partials (D-3) — parameterized, semantic-utility components.
+
+  Inline components:
+    {% from "components/ui.html" import button, badge, field %}
+  Slot components (use {% call %}):
+    {% from "components/ui.html" import card, page_header %}
+    {% call card(title="…") %} …body… {% endcall %}
+    {% call page_header("Title", eyebrow="…", description="…") %} …actions… {% endcall %}
+
+  Colors come only from semantic tokens (bg-brand, text-foreground, …) bound to
+  CSS vars in the compiled tailwind.css; light/dark + per-agency values are
+  injected at render time, so these partials never reference a literal color.
+-#}
+
+{%- macro button(label, variant="primary", type="button", size="", extra="") -%}
+  {%- set base = "inline-flex items-center justify-center gap-2 rounded-lg font-semibold transition focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-surface" -%}
+  {%- set sizing = "px-3 py-1.5 text-xs rounded-md" if size == "sm" else "px-4 py-2.5 text-sm" -%}
+  {%- set styles = {
+      "primary": "bg-brand text-brand-foreground hover:brightness-110",
+      "secondary": "bg-surface-raised text-foreground border border-border hover:border-ring",
+      "ghost": "bg-transparent text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
+      "warning": "bg-warning text-warning-foreground hover:brightness-110",
+      "danger": "bg-error text-error-foreground hover:brightness-110",
+  } -%}
+  <button type="{{ type }}" class="{{ base }} {{ sizing }} {{ styles[variant] }} {{ extra }}">{{ label }}</button>
+{%- endmacro -%}
+
+{%- macro badge(label, variant="neutral") -%}
+  {%- set styles = {
+      "brand": "bg-brand/15 text-brand",
+      "success": "bg-success/15 text-success",
+      "warning": "bg-warning/15 text-warning",
+      "error": "bg-error/15 text-error",
+      "neutral": "bg-muted-foreground/15 text-muted-foreground",
+  } -%}
+  <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold {{ styles[variant] }}"><span class="size-1.5 rounded-full bg-current"></span>{{ label }}</span>
+{%- endmacro -%}
+
+{%- macro field(name, label, type="text", placeholder="", value="", hint="") -%}
+  <div>
+    <label for="{{ name }}" class="block mb-1.5 text-sm font-medium text-foreground">{{ label }}</label>
+    <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}" placeholder="{{ placeholder }}"
+      class="w-full rounded-lg px-3 py-2.5 text-sm bg-surface text-foreground border border-border placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring">
+    {%- if hint %}<p class="mt-1.5 text-xs text-muted-foreground">{{ hint }}</p>{%- endif %}
+  </div>
+{%- endmacro -%}
+
+{%- macro card(title="", padding="p-6") -%}
+  <div class="bg-surface-raised border border-border rounded-2xl {{ padding }} shadow-md">
+    {%- if title %}<h3 class="font-display text-lg font-semibold text-foreground mb-4">{{ title }}</h3>{%- endif %}
+    {{ caller() }}
+  </div>
+{%- endmacro -%}
+
+{%- macro page_header(title, eyebrow="", description="") -%}
+  <header class="flex items-start justify-between gap-4 flex-wrap">
+    <div>
+      {%- if eyebrow %}<p class="text-xs uppercase tracking-widest font-semibold text-muted-foreground">{{ eyebrow }}</p>{%- endif %}
+      <h1 class="font-display text-2xl font-semibold text-foreground mt-1">{{ title }}</h1>
+      {%- if description %}<p class="text-sm text-muted-foreground mt-1.5">{{ description }}</p>{%- endif %}
+    </div>
+    {%- if caller %}<div class="flex gap-2">{{ caller() }}</div>{%- endif %}
+  </header>
+{%- endmacro -%}

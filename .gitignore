@@ -18,3 +18,11 @@ specs/
 
 # MCP cache
 .playwright-mcp/
+
+# Local CSS build tools (Tailwind standalone binary — fetched per-dev, never committed)
+tools/
+
+# Per-agency white-label themes are deployment artifacts, not open-core —
+# except the committed `example` template agencies copy from.
+themes/*
+!themes/example/

@@ -12,6 +12,8 @@
 
     var splitMonitor = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     /**
      * Initialize an ECharts instance.
@@ -23,6 +25,12 @@
         if (!el) throw new Error("Split monitor container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) splitMonitor.render(_lastData);
+            });
+        }
         return _chart;
     };
 
@@ -31,6 +39,8 @@
      * @param {Array<Object>} data  List of phase split objects.
      */
     splitMonitor.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Split monitor chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -39,7 +49,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -134,7 +144,7 @@
                     type: "bar",
                     stack: "split",
                     data: greens,
-                    itemStyle: { color: "#4ade80" },
+                    itemStyle: { color: T.phaseGreen },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -142,7 +152,7 @@
                     type: "bar",
                     stack: "split",
                     data: yellows,
-                    itemStyle: { color: "#fbbf24" },
+                    itemStyle: { color: T.phaseYellow },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -150,7 +160,7 @@
                     type: "bar",
                     stack: "split",
                     data: reds,
-                    itemStyle: { color: "#ef4444" },
+                    itemStyle: { color: T.phaseRed },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -165,10 +175,10 @@
                     },
                     itemStyle: {
                         borderRadius: 4,
-                        borderColor: "#fff",
+                        borderColor: T.surface,
                         borderWidth: 2,
                     },
-                    color: ["#34d399", "#f97316", "#a855f7"],
+                    color: [T.brand, T.success, T.warning],
                     tooltip: {
                         trigger: "item",
                         formatter: function (p) {

@@ -12,16 +12,26 @@
 
     var waitTime = {};
     var _chart = null;
+    var _lastData = null;
+    var _themeBound = false;
 
     waitTime.init = function (containerId) {
         var el = document.getElementById(containerId);
         if (!el) throw new Error("Wait time container not found: " + containerId);
         _chart = echarts.init(el);
         tsigma.charts.resize(_chart);
+        if (!_themeBound) {
+            _themeBound = true;
+            tsigma.theme.onChange(function () {
+                if (_lastData !== null) waitTime.render(_lastData);
+            });
+        }
         return _chart;
     };
 
     waitTime.render = function (data) {
+        _lastData = data;
+        var T = tsigma.theme.tokens();
         if (!_chart) throw new Error("Wait time chart not initialized");
         if (!data || data.length === 0) {
             _chart.clear();
@@ -30,7 +40,7 @@
                     text: "No data available",
                     left: "center",
                     top: "center",
-                    textStyle: { color: "#9ca3af", fontSize: 14 },
+                    textStyle: { color: T.mutedForeground, fontSize: 14 },
                 },
             });
             return;
@@ -119,7 +129,7 @@
                     name: "Avg Wait Time",
                     type: "bar",
                     data: sorted.map(function (d) { return d.avg_wait_time || 0; }),
-                    itemStyle: { color: "#3b82f6" },
+                    itemStyle: { color: T.brand },
                     emphasis: { focus: "series" },
                 },
                 {
@@ -138,7 +148,7 @@
                         var halfWidth = api.size([1, 0])[0] * 0.15;
 
                         var style = api.style({
-                            stroke: "#1e3a5f",
+                            stroke: T.brand,
                             fill: null,
                             lineWidth: 1.5,
                         });
@@ -191,7 +201,7 @@
                     yAxisIndex: 1,
                     data: sorted.map(function (d) { return d.arrivals_during_red || 0; }),
                     symbolSize: 6,
-                    itemStyle: { color: "#f97316" },
+                    itemStyle: { color: T.warning },
                 },
             ],
         };

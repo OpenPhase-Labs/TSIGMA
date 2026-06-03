@@ -1,8 +1,16 @@
 # TSIGMA UI Architecture
 
-**Purpose**: Document TSIGMA's zero-build, vendor-downloaded web UI architecture.
+**Purpose**: Document TSIGMA's web UI architecture — server-rendered Jinja +
+Alpine + ECharts/MapLibre over vendored JS libs, with a compiled Tailwind v4
+stylesheet.
 
-**Last Updated**: 2026-03-05
+> **Theming, colors, fonts & white-label** are documented separately:
+> [THEMING.md](THEMING.md) (developer) and
+> [../users/CREATING_A_THEME.md](../users/CREATING_A_THEME.md) (deployers).
+> Color classes in the examples below are illustrative — production templates
+> use semantic token utilities (`bg-surface`, `text-foreground`, `bg-brand`, …).
+
+**Last Updated**: 2026-06-02
 
 ---
 
@@ -367,7 +375,10 @@ map.on('load', async () => {
 
 ### One-Time Download and Commit
 
-All vendor libraries are downloaded once and committed to the repository. No CDN, no npm, no build step.
+Runtime vendor libraries (Alpine, ECharts, MapLibre) are downloaded once and
+committed — no CDN, no npm at runtime. Tailwind is the exception: it is compiled
+developer-side into the committed `tsigma/static/css/tailwind.css` (the only
+build step, and not one deployers run). See [THEMING.md](THEMING.md).
 
 **Directory structure**:
 ```
@@ -378,13 +389,13 @@ tsigma/static/vendor/
 ├── echarts/
 │   ├── echarts.min.js          # ECharts 5.4.3
 │   └── echarts.min.js.map
-├── maplibre/
-│   ├── maplibre-gl.js          # MapLibre GL JS 3.6.2
-│   ├── maplibre-gl.css
-│   └── maplibre-gl.js.map
-└── tailwind/
-    ├── tailwind.min.js         # Tailwind CSS CDN build
-    └── tailwind.config.js      # Custom config
+└── maplibre/
+    ├── maplibre-gl.js          # MapLibre GL JS 3.6.2
+    ├── maplibre-gl.css
+    └── maplibre-gl.js.map
+
+# Tailwind v4 is compiled to tsigma/static/css/tailwind.css (not a runtime
+# vendor lib); web fonts are self-hosted in tsigma/static/fonts/. See THEMING.md.
 ```
 
 ### Download Script
@@ -409,9 +420,8 @@ curl -o $VENDOR_DIR/maplibre/maplibre-gl.js \
 curl -o $VENDOR_DIR/maplibre/maplibre-gl.css \
   https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css
 
-# Tailwind CSS (CDN build for development)
-curl -o $VENDOR_DIR/tailwind/tailwind.min.js \
-  https://cdn.tailwindcss.com/3.4.1
+# Tailwind CSS is compiled developer-side into the committed stylesheet —
+# not downloaded at runtime. See THEMING.md (scripts/build_css.ps1).
 ```
 
 **Run once, commit files, never download again.**
@@ -570,25 +580,27 @@ tsigma/
 │   └── components/
 │       ├── nav.html
 │       ├── sidebar.html
-│       └── signal_card.html
+│       ├── signal_card.html
+│       └── ui.html            # Reusable partials (button/badge/field/card/page_header)
 ├── static/
-│   ├── vendor/                # Vendor-downloaded libraries (committed)
+│   ├── vendor/                # Vendor-downloaded runtime libs (committed)
 │   │   ├── alpine/
 │   │   ├── echarts/
-│   │   ├── maplibre/
-│   │   └── tailwind/
+│   │   └── maplibre/          # Tailwind is compiled, not vendored — see THEMING.md
 │   ├── js/
-│   │   ├── charts/            # 22 report chart modules
+│   │   ├── charts/            # 21 report chart modules (theme-aware)
 │   │   │   ├── pcd.js
 │   │   │   ├── approach_delay.js
-│   │   │   ├── approach_volume.js
-│   │   │   ├── split_monitor.js
 │   │   │   └── ...
 │   │   ├── common.js          # Shared utilities
+│   │   ├── theme.js           # Token → ECharts/MapLibre bridge (THEMING.md)
 │   │   ├── dashboard.js       # Dashboard logic
 │   │   └── signals.js         # Signal list logic
-│   └── css/
-│       └── custom.css         # Minimal custom CSS
+│   ├── css/
+│   │   ├── tailwind.src.css   # Tailwind v4 source (@theme, @font-face)
+│   │   ├── tailwind.css       # Compiled, committed
+│   │   └── custom.css         # Custom CSS (loaded last)
+│   └── fonts/                 # Self-hosted web fonts (woff2)
 └── api/
     └── ui.py                  # UI routes (render templates)
 ```
