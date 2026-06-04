@@ -7,10 +7,14 @@ stylesheet.
 > **Theming, colors, fonts & white-label** are documented separately:
 > [THEMING.md](THEMING.md) (developer) and
 > [../users/CREATING_A_THEME.md](../users/CREATING_A_THEME.md) (deployers).
-> Color classes in the examples below are illustrative — production templates
-> use semantic token utilities (`bg-surface`, `text-foreground`, `bg-brand`, …).
+> Color classes in the examples below are illustrative placeholders — off-theme
+> hues like `bg-blue-500` / `bg-green-500` are **not** in the shipped
+> `tailwind.css`. Production templates use semantic token utilities
+> (`bg-surface`, `text-foreground`, `bg-brand`, …) for theme-aware color, with
+> neutral `gray-*` for non-brand surfaces. See [THEMING.md](THEMING.md) §8 for
+> the safelist that defines the available vocabulary.
 
-**Last Updated**: 2026-06-02
+**Last Updated**: 2026-06-04
 
 ---
 
@@ -378,7 +382,11 @@ map.on('load', async () => {
 Runtime vendor libraries (Alpine, ECharts, MapLibre) are downloaded once and
 committed — no CDN, no npm at runtime. Tailwind is the exception: it is compiled
 developer-side into the committed `tsigma/static/css/tailwind.css` (the only
-build step, and not one deployers run). See [THEMING.md](THEMING.md).
+build step, and not one deployers run). The build first regenerates
+`tsigma/static/css/safelist.txt` (`scripts/gen_safelist.py`) — the pre-built
+utility vocabulary agencies can use in template overrides — and scopes Tailwind's
+content detection to the `tsigma/` package (`source("../..")`) so off-theme hues
+named outside it aren't emitted. See [THEMING.md](THEMING.md) §8.
 
 **Directory structure**:
 ```

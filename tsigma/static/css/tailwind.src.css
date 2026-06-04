@@ -1,4 +1,5 @@
-@import "tailwindcss";
+@import "tailwindcss" source("../..");
+@source "./safelist.txt";
 
 /* Self-hosted web fonts (air-gap friendly; no CDN). woff2 in static/fonts/.
    Bricolage Grotesque is a variable font (wght axis); IBM Plex Sans/Mono are
