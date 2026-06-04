@@ -108,6 +108,37 @@ Use the same color utility classes the defaults use (`bg-surface`,
 `text-foreground`, `bg-brand`, `text-brand-foreground`, `border-border`, …) so
 your overrides automatically follow your `theme.toml` colors and light/dark.
 
+## Available utility classes
+
+Your template overrides can use a broad, standard set of Tailwind utility
+classes **out of the box — no build step**. The shipped stylesheet already
+includes:
+
+- **Layout & spacing** — flexbox and grid (`flex`, `grid`, `grid-cols-3`,
+  `gap-4`, `items-center`, `justify-between`), padding/margin (`p-4`, `mt-8`,
+  `-mx-2`), sizing (`w-full`, `max-w-3xl`, `h-12`), positioning (`absolute`,
+  `top-0`, `z-10`).
+- **Typography** — sizes (`text-sm` … `text-4xl`), weights (`font-semibold`),
+  alignment, `leading-*`, `tracking-*`, `truncate`, `line-clamp-2`.
+- **Borders & effects** — `rounded-lg`, `border`, `ring-2`, `shadow-md`,
+  `opacity-75`, transitions/transforms (`transition`, `scale-105`).
+- **Responsive & state variants** — `sm: md: lg: xl: 2xl:` breakpoints and
+  `hover: focus: focus-visible: disabled: dark:` on the classes above.
+
+**Colors are intentionally limited** so your UI stays on-theme:
+
+- **Semantic token utilities** — `bg-brand`, `text-foreground`, `bg-surface`,
+  `border-border`, `text-brand-foreground`, `bg-success`, … follow your
+  `theme.toml` and switch with light/dark automatically. Use these for anything
+  that should look like *your brand*.
+- **Neutral grays** — `bg-gray-100`, `text-gray-600`, `border-gray-200`, … are
+  available for non-brand surfaces (subtle dividers, muted text).
+- **Other literal colors are not available.** `bg-blue-500`, `text-red-600`,
+  etc. are deliberately absent so the UI can't drift off-theme. If you truly
+  need a specific color, or a utility outside the set above, add it in your
+  theme's `static/css/custom.css` (loaded last) — the explicit, intentional
+  escape hatch.
+
 ## Step 5 — Activate
 
 Set the environment variable and restart TSIGMA:

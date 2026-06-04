@@ -3,8 +3,11 @@
 > Part of [TSIGMA Architecture](../ARCHITECTURE.md)
 > **Theming, colors & white-label:** see [THEMING.md](THEMING.md). Production
 > templates use semantic token utilities (`bg-surface`, `text-foreground`,
-> `bg-brand`, …) — never literal grays/colors. The examples below illustrate
-> data/interaction patterns, not the final color classes.
+> `bg-brand`, …) for theme-aware color; neutral `gray-*` is fine for non-brand
+> surfaces. Off-theme hues (`bg-blue-500`, `bg-green-500`, …) are **not** in the
+> shipped `tailwind.css`, so the placeholder colors in the examples below are
+> illustrative of data/interaction patterns only — use semantic tokens in real
+> templates.
 
 ---
 

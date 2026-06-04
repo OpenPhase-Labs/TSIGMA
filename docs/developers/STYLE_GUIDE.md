@@ -2,7 +2,19 @@
 
 **Purpose**: Authoritative formatting and style rules for TSIGMA code.
 
-**Last Updated**: 2026-04-22
+**Last Updated**: 2026-06-03
+
+---
+
+## Encoding (all files)
+
+### E1. UTF-8, no BOM
+
+Every text/source file in the repo (`.py`, `.ps1`, `.css`, `.js`, `.html`, `.toml`, `.md`, `.txt`, …) MUST be saved as **UTF-8 without a BOM**. No UTF-16, no Latin-1/Windows-1252, no byte-order mark.
+
+### E2. PowerShell scripts: ASCII only
+
+`.ps1` files MUST contain **only ASCII characters** — use `-` not `—`, `'` not `'`, `"` not `"`. Windows PowerShell 5.1 decodes a BOM-less file as the system ANSI codepage, so a single non-ASCII byte in a BOM-less `.ps1` corrupts parsing and the script won't run. ASCII is a subset of UTF-8, so ASCII-only scripts parse correctly under **both** Windows PowerShell 5.1 and PowerShell 7 with no BOM.
 
 ---
 
@@ -122,6 +134,7 @@ CI fails on any `ruff check` error. Fix locally before pushing.
 
 ## Rationale
 
+- **UTF-8, no BOM**: one encoding everywhere kills mojibake and noisy diffs; a BOM breaks shebang detection, some parsers, and concatenation. ASCII-only `.ps1` removes the Windows-PowerShell-5.1 ANSI-decode trap without needing a BOM, so scripts run identically on 5.1, PowerShell 7, and Linux.
 - **PEP 8 base**: familiar to every Python developer; no surprises.
 - **120-char line length**: matches modern screen widths; avoids artificial wrapping of type annotations and SQLAlchemy queries without letting lines grow unreadably long.
 - **isort `I001`**: deterministic import ordering eliminates merge-conflict churn and makes imports scannable.
@@ -134,5 +147,7 @@ CI fails on any `ruff check` error. Fix locally before pushing.
 ---
 
 ## Changelog
+
+**2026-06-03**: Added `## Encoding (all files)` section — UTF-8 without BOM for all files (E1); ASCII-only PowerShell scripts (E2) to avoid the Windows PowerShell 5.1 BOM-less ANSI-decode failure.
 
 **2026-04-22**: Initial style guide — PEP 8 base, line-length 120, isort `I001` enforced, 1000-line file cap, trailing newline required, two blank lines between top-level definitions, 4-space indent with 4-level nesting cap (early exits preferred), ~50-line function soft limit.

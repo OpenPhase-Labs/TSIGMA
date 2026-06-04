@@ -51,7 +51,9 @@ plus phase colors:
 Tailwind utilities are bound to these vars (`bg-surface`, `text-foreground`,
 `border-border`, `bg-brand`, `text-brand-foreground`, `bg-success/15`, …), so
 changing a token value recolors the **entire UI and all charts** at once.
-Templates must use these semantic utilities — **never a literal gray/color**.
+Templates use these semantic utilities for anything theme-aware; a neutral
+`gray-*` is allowed for non-brand surfaces. **Never an off-theme hue**
+(`bg-blue-500`, `text-red-600`, …) — those aren't in the compiled CSS (see §8).
 
 ## 3. `theme.toml`
 
@@ -109,19 +111,23 @@ and the static resolver (assets).
 
 - **Add a semantic token:** add it to `[semantic.light]` + `[semantic.dark]` in
   `default_theme.toml` *and* to `REQUIRED_SEMANTIC_TOKENS` in `tokens.py`; add
-  the matching `--color-<name>` to the `@theme` block in `tailwind.src.css`;
-  rebuild `tailwind.css`. Templates can then use `bg-<name>` / `text-<name>` /
-  `border-<name>`.
-- **Templates reference only semantic utilities** (`bg-surface`,
-  `text-foreground`, `bg-brand`, `border-border`, …) — never a literal
-  gray/color — so themes and light/dark resolve automatically. Reusable markup
-  lives in `components/ui.html` (button/badge/field/card/page_header macros).
+  the matching `--color-<name>` to the `@theme` block in `tailwind.src.css`; add
+  `<name>` to the semantic-token list in `scripts/gen_safelist.py` (so its
+  `bg-/text-/border-/ring-<name>` utilities are force-emitted); rebuild
+  `tailwind.css` (which regenerates `safelist.txt` first). Templates can then
+  use `bg-<name>` / `text-<name>` / `border-<name>`.
+- **Templates reference semantic utilities** (`bg-surface`, `text-foreground`,
+  `bg-brand`, `border-border`, …) for anything theme-aware — never an off-theme
+  hue — so themes and light/dark resolve automatically; a neutral `gray-*` is
+  fine for non-brand surfaces. Reusable markup lives in `components/ui.html`
+  (button/badge/field/card/page_header macros).
 - **Make a chart/map theme-aware:** read colors from `tsigma.theme.tokens()`
   and register for re-theming (`tsigma.theme.register(chart, render)` or
   `tsigma.theme.onChange(cb)`) instead of hardcoding hex (§7).
-- **Rebuild CSS** (`scripts/build_css.ps1`) only when utility *class usage* in
-  templates changes — not when token *values* change (those inject at render
-  time).
+- **Rebuild CSS** (`scripts/build_css.ps1`) when utility *class usage* in
+  templates changes **or** the safelist vocabulary changes (`gen_safelist.py`) —
+  not when token *values* change (those inject at render time). The build
+  regenerates `safelist.txt` then recompiles.
 
 ## 5. Resolution at startup
 
@@ -159,18 +165,36 @@ recolor with the theme and the mode toggle.
 
 ## 8. Compiled CSS (Tailwind v4)
 
-- **Source:** `tsigma/static/css/tailwind.src.css` — `@import "tailwindcss"`,
-  the self-hosted `@font-face` rules, the `@custom-variant dark` (keyed to
-  `[data-mode="dark"]`), and the `@theme` block binding utilities to the token
-  vars.
-- **Build:** the vendored Tailwind v4 standalone CLI compiles it to the
-  committed `tsigma/static/css/tailwind.css` via `scripts/build_css.ps1`
-  (developer-side only; the binary is fetched per-dev, not committed).
+- **Source:** `tsigma/static/css/tailwind.src.css` — `@import "tailwindcss"
+  source("../..")`, the self-hosted `@font-face` rules, the `@custom-variant
+  dark` (keyed to `[data-mode="dark"]`), the `@theme` block binding utilities to
+  the token vars, and `@source "./safelist.txt"`.
+- **Scoped detection / color contract:** `source("../..")` scopes Tailwind's
+  automatic content detection to the `tsigma/` package, so only the package
+  templates/JS (plus the safelist) drive output. This is what enforces the color
+  restriction — off-theme hue classes named anywhere *outside* the package (e.g.
+  an example in these docs) are **not** emitted. Without it, Tailwind v4 scans
+  the whole repo and would leak `bg-blue-500` from prose.
+- **Pre-generated vocabulary (`safelist.txt`):** `scripts/gen_safelist.py`
+  declaratively expands a broad standard utility vocabulary (structural families
+  across Tailwind's scales; colors restricted to the semantic tokens + `gray-*`;
+  variants `sm–2xl`, `hover/focus/focus-visible/disabled`, `dark`) and writes the
+  flat, committed `tsigma/static/css/safelist.txt`. `@source` force-emits it so
+  agencies can use those classes in template overrides without a build. It is the
+  human-readable record of exactly what agencies get; regenerate after changing a
+  family/scale or adding a semantic token.
+- **Build:** the vendored Tailwind v4 standalone CLI compiles via
+  `scripts/build_css.ps1` (developer-side only; binary fetched per-dev, not
+  committed). The build runs `gen_safelist.py` first, then compiles to the
+  committed `tsigma/static/css/tailwind.css`. Both `safelist.txt` and
+  `tailwind.css` are committed.
 - **Agency-agnostic:** the compiled CSS is the same for every agency — utilities
   reference the vars; per-theme/per-mode *values* are injected at render time
   (§3). Agencies never run a Tailwind build.
-- **Rebuild when** utility class usage changes in templates (not when only token
-  *values* change). Deployers serve the committed `tailwind.css` as-is.
+- **Rebuild when** utility class usage changes in templates **or** the safelist
+  vocabulary changes (not when only token *values* change). Deployers serve the
+  committed `tailwind.css` as-is. (It is large — ~6 MB raw / ~476 KB gzipped — by
+  design: the full standard vocabulary, served once and cached.)
 
 ## 9. File map
 
@@ -180,8 +204,10 @@ recolor with the theme and the mode toggle.
 | `tsigma/theming/static.py` | theme→default static file resolution |
 | `tsigma/theming/tokens.py` | `theme.toml` → validated CSS-var `<style>` |
 | `tsigma/theming/default_theme.toml` | built-in Modern Airy token values |
-| `tsigma/static/css/tailwind.src.css` | Tailwind v4 source (`@theme`, fonts) |
+| `tsigma/static/css/tailwind.src.css` | Tailwind v4 source (`@theme`, fonts, `source()` scope, `@source` safelist) |
 | `tsigma/static/css/tailwind.css` | committed compiled output |
+| `scripts/gen_safelist.py` | generates the utility-vocabulary safelist |
+| `tsigma/static/css/safelist.txt` | generated, committed utility vocabulary |
 | `tsigma/static/js/theme.js` | token→ECharts/MapLibre bridge |
 | `tsigma/templates/components/ui.html` | reusable partials (button/badge/field/card/page_header) |
 | `themes/example/` | committed agency theme template |
