@@ -13,6 +13,7 @@ htmlcov/
 # Agent workspace directories
 plans/
 specs/
+issues/
 .claude/
 .zoocode/
 
