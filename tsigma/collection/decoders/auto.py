@@ -4,12 +4,12 @@ Auto-detect decoder wrapper.
 Probes registered decoders in priority order and delegates
 to the first one that claims it can decode the data.
 
-Priority: asc3 -> peek -> maxtime -> siemens -> csv
+Priority: asc3 -> peek -> maxtime -> siemens -> d4 -> csv
 """
 
 from .base import BaseDecoder, DecodedEvent, DecoderRegistry
 
-_PRIORITY = ["asc3", "peek", "maxtime", "siemens", "csv"]
+_PRIORITY = ["asc3", "peek", "maxtime", "siemens", "d4", "csv"]
 
 
 @DecoderRegistry.register

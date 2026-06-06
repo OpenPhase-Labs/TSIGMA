@@ -38,6 +38,7 @@ TSIGMA supports multiple event log formats from different traffic signal control
 | `peek` | Peek/McCain | Binary (ATC) | `.bin`, `.dat`, `.atc`, `.log` |
 | `maxtime` | Intelight/Trafficware | XML/Binary | `.xml`, `.maxtime`, `.mtl`, `.bin`, `.synchro` |
 | `csv` | Generic | CSV | `.csv`, `.txt`, `.tsv` |
+| `d4` | Fourth Dimension Traffic | CSV (positional) | `.d4`, `.csv`, `.gz` |
 | `openphase` | OpenPhase | Protobuf | `.pb`, `.proto`, `.bin` |
 | `auto` | Auto-detect | Any | `.*` |
 
@@ -308,6 +309,44 @@ events = decoder.decode_bytes(open("/path/to/custom_export.csv", "rb").read())
 
 ---
 
+## D4 Decoder (Fourth Dimension Traffic)
+
+### Format: `d4`
+
+Decodes positional CSV event logs from Fourth Dimension Traffic "D4" signal
+controllers (an ATC-class controller). Unlike the generic `csv` decoder, D4 logs
+are **positional** (no recognizable header names) and come in two layouts,
+discriminated by field count:
+
+| Layout | Columns |
+|--------|---------|
+| 4-field | `event_code, event_param, timestamp, msg_idx` |
+| 5-field (streamed) | `event_code, event_name, event_param, timestamp, msg_idx` |
+
+Only `timestamp`, `event_code`, and `event_param` are kept; `event_name` and
+`msg_idx` are discarded. Header rows, blank lines, and malformed rows are
+skipped. Files may be gzip-compressed (`.gz`); the decoder decompresses
+transparently.
+
+Timestamps match the Kimley-Horn reference (which parses via .NET
+`CurrentCulture`): ISO `YYYY-MM-DD[ HH:MM[:SS]]`, US `MM/DD/YYYY` with optional
+12-hour AM/PM or 24-hour time, date-only, and 2-digit years.
+
+> **Transport is out of scope.** D4 controllers are collected over SFTP; the
+> pull / checkpoint / retention lifecycle is handled by TSIGMA's ingestion
+> layer. This decoder implements only the format/parse half.
+
+### Usage
+
+```python
+from tsigma.collection.decoders.d4 import D4Decoder
+
+decoder = D4Decoder()
+events = decoder.decode_bytes(open("/path/to/signal_1234.csv", "rb").read())
+```
+
+---
+
 ## OpenPhase Protobuf Decoder
 
 ### Format: `openphase`
@@ -347,7 +386,8 @@ Automatically detects the file format and uses the appropriate decoder.
 2. **Peek/McCain** - Checks for `PEEK`, `MCCN`, `ATC\0` magic bytes
 3. **MaxTime** - Checks for XML with MaxTime/Trafficware markers
 4. **Siemens** - Checks for SEPAC markers in text
-5. **CSV** - Fallback for text files with delimiters
+5. **D4** - Positional CSV (Fourth Dimension Traffic); claims headerless code/param/timestamp rows
+6. **CSV** - Fallback for text files with delimiters
 
 ### Usage
 
@@ -524,6 +564,7 @@ siemens: Siemens SEPAC event log (['.log', '.txt', '.csv', '.sepac'])
 peek: Peek/McCain binary event log (['.bin', '.dat', '.atc', '.log'])
 maxtime: MaxTime/Trafficware/MaxView event log (['.xml', '.maxtime', '.mtl', '.bin', '.synchro'])
 csv: Generic CSV/TSV event log (['.csv', '.txt', '.tsv'])
+d4: Fourth Dimension Traffic D4 controller CSV event log (['.d4', '.csv', '.gz'])
 openphase: OpenPhase v1 Protobuf (events and batches) (['.pb', '.proto', '.bin'])
 auto: Auto-detect event log format (['.*'])
 ```
