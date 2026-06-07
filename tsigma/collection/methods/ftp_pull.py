@@ -49,11 +49,20 @@ from pathlib import PurePosixPath
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
+from ...models.approach import Approach
 from ...models.checkpoint import PollingCheckpoint
+from ...models.file_provenance import FileIngestProvenance
+from ...models.signal import Signal
 from ...notifications.registry import WARNING, notify
+from ...notifications.suppression import is_suppressed
 from ..registry import IngestionMethodRegistry, PollingIngestionMethod
-from ..sdk import is_backward_poisoned
+from ..sdk import (
+    check_configured_phases,
+    check_controller_replacement,
+    is_backward_poisoned,
+)
 from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
@@ -657,6 +666,106 @@ class FTPPullMethod(PollingIngestionMethod):
                 filename, device_id,
             )
 
+    async def _validate_and_record_provenance(
+        self,
+        session_factory,
+        device_id: str,
+        metadata,
+        decoder_name,
+    ) -> None:
+        """Validate header identity/config and record file provenance.
+
+        Best-effort and NON-BLOCKING: any failure is logged and swallowed so
+        ingest always proceeds. Detects controller replacement (MAC change at a
+        reused IP) and config-phase drift, flags them (suppressible, best-effort
+        notify), seeds an absent registered MAC on first sight, and writes one
+        provenance row per ingested file.
+        """
+        if metadata is None:
+            return
+        try:
+            async with session_factory() as session:
+                signal = await session.get(Signal, device_id)
+                findings = []
+                if signal is not None:
+                    registered_mac = (signal.signal_metadata or {}).get(
+                        "controller_mac",
+                    )
+                    if not registered_mac and metadata.device_mac:
+                        # First sight: silently seed the registered MAC
+                        # (reassign dict — JSONB is not MutableDict, in-place
+                        # edits aren't tracked).
+                        signal.signal_metadata = {
+                            **(signal.signal_metadata or {}),
+                            "controller_mac": metadata.device_mac,
+                        }
+                    else:
+                        replacement = check_controller_replacement(
+                            metadata, registered_mac,
+                        )
+                        if replacement is not None:
+                            findings.append(replacement)
+                    rows = (
+                        await session.execute(
+                            select(
+                                Approach.protected_phase_number,
+                                Approach.permissive_phase_number,
+                                Approach.ped_phase_number,
+                            ).where(Approach.signal_id == device_id)
+                        )
+                    ).all()
+                    configured = {p for row in rows for p in row if p is not None}
+                    drift = check_configured_phases(metadata, configured)
+                    if drift is not None:
+                        findings.append(drift)
+                for finding in findings:
+                    if await is_suppressed(session, device_id, finding.check_name):
+                        continue
+                    logger.warning(
+                        "Integrity finding %s for %s: %s",
+                        finding.check_name, device_id, finding.summary,
+                    )
+                    try:
+                        await notify(
+                            subject=f"{finding.summary}: {device_id}",
+                            message=(
+                                f"Device {device_id} file "
+                                f"{metadata.source_filename}: {finding.summary}."
+                            ),
+                            severity=finding.severity,
+                            metadata={
+                                "signal_id": device_id,
+                                "alert_type": finding.check_name,
+                                **finding.detail,
+                            },
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to notify integrity finding %s for %s — "
+                            "events still ingested",
+                            finding.check_name, device_id,
+                        )
+                session.add(
+                    FileIngestProvenance(
+                        signal_id=device_id,
+                        source_filename=metadata.source_filename,
+                        device_ip=metadata.device_ip,
+                        device_mac=metadata.device_mac,
+                        log_version=metadata.log_version,
+                        phases_in_use=metadata.phases_in_use,
+                        log_begin=metadata.log_begin,
+                        header_anchor=metadata.header_anchor,
+                        decoder_name=decoder_name,
+                    )
+                )
+                await session.commit()
+        except Exception:
+            logger.exception(
+                "Identity/provenance validation failed for %s (%s) — "
+                "events still ingested",
+                getattr(metadata, "source_filename", None), device_id,
+            )
+
     async def _download_and_ingest(
         self,
         client: _FileTransferClient,
@@ -690,10 +799,22 @@ class FTPPullMethod(PollingIngestionMethod):
                 ) if ftp_config.decoder else target.resolve_decoder(
                     filename=rf.name,
                 )
-                events = decoder.decode_bytes(data)
+                result = decoder.decode(data)
+                events = result.events
                 await self._flag_if_backward_poison(
                     events, device_id, rf.name, last_successful_poll,
                 )
+                try:
+                    await self._validate_and_record_provenance(
+                        session_factory, device_id, result.metadata,
+                        getattr(decoder, "name", None),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Validation/provenance step failed for %s (%s) — "
+                        "events still ingested",
+                        rf.name, device_id,
+                    )
                 await target.persist_with_drift_check(
                     events, device_id, session_factory,
                 )
@@ -953,7 +1074,8 @@ class FTPPullMethod(PollingIngestionMethod):
             ) if ftp_config.decoder else target.resolve_decoder(
                 filename=original_name,
             )
-            events = decoder.decode_bytes(data)
+            result = decoder.decode(data)
+            events = result.events
         except Exception:
             logger.exception(
                 "Failed to decode %s for device %s", filename, device_id,
@@ -963,6 +1085,18 @@ class FTPPullMethod(PollingIngestionMethod):
         await self._flag_if_backward_poison(
             events, device_id, original_name, last_successful_poll,
         )
+
+        try:
+            await self._validate_and_record_provenance(
+                session_factory, device_id, result.metadata,
+                getattr(decoder, "name", None),
+            )
+        except Exception:
+            logger.exception(
+                "Validation/provenance step failed for %s (%s) — "
+                "events still ingested",
+                original_name, device_id,
+            )
 
         try:
             await target.persist_with_drift_check(

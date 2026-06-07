@@ -473,6 +473,59 @@ if result.metadata:
 
 ---
 
+## Ingest-Time Header Validation & Provenance
+
+When a file is pulled (FTP/SFTP, both passive and rotate modes), the ingest path
+calls `decoder.decode()` (not bare `decode_bytes()`), so the header
+`FileMetadata` is available alongside the events. Before persisting, the path
+runs lightweight integrity checks and records provenance. **All of this is
+ingest-and-flag: a validation, notification, or provenance failure NEVER blocks
+ingest — the events are always persisted.** Flags are surfaced through the
+notification registry and are suppressible via `alert_suppression` (see the
+shared `tsigma.notifications.suppression.is_suppressed` helper and its
+`check_name` constants).
+
+### Controller-replacement detection (MAC)
+
+The registered controller MAC lives in `signal_metadata["controller_mac"]`
+(JSONB on the `signal` record). On ingest the header `device_mac` is compared
+against it (case- and separator-insensitive):
+
+- **First sight (no registered MAC):** the observed MAC is silently recorded
+  into `signal_metadata` — no flag. The feature self-bootstraps; the MAC is
+  almost never hand-entered.
+- **Registered MAC differs from the header MAC:** flagged as a *possible
+  controller replacement* (`check_name = "controller_replacement"`), then
+  ingested. Because controllers are statically addressed and an RMA reuses the
+  old IP, a **new MAC at the same IP** is the canonical "unit was swapped"
+  signal.
+- **IP is never compared.** The IP is how TSIGMA connects, so the header IP is
+  the IP we dialed; and a controller unit can legitimately have two IPs. IP is
+  recorded in provenance for audit only.
+- **Caveat (unlikely):** if a controller reported a *floating* MAC that changed
+  per connection, it would re-flag every pull. This is unlikely because
+  `device_mac` is the controller's own stable NIC identity written into the log
+  header, not a connection-layer MAC.
+
+### Config-phase drift
+
+The header `phases_in_use` is compared against the signal's configured phases
+(the non-null `protected_/permissive_/ped_phase_number` values across its
+`approach` rows). A difference is flagged (`check_name = "config_phase_drift"`)
+with the `unexpected` (in file, not config) and `missing` (in config, not file)
+phase numbers, then ingested.
+
+### Provenance history
+
+Every ingested file that yields header metadata writes one row to
+`config.file_ingest_provenance` (`source_filename`, `device_ip`, `device_mac`,
+`log_version`, `phases_in_use`, `log_begin`, `header_anchor`, `decoder_name`,
+`ingested_at`). This is the audit trail behind the replacement flag — it records
+exactly when a controller's MAC / firmware / IP changed and which files came
+from each unit.
+
+---
+
 ## Decoder Registry Pattern
 
 **Self-registering plugin system** - same pattern as ingestion methods, background jobs, and reports.

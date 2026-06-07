@@ -42,6 +42,7 @@ from .base import Base, TimestampMixin
 from .checkpoint import PollingCheckpoint
 from .detector import Detector
 from .event import ControllerEventLog
+from .file_provenance import FileIngestProvenance
 from .reference import (
     ControllerType,
     Corridor,
@@ -84,6 +85,7 @@ __all__ = [
     "Approach",
     "Detector",
     "ControllerEventLog",
+    "FileIngestProvenance",
     "SignalPlan",
     # Roadside sensors (radar / LiDAR / video)
     "RoadsideSensor",
