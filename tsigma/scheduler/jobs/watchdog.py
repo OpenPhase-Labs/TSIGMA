@@ -13,10 +13,12 @@ This job does not modify any operational data.
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tsigma import settings_service
 from tsigma.config import settings
+from tsigma.models.controller_clock_offset import ControllerClockOffset
 from tsigma.models.event import ControllerEventLog
 from tsigma.notifications import notify
 from tsigma.notifications.suppression import is_suppressed
@@ -41,6 +43,7 @@ CHECK_MISSING_DATA_WINDOW = "missing_data_window"
 CHECK_STUCK_PED = "stuck_ped"
 CHECK_PHASE_TERMINATION_ANOMALY = "phase_termination_anomaly"
 CHECK_LOW_HIT_COUNT = "low_hit_count"
+CHECK_CONTROLLER_CLOCK_DRIFT = "controller_clock_drift"
 
 
 @JobRegistry.register(name="watchdog", trigger="cron", hour="6", minute="0")
@@ -54,6 +57,7 @@ async def watchdog(session: AsyncSession) -> None:
         ("Stuck-ped", _check_stuck_ped),
         ("Phase-termination-anomaly", _check_phase_termination_anomaly),
         ("Low-hit-count", _check_low_hit_count),
+        ("Controller-clock-drift", _check_controller_clock_drift),
     )
     for label, check in checks:
         try:
@@ -613,6 +617,100 @@ async def _check_low_hit_count(session: AsyncSession) -> None:
             "threshold": threshold,
             "detectors": [
                 {"signal_id": r.signal_id, "channel": r.detector_channel}
+                for r in delivered
+            ],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8. Controller clock drift detection
+# ---------------------------------------------------------------------------
+
+
+async def _check_controller_clock_drift(session: AsyncSession) -> None:
+    """Proactively flag controllers whose mean |clock offset| over the
+    recent window exceeds the admin threshold (set below the poison cap),
+    so a drifting clock is caught before it produces poisoned data. Also
+    prunes raw offset rows older than the retention window.
+    """
+    threshold = await settings_service.get_int(
+        "watchdog.controller_clock_drift_threshold_seconds", session,
+    )
+    window_hours = await settings_service.get_int(
+        "watchdog.controller_clock_drift_window_hours", session,
+    )
+    min_samples = await settings_service.get_int(
+        "watchdog.controller_clock_drift_min_samples", session,
+    )
+    retention_days = await settings_service.get_int(
+        "watchdog.controller_clock_offset_retention_days", session,
+    )
+    now = datetime.now(timezone.utc)
+
+    # Prune old raw offset rows first.
+    await session.execute(
+        delete(ControllerClockOffset).where(
+            ControllerClockOffset.observed_at < now - timedelta(days=retention_days)
+        )
+    )
+
+    # Trend: per signal, mean |offset| over the window with enough samples.
+    window_start = now - timedelta(hours=window_hours)
+    mean_abs = func.avg(func.abs(ControllerClockOffset.offset_seconds)).label(
+        "mean_abs_offset_seconds"
+    )
+    samples = func.count().label("samples")
+    stmt = (
+        select(ControllerClockOffset.signal_id, mean_abs, samples)
+        .where(ControllerClockOffset.observed_at >= window_start)
+        .group_by(ControllerClockOffset.signal_id)
+        .having(func.count() >= min_samples)
+        .having(func.avg(func.abs(ControllerClockOffset.offset_seconds)) > threshold)
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    if not rows:
+        logger.info("No controller clock drift detected")
+        return
+
+    delivered, suppressed = await _partition_suppressed(
+        session, rows, CHECK_CONTROLLER_CLOCK_DRIFT,
+    )
+    for row in rows:
+        logger.warning(
+            "Controller clock drift: signal=%s mean|offset|=%.1fs over %dh "
+            "(threshold=%ds, samples=%d)",
+            row.signal_id, row.mean_abs_offset_seconds, window_hours,
+            threshold, row.samples,
+        )
+    if suppressed:
+        logger.info("Suppressed %d clock-drift alert(s)", len(suppressed))
+    if not delivered:
+        return
+
+    await notify(
+        subject="Controller Clock Drift Detected",
+        message=(
+            f"{len(delivered)} controller(s) show a mean clock offset beyond "
+            f"{threshold}s over the last {window_hours}h:\n"
+            + "\n".join(
+                f"  - {r.signal_id} (mean|offset|={r.mean_abs_offset_seconds:.1f}s, "
+                f"samples={r.samples})"
+                for r in delivered
+            )
+        ),
+        severity="warning",
+        metadata={
+            "threshold_seconds": threshold,
+            "window_hours": window_hours,
+            "signals": [
+                {
+                    "signal_id": r.signal_id,
+                    "mean_abs_offset_seconds": float(r.mean_abs_offset_seconds),
+                    "samples": r.samples,
+                }
                 for r in delivered
             ],
         },

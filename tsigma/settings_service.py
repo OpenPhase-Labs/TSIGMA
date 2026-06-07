@@ -662,3 +662,48 @@ register(
     description="Absolute oldest data an API request can ask for.",
     category="api",
 )
+register(
+    "watchdog.controller_clock_drift_threshold_seconds",
+    int,
+    default=120,
+    min=1,
+    max=3600,
+    description=(
+        "Mean |clock offset| (seconds) over the window above which a controller "
+        "is flagged as drifting; set below the poison cap."
+    ),
+    category="watchdog",
+)
+register(
+    "watchdog.controller_clock_drift_window_hours",
+    int,
+    default=168,
+    min=1,
+    max=8760,
+    description=(
+        "Trailing window (hours) over which the mean controller clock offset is "
+        "evaluated for drift."
+    ),
+    category="watchdog",
+)
+register(
+    "watchdog.controller_clock_drift_min_samples",
+    int,
+    default=5,
+    min=1,
+    max=100000,
+    description=(
+        "Minimum number of clock-offset samples in the window before a drift "
+        "alert can fire."
+    ),
+    category="watchdog",
+)
+register(
+    "watchdog.controller_clock_offset_retention_days",
+    int,
+    default=30,
+    min=1,
+    max=3650,
+    description="Age (days) beyond which raw controller_clock_offset rows are pruned.",
+    category="watchdog",
+)

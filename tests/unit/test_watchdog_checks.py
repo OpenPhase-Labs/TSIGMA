@@ -313,6 +313,93 @@ class TestLowHitCount:
 
 
 # ---------------------------------------------------------------------------
+# 6. Controller clock drift detection (inc-4 Task 4)
+# ---------------------------------------------------------------------------
+
+
+def _drift_get_int(key, session):
+    """Return fixed ints per watchdog clock-drift settings key."""
+    mapping = {
+        "watchdog.controller_clock_drift_threshold_seconds": 120,
+        "watchdog.controller_clock_drift_window_hours": 168,
+        "watchdog.controller_clock_drift_min_samples": 5,
+        "watchdog.controller_clock_offset_retention_days": 30,
+    }
+    return mapping[key]
+
+
+class TestControllerClockDrift:
+
+    @pytest.mark.asyncio
+    @patch("tsigma.scheduler.jobs.watchdog.notify", new_callable=AsyncMock)
+    @patch("tsigma.scheduler.jobs.watchdog.settings_service")
+    async def test_drift_over_threshold_notifies(self, mock_settings_service, mock_notify):
+        mock_settings_service.get_int = AsyncMock(side_effect=_drift_get_int)
+        session = _mock_session()
+        # First execute = prune delete (no rows), second = trend query, third =
+        # per-row suppression lookup (empty => not suppressed).
+        session.execute = AsyncMock(side_effect=[
+            _empty_result(),  # prune delete
+            _result([
+                _row(signal_id="SIG-001", mean_abs_offset_seconds=200.0, samples=10),
+            ]),
+            _empty_result(),  # _is_suppressed lookup
+        ])
+        await wd._check_controller_clock_drift(session)
+        assert mock_notify.call_count == 1
+        assert mock_notify.call_args.kwargs["severity"] == "warning"
+        metadata = mock_notify.call_args.kwargs["metadata"]
+        assert "SIG-001" in repr(metadata)
+
+    @pytest.mark.asyncio
+    @patch("tsigma.scheduler.jobs.watchdog.notify", new_callable=AsyncMock)
+    @patch("tsigma.scheduler.jobs.watchdog.settings_service")
+    async def test_no_drift_no_notify(self, mock_settings_service, mock_notify):
+        mock_settings_service.get_int = AsyncMock(side_effect=_drift_get_int)
+        session = _mock_session()
+        # Trend query (HAVING filters server-side) returns no rows.
+        session.execute = AsyncMock(side_effect=[
+            _empty_result(),  # prune delete
+            _empty_result(),  # trend query: no drifting signals
+        ])
+        await wd._check_controller_clock_drift(session)
+        mock_notify.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("tsigma.scheduler.jobs.watchdog.notify", new_callable=AsyncMock)
+    @patch("tsigma.scheduler.jobs.watchdog.settings_service")
+    async def test_suppressed_no_notify(self, mock_settings_service, mock_notify):
+        mock_settings_service.get_int = AsyncMock(side_effect=_drift_get_int)
+        session = _mock_session()
+        suppressed = MagicMock()
+        suppressed.scalar.return_value = 1  # suppression match
+        session.execute = AsyncMock(side_effect=[
+            _empty_result(),  # prune delete
+            _result([
+                _row(signal_id="SIG-001", mean_abs_offset_seconds=200.0, samples=10),
+            ]),
+            suppressed,  # _is_suppressed lookup => suppressed
+        ])
+        await wd._check_controller_clock_drift(session)
+        mock_notify.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("tsigma.scheduler.jobs.watchdog.notify", new_callable=AsyncMock)
+    @patch("tsigma.scheduler.jobs.watchdog.settings_service")
+    async def test_prune_executed(self, mock_settings_service, mock_notify):
+        mock_settings_service.get_int = AsyncMock(side_effect=_drift_get_int)
+        session = _mock_session()
+        session.execute = AsyncMock(side_effect=[
+            _empty_result(),  # prune delete
+            _empty_result(),  # trend query: no drifting signals
+        ])
+        await wd._check_controller_clock_drift(session)
+        # The check must prune old rows before the trend query, so at least the
+        # prune + trend executes must have fired.
+        assert session.execute.await_count >= 2
+
+
+# ---------------------------------------------------------------------------
 # Top-level watchdog: all checks wired in
 # ---------------------------------------------------------------------------
 
@@ -332,9 +419,10 @@ class TestWatchdogWiresAllChecks:
             patch.object(wd, "_check_stuck_ped", new_callable=AsyncMock) as e,
             patch.object(wd, "_check_phase_termination_anomaly", new_callable=AsyncMock) as f,
             patch.object(wd, "_check_low_hit_count", new_callable=AsyncMock) as g,
+            patch.object(wd, "_check_controller_clock_drift", new_callable=AsyncMock) as h,
         ):
             await wd.watchdog(session)
-            for mock in (a, b, c, d, e, f, g):
+            for mock in (a, b, c, d, e, f, g, h):
                 mock.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -351,8 +439,9 @@ class TestWatchdogWiresAllChecks:
             patch.object(wd, "_check_stuck_ped", new_callable=AsyncMock) as e,
             patch.object(wd, "_check_phase_termination_anomaly", new_callable=AsyncMock) as f,
             patch.object(wd, "_check_low_hit_count", new_callable=AsyncMock) as g,
+            patch.object(wd, "_check_controller_clock_drift", new_callable=AsyncMock) as h,
         ):
             await wd.watchdog(session)
             # Remaining checks still ran
-            for mock in (b, c, d, e, f, g):
+            for mock in (b, c, d, e, f, g, h):
                 mock.assert_awaited_once()

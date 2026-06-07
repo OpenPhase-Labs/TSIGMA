@@ -40,6 +40,7 @@ from .audit import (
 )
 from .base import Base, TimestampMixin
 from .checkpoint import PollingCheckpoint
+from .controller_clock_offset import ControllerClockOffset
 from .detector import Detector
 from .event import ControllerEventLog
 from .file_provenance import FileIngestProvenance
@@ -86,6 +87,7 @@ __all__ = [
     "Approach",
     "Detector",
     "ControllerEventLog",
+    "ControllerClockOffset",
     "FileIngestProvenance",
     "IngestReview",
     "SignalPlan",

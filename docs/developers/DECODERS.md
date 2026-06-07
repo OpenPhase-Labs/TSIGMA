@@ -557,6 +557,30 @@ All temporal flags are suppressible via `alert_suppression` (check-name
 `temporal_integrity`) and notify is best-effort — a notify or review-write
 failure never blocks ingest.
 
+### Clock-health trending (proactive)
+
+The temporal-integrity check above is reactive (per-file). On top of it,
+TSIGMA trends each controller's clock offset over time to warn **before** a
+clock drifts far enough to poison data:
+
+- **Recorded controller-wide:** every controller ingest records one signed
+  offset (`newest event − server receive time`) into `config.controller_clock_offset`
+  from the shared SDK chokepoint `persist_events_with_drift_check` — so it
+  covers all ingest paths (FTP pull, listeners), not just files. Recording is
+  best-effort (a failure never blocks ingest).
+- **Proactive alert:** a daily `watchdog` check (`controller_clock_drift`)
+  computes each controller's **mean |offset|** over a trailing window and, when
+  it exceeds an admin threshold set **below** the 5-min poison cap (with enough
+  samples), raises a suppressible "controller clock drifting" alert — catching a
+  consistently-off clock before it crosses the reactive cap. The check also
+  prunes raw offset rows past the retention window.
+- **Admin-configurable** via `settings_service` (env → DB → default):
+  `watchdog.controller_clock_drift_threshold_seconds` (120),
+  `…_window_hours` (168), `…_min_samples` (5),
+  `watchdog.controller_clock_offset_retention_days` (30).
+
+The reactive per-file/per-event clock checks remain the backstop.
+
 ---
 
 ## Decoder Registry Pattern
