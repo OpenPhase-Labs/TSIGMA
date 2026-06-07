@@ -23,6 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ...config import settings
 from ...models.checkpoint import PollingCheckpoint
+from ...models.controller_clock_offset import ControllerClockOffset
 from ...models.event import ControllerEventLog
 from ...models.roadside_event import RoadsideEvent
 from ...models.roadside_sensor import RoadsideSensor, RoadsideSensorLane
@@ -180,6 +181,7 @@ async def persist_events_with_drift_check(
     # flow through a checkpoint, so drift capping has no home to bite.
     if isinstance(events[0], DecodedEvent):
         await _warn_on_drift(events, signal_id, source_label=source_label)
+        await _record_clock_offset(events=events, signal_id=signal_id, session_factory=session_factory)
 
     await _upsert_events(events, signal_id, session_factory)
 
@@ -228,6 +230,33 @@ async def _warn_on_drift(events, signal_id: str, *, source_label: str) -> None:
             "alert_type": "clock_drift",
         },
     )
+
+
+async def _record_clock_offset(signal_id, events, session_factory) -> None:
+    """Record one controller clock-offset sample for trending (best-effort).
+
+    Controller-wide: called from persist_events_with_drift_check for every
+    controller ingest. NON-BLOCKING — any failure is logged and swallowed so
+    event ingest is never blocked.
+    """
+    try:
+        offset = compute_clock_offset(events, datetime.now(timezone.utc))
+        if offset is None:
+            return
+        async with session_factory() as session:
+            session.add(
+                ControllerClockOffset(
+                    signal_id=signal_id,
+                    offset_seconds=offset.total_seconds(),
+                    event_count=len(events),
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Failed to record clock offset for %s — events still ingested",
+            signal_id,
+        )
 
 
 def is_backward_poisoned(events, last_successful_poll) -> bool:

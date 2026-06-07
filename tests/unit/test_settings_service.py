@@ -253,9 +253,10 @@ class TestSeedSystemSettings:
     async def test_seeds_all_when_empty(self):
         """Test all defaults are inserted when no settings exist.
 
-        Plan A5.1 Patch 8: with the additive registry seed pass, the empty-DB
-        case now produces ``len(DEFAULT_ACCESS_POLICY) + len(_PHASE_A_REGISTRY_KEYS)``
-        rows = 6 + 9 = 15.
+        With the additive registry seed pass, the empty-DB case produces one
+        row per access-policy entry plus one row per registry key. The count is
+        derived from the LIVE registry (``len(_REGISTRY)``) so it stays correct
+        as the registry grows.
         """
         session = make_mock_session()
         result = MagicMock()
@@ -265,16 +266,17 @@ class TestSeedSystemSettings:
         await seed_system_settings(session)
 
         assert session.add.call_count == (
-            len(DEFAULT_ACCESS_POLICY) + len(_PHASE_A_REGISTRY_KEYS)
+            len(DEFAULT_ACCESS_POLICY) + len(_REGISTRY)
         )
 
     @pytest.mark.asyncio
     async def test_skips_existing_keys(self):
         """Test existing keys are not re-inserted.
 
-        Plan A5.1 Patch 8: pre-seeds the first 3 access-policy keys; the
-        additive registry pass still inserts all 9 registry keys (none
-        pre-seeded). Expected inserts = (6 - 3) + 9 = 12.
+        Pre-seeds the first 3 access-policy keys; the additive registry pass
+        still inserts every registry key (none pre-seeded). Expected inserts =
+        ``(len(DEFAULT_ACCESS_POLICY) - 3) + len(_REGISTRY)`` (derived from the
+        live registry so it tracks registry growth).
         """
         session = make_mock_session()
         result = MagicMock()
@@ -286,7 +288,7 @@ class TestSeedSystemSettings:
         await seed_system_settings(session)
 
         expected_inserts = (
-            (len(DEFAULT_ACCESS_POLICY) - 3) + len(_PHASE_A_REGISTRY_KEYS)
+            (len(DEFAULT_ACCESS_POLICY) - 3) + len(_REGISTRY)
         )
         assert session.add.call_count == expected_inserts
 
@@ -294,15 +296,15 @@ class TestSeedSystemSettings:
     async def test_no_inserts_when_all_exist(self):
         """Test no inserts when all keys already present (idempotent).
 
-        Plan A5.1 Patch 8: idempotency now requires pre-seeding BOTH the
-        access-policy keys AND the 9 registry keys; otherwise the additive
-        registry pass would insert the missing registry rows.
+        Idempotency requires pre-seeding BOTH the access-policy keys AND every
+        key in the live registry (``list(_REGISTRY.keys())``); otherwise the
+        additive registry pass would insert the missing registry rows.
         """
         session = make_mock_session()
         result = MagicMock()
         existing = (
             [row["key"] for row in DEFAULT_ACCESS_POLICY]
-            + list(_PHASE_A_REGISTRY_KEYS)
+            + list(_REGISTRY.keys())
         )
         result.scalars.return_value.all.return_value = existing
         session.execute = AsyncMock(return_value=result)
@@ -525,7 +527,12 @@ class TestSeedRegistryKeys:
 
     @pytest.mark.asyncio
     async def test_seeds_all_9_registry_keys_on_first_run(self):
-        """Empty DB: 6 access-policy rows + 9 registry rows = 15 inserts."""
+        """Empty DB: one row per access-policy entry + one row per registry key.
+
+        The total is derived from the live registry (``len(_REGISTRY)``) so it
+        tracks registry growth. The Phase-A keys remain a guaranteed subset and
+        are checked individually below.
+        """
         session = make_mock_session()
         result = MagicMock()
         result.scalars.return_value.all.return_value = []
@@ -536,15 +543,16 @@ class TestSeedRegistryKeys:
         added = _added_system_settings(session)
         added_keys = [row.key for row in added]
 
-        # 6 + 9 = 15 total SystemSetting inserts.
+        # access-policy rows + every registry row = total SystemSetting inserts.
         assert len(added) == (
-            len(DEFAULT_ACCESS_POLICY) + len(_PHASE_A_REGISTRY_KEYS)
+            len(DEFAULT_ACCESS_POLICY) + len(_REGISTRY)
         ), (
-            f"Expected 15 inserts (6 access-policy + 9 registry); "
-            f"got {len(added)} with keys={added_keys!r}"
+            f"Expected {len(DEFAULT_ACCESS_POLICY) + len(_REGISTRY)} inserts "
+            f"({len(DEFAULT_ACCESS_POLICY)} access-policy + {len(_REGISTRY)} "
+            f"registry); got {len(added)} with keys={added_keys!r}"
         )
 
-        # All 9 registry keys must appear in the added rows.
+        # All Phase-A registry keys must appear in the added rows.
         for registry_key in _PHASE_A_REGISTRY_KEYS:
             assert registry_key in added_keys, (
                 f"Registry key {registry_key!r} was not seeded on first run; "
@@ -705,14 +713,15 @@ class TestSeedRegistryKeys:
         )
 
         # The remaining inserts must all be registry keys (no access-policy
-        # keys interleaved into the tail).
+        # keys interleaved into the tail). Derive from the live _REGISTRY so
+        # this stays correct as the registry grows.
         tail = added_keys[len(expected_access_order):]
         for key in tail:
-            assert key in _PHASE_A_REGISTRY_KEYS, (
+            assert key in _REGISTRY, (
                 f"Insert {key!r} appears in the tail (after access-policy) "
                 f"but is not a registry key; tail={tail!r}"
             )
-        assert set(tail) == set(_PHASE_A_REGISTRY_KEYS), (
-            f"Registry seed pass did not insert exactly the 9 registry keys "
+        assert set(tail) == set(_REGISTRY), (
+            f"Registry seed pass did not insert exactly the registered keys "
             f"in the tail; got {tail!r}"
         )
