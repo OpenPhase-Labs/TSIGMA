@@ -7,12 +7,17 @@ and config construction from signal_metadata JSONB dicts.
 
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tests._helpers import make_mock_session
-from tsigma.collection.decoders.base import DecodedEvent
+from tsigma.collection.decoders.base import (
+    DecodedEvent,
+    DecodeResult,
+    FileMetadata,
+)
 from tsigma.collection.methods.ftp_pull import (
     FTPProtocol,
     FTPPullConfig,
@@ -21,6 +26,8 @@ from tsigma.collection.methods.ftp_pull import (
     _compute_files_hash,
 )
 from tsigma.collection.registry import ExecutionMode, IngestionMethodRegistry
+from tsigma.models.file_provenance import FileIngestProvenance
+from tsigma.notifications.registry import WARNING
 
 # Module path prefix for patching SDK imports used in ftp_pull.py
 _MOD = "tsigma.collection.methods.ftp_pull"
@@ -164,9 +171,17 @@ def _mock_client(files=None):
 
 
 def _mock_decoder(events=None):
-    """Create a mock decoder instance."""
+    """Create a mock decoder instance.
+
+    Production calls ``decoder.decode(data)`` and reads ``result.events``, so
+    the envelope ``decode.return_value`` is what feeds the ingest path. We also
+    keep ``decode_bytes.return_value`` configured (harmless) for any direct use.
+    Metadata is ``None`` so ``_validate_and_record_provenance`` short-circuits.
+    """
+    resolved = events or []
     decoder = MagicMock()
-    decoder.decode_bytes.return_value = events or []
+    decoder.decode_bytes.return_value = resolved
+    decoder.decode.return_value = DecodeResult(events=resolved, metadata=None)
     return decoder
 
 
@@ -365,7 +380,7 @@ class TestPollOnce:
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
             await method.poll_once("SIG-001", config, factory, target=target)
-        decoder.decode_bytes.assert_called_once_with(b"\x00\x01\x02")
+        decoder.decode.assert_called_once_with(b"\x00\x01\x02")
 
     @pytest.mark.asyncio
     async def test_persists_decoded_events(self):
@@ -446,7 +461,7 @@ class TestPollOnce:
         client = _mock_client(files=files)
         client.download.return_value = b"\xff"
         decoder = _mock_decoder()
-        decoder.decode_bytes.side_effect = ValueError("corrupt data")
+        decoder.decode.side_effect = ValueError("corrupt data")
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
         target.resolve_decoder.return_value = decoder
@@ -1977,3 +1992,279 @@ class TestIngestAndDeleteBackwardPoison:
         target.persist_with_drift_check.assert_awaited_once()
         mock_notify.assert_not_awaited()
         client.delete.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Inc-2 Task 4: identity / config validation + provenance recording
+# ---------------------------------------------------------------------------
+
+
+def _make_signal(signal_metadata=None):
+    """Build a fake Signal-like object with a mutable signal_metadata attr."""
+    sig = SimpleNamespace()
+    sig.signal_metadata = signal_metadata
+    return sig
+
+
+def _make_validation_session_factory(
+    signal=None,
+    phase_rows=None,
+):
+    """Build a session factory mock for _validate_and_record_provenance.
+
+    Mirrors the async-context-manager session pattern in
+    ``_mock_session_factory`` (tests/unit/test_ftp_pull.py) and
+    ``make_mock_session`` (tests/_helpers.py), but exposes ``get`` and
+    an ``execute(...).all()`` surface for the Signal + Approach loads.
+
+    ``phase_rows`` is the list of row tuples returned by ``.all()`` — e.g.
+    ``[(2, None, None), (4, None, None), (6, None, None), (8, None, None)]``
+    (protected_phase_number, permissive_phase_number, ped_phase_number).
+    """
+    mock_session = make_mock_session()
+    mock_session.get = AsyncMock(return_value=signal)
+    result_mock = MagicMock()
+    result_mock.all = MagicMock(return_value=phase_rows or [])
+    mock_session.execute = AsyncMock(return_value=result_mock)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+    mock_session_ctx = MagicMock()
+    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+    factory = MagicMock(return_value=mock_session_ctx)
+    return factory, mock_session
+
+
+def _make_metadata(**overrides):
+    """Build a FileMetadata with sane provenance defaults."""
+    defaults = {
+        "device_ip": "10.0.0.5",
+        "device_mac": "00:04:81:02:15:0d",
+        "log_version": "2.4.4",
+        "source_filename": "events.dat",
+        "phases_in_use": [2, 4, 6, 8],
+        "log_begin": datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
+        "header_anchor": datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
+    }
+    defaults.update(overrides)
+    return FileMetadata(**defaults)
+
+
+_PHASE_ROWS_2468 = [(2, None, None), (4, None, None), (6, None, None), (8, None, None)]
+
+
+class TestIngestIdentityConfigValidation:
+    """Inc-2 Task 4: _validate_and_record_provenance behavior.
+
+    Validation/provenance is best-effort and must NEVER block ingest:
+    findings notify (unless suppressed/seeding), a provenance row is always
+    recorded, and any internal error is swallowed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_metadata_none_no_db_work_no_notify(self):
+        """metadata=None short-circuits: no DB load, no add, no notify."""
+        method = FTPPullMethod()
+        factory, session = _make_validation_session_factory(
+            signal=_make_signal({}), phase_rows=_PHASE_ROWS_2468,
+        )
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", None, "asc3",
+            )
+        session.get.assert_not_called()
+        session.add.assert_not_called()
+        mock_notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_seed_on_empty_registered_mac(self):
+        """Empty registered MAC + header MAC -> seed silently, no notify."""
+        method = FTPPullMethod()
+        signal = _make_signal({})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        metadata = _make_metadata(device_mac="00:04:81:02:15:0d")
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3",
+            )
+        # the controller_mac is seeded onto the signal's metadata
+        assert signal.signal_metadata["controller_mac"] == "00:04:81:02:15:0d"
+        # seeding is silent
+        mock_notify.assert_not_awaited()
+        # exactly one provenance row recorded
+        assert session.add.call_count == 1
+        added = session.add.call_args[0][0]
+        assert isinstance(added, FileIngestProvenance)
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mac_matches_no_notify(self):
+        """Registered MAC == header MAC -> no replacement finding, no notify."""
+        method = FTPPullMethod()
+        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        # mixed case / separators normalize to equal
+        metadata = _make_metadata(device_mac="00-04-81-02-15-0D")
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3",
+            )
+        mock_notify.assert_not_awaited()
+        assert session.add.call_count == 1
+        assert isinstance(session.add.call_args[0][0], FileIngestProvenance)
+
+    @pytest.mark.asyncio
+    async def test_mac_differs_replacement_notify(self):
+        """Registered MAC != header MAC -> replacement notify + provenance."""
+        method = FTPPullMethod()
+        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3",
+            )
+        mock_notify.assert_awaited()
+        # the alert is WARNING severity and references this device
+        call = mock_notify.await_args_list[0]
+        assert call.kwargs.get("severity") == WARNING
+        haystack = repr(call.args) + repr(call.kwargs)
+        assert "SIG-001" in haystack
+        # provenance still recorded
+        assert session.add.call_count == 1
+        assert isinstance(session.add.call_args[0][0], FileIngestProvenance)
+
+    @pytest.mark.asyncio
+    async def test_phase_drift_notify(self):
+        """Configured phases differ from phases-in-use -> drift notify."""
+        method = FTPPullMethod()
+        # MAC matches so the only finding is phase drift
+        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        # extra phase 5 in the file vs configured {2,4,6,8}
+        metadata = _make_metadata(
+            device_mac="00:04:81:02:15:0d",
+            phases_in_use=[2, 4, 5, 6, 8],
+        )
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3",
+            )
+        mock_notify.assert_awaited()
+        assert session.add.call_count == 1
+        assert isinstance(session.add.call_args[0][0], FileIngestProvenance)
+
+    @pytest.mark.asyncio
+    async def test_finding_suppressed_no_notify_but_provenance(self):
+        """Suppression silences notify but provenance is still recorded."""
+        method = FTPPullMethod()
+        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=True):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3",
+            )
+        mock_notify.assert_not_awaited()
+        # provenance is recorded regardless of suppression
+        assert session.add.call_count == 1
+        assert isinstance(session.add.call_args[0][0], FileIngestProvenance)
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_notify_raises_swallowed_provenance_and_commit(self):
+        """A notify() failure is swallowed; provenance + commit still happen."""
+        method = FTPPullMethod()
+        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock,
+                   side_effect=RuntimeError("notify down")), \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            # must not raise
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3",
+            )
+        assert session.add.call_count == 1
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_db_error_swallowed_never_blocks(self):
+        """A DB/provenance error is swallowed — the helper never raises."""
+        method = FTPPullMethod()
+        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        session.commit.side_effect = RuntimeError("db down")
+        metadata = _make_metadata(device_mac="00:04:81:02:15:0d")
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            # must not raise despite commit blowing up
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3",
+            )
+
+    @pytest.mark.asyncio
+    async def test_persist_runs_even_if_validation_raises(self):
+        """Passive path: persist ALWAYS runs even if validation raises.
+
+        Mirrors the inc-1 passive-path harness in TestDownloadAndIngest.
+        """
+        method = FTPPullMethod()
+        config = FTPPullConfig(host="h", signal_id="s", remote_dir="/data")
+        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
+        client = _mock_client()
+        client.download = AsyncMock(return_value=b"\x00")
+        now = datetime.now(timezone.utc)
+        events = [DecodedEvent(timestamp=now, event_code=1, event_param=0)]
+        decoder = MagicMock()
+        decoder.decode.return_value = DecodeResult(
+            events=events, metadata=_make_metadata(),
+        )
+        decoder.decode_bytes.return_value = events
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
+        with patch.object(method, "_validate_and_record_provenance",
+                          new_callable=AsyncMock,
+                          side_effect=RuntimeError("validation boom")):
+            await method._download_and_ingest(
+                client, files, config, "SIG-001", factory, None, target,
+            )
+        # validation blew up, but persist still ran
+        target.persist_with_drift_check.assert_awaited_once()

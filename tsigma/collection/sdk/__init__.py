@@ -13,6 +13,7 @@ use to implement that contract.
 """
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Optional
@@ -26,7 +27,16 @@ from ...models.event import ControllerEventLog
 from ...models.roadside_event import RoadsideEvent
 from ...models.roadside_sensor import RoadsideSensor, RoadsideSensorLane
 from ...notifications.registry import WARNING, notify
-from ..decoders.base import DecodedEvent, DecoderRegistry, SensorDetection
+from ...notifications.suppression import (
+    CHECK_CONFIG_PHASE_DRIFT,
+    CHECK_CONTROLLER_REPLACEMENT,
+)
+from ..decoders.base import (
+    DecodedEvent,
+    DecoderRegistry,
+    FileMetadata,
+    SensorDetection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +256,85 @@ def is_backward_poisoned(events, last_successful_poll) -> bool:
         return False
     newest = max(event.timestamp for event in events)
     return newest < last_successful_poll
+
+
+# ---------------------------------------------------------------------------
+# Identity / config integrity checks (pure predicates)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IntegrityFinding:
+    """A single identity/config integrity-check result.
+
+    Pure data carrier returned by the ``check_*`` predicates below when a
+    drift is detected; ``None`` means no finding.
+    """
+
+    check_name: str
+    severity: str
+    summary: str
+    detail: dict = field(default_factory=dict)
+
+
+def _normalize_mac(mac: str) -> str:
+    """Canonicalize a MAC for comparison (lowercase, no separators)."""
+    return mac.lower().replace(":", "").replace("-", "").replace(".", "").strip()
+
+
+def check_controller_replacement(
+    metadata: FileMetadata,
+    registered_mac: str | None,
+) -> "IntegrityFinding | None":
+    """Flag a device-MAC change at the same IP (possible controller swap).
+
+    Returns ``None`` when either MAC is missing or the two MACs are equal
+    after normalization; otherwise returns a WARNING finding carrying the
+    raw observed and registered MACs.
+    """
+    observed = metadata.device_mac
+    if not observed or not registered_mac:
+        return None
+    if _normalize_mac(observed) == _normalize_mac(registered_mac):
+        return None
+    return IntegrityFinding(
+        check_name=CHECK_CONTROLLER_REPLACEMENT,
+        severity=WARNING,
+        summary="possible controller replacement (MAC changed at same IP)",
+        detail={"observed_mac": observed, "registered_mac": registered_mac},
+    )
+
+
+def check_configured_phases(
+    metadata: FileMetadata,
+    configured_phases: set[int],
+) -> "IntegrityFinding | None":
+    """Flag drift between phases-in-use (from the file) and configured phases.
+
+    Returns ``None`` when either set is empty or the two sets are equal;
+    otherwise returns a WARNING finding listing the unexpected (in file, not
+    config) and missing (in config, not file) phases.
+    """
+    phases = metadata.phases_in_use
+    if not phases or not configured_phases:
+        return None
+    file_set = set(phases)
+    cfg = set(configured_phases)
+    if file_set == cfg:
+        return None
+    unexpected = sorted(file_set - cfg)
+    missing = sorted(cfg - file_set)
+    return IntegrityFinding(
+        check_name=CHECK_CONFIG_PHASE_DRIFT,
+        severity=WARNING,
+        summary="controller phases-in-use differ from configured phases",
+        detail={
+            "unexpected": unexpected,
+            "missing": missing,
+            "file_phases": sorted(file_set),
+            "configured_phases": sorted(cfg),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +689,10 @@ __all__ = [
     "persist_events",
     "persist_events_with_drift_check",
     "is_backward_poisoned",
+    # identity / config integrity checks
+    "IntegrityFinding",
+    "check_controller_replacement",
+    "check_configured_phases",
     # decode + persist
     "decode_and_persist_message",
     # decoder resolution

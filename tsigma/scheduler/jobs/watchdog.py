@@ -17,9 +17,9 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tsigma.config import settings
-from tsigma.models.alert_suppression import AlertSuppression
 from tsigma.models.event import ControllerEventLog
 from tsigma.notifications import notify
+from tsigma.notifications.suppression import is_suppressed
 from tsigma.reports.sdk.events import (
     EVENT_DETECTOR_ON,
     EVENT_PED_CALL,
@@ -67,40 +67,10 @@ async def watchdog(session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _is_suppressed(
-    session: AsyncSession, signal_id: str | None, check_name: str,
-) -> bool:
-    """
-    Return True if an unexpired suppression rule covers ``(signal_id, check_name)``.
-
-    A rule with NULL ``signal_id`` suppresses every signal for that check.
-    A rule with NULL ``expires_at`` never expires.
-
-    Fails open — database errors are logged and treated as not-suppressed so
-    a broken table never silences real alerts.
-    """
-    now = datetime.now(timezone.utc)
-    stmt = (
-        select(func.count())
-        .select_from(AlertSuppression)
-        .where(
-            AlertSuppression.check_name == check_name,
-            (AlertSuppression.signal_id.is_(None))
-            | (AlertSuppression.signal_id == signal_id),
-            (AlertSuppression.expires_at.is_(None))
-            | (AlertSuppression.expires_at > now),
-        )
-    )
-    try:
-        result = await session.execute(stmt)
-        count = result.scalar() or 0
-    except Exception:
-        logger.exception(
-            "alert_suppression lookup failed for (%s, %s) — failing open",
-            signal_id, check_name,
-        )
-        return False
-    return count > 0
+# Backwards-compatible alias: the suppression logic now lives in the shared
+# ``tsigma.notifications.suppression`` module so the per-ingest path can reuse
+# it. Internal callers (and existing tests) reference ``_is_suppressed``.
+_is_suppressed = is_suppressed
 
 
 async def _partition_suppressed(
