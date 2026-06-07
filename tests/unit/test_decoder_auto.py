@@ -14,13 +14,20 @@ from tsigma.collection.decoders.auto import AutoDecoder
 from tsigma.collection.decoders.base import DecoderRegistry
 
 
-def _build_asc3(records=None):
-    """Build minimal ASC/3 binary data."""
-    header = b"01/15/2024 08:00:00 "
-    lines = b"".join(f"Header line {i}\n".encode() for i in range(1, 8))
-    body = header + lines
-    for ec, ep, offset in (records or []):
-        body += struct.pack(">BBH", ec, ep, offset)
+def _build_asc3(anchor="01/15/2024 08:00:00", records=None):
+    """Build raw ASC/3 data in the real comma-delimited header format."""
+    lines = [
+        f"{anchor},Version #:,3",
+        f"{anchor},ECON_synthetic.dat",
+        f"{anchor},Intersection #:,1.2.3.4",
+        f"{anchor},IP Address:,1.2.3.4",
+        f"{anchor},MAC Address:,00:04:81:00:00:00",
+        f"{anchor},Controller Data Log Beginning:,{anchor}",
+        f"{anchor},Phases in use:,2,4,6,8",
+    ]
+    body = ("\n".join(lines) + "\n").encode("ascii")
+    for event_code, event_param, time_offset in (records or []):
+        body += struct.pack(">BBH", event_code, event_param, time_offset)
     return body
 
 
