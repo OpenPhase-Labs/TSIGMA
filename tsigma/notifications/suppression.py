@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Check-name identifiers used by the alert-suppression table.
 CHECK_CONTROLLER_REPLACEMENT = "controller_replacement"
 CHECK_CONFIG_PHASE_DRIFT = "config_phase_drift"
+CHECK_TEMPORAL_INTEGRITY = "temporal_integrity"
 
 
 async def is_suppressed(

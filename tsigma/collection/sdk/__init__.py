@@ -30,6 +30,7 @@ from ...notifications.registry import WARNING, notify
 from ...notifications.suppression import (
     CHECK_CONFIG_PHASE_DRIFT,
     CHECK_CONTROLLER_REPLACEMENT,
+    CHECK_TEMPORAL_INTEGRITY,
 )
 from ..decoders.base import (
     DecodedEvent,
@@ -333,6 +334,54 @@ def check_configured_phases(
             "missing": missing,
             "file_phases": sorted(file_set),
             "configured_phases": sorted(cfg),
+        },
+    )
+
+
+def compute_clock_offset(
+    events,
+    server_now: datetime,
+) -> "timedelta | None":
+    """Signed offset of the batch's newest event vs server receive time.
+
+    Returns ``newest_event_timestamp - server_now`` (positive = file clock
+    ahead/fast, negative = behind/slow), or ``None`` if there are no events.
+    Precondition: event timestamps and ``server_now`` are tz-aware.
+    """
+    if not events:
+        return None
+    newest = max(event.timestamp for event in events)
+    return newest - server_now
+
+
+def check_temporal_integrity(
+    events,
+    server_now: datetime,
+    tolerance_seconds: float,
+) -> "IntegrityFinding | None":
+    """Flag a file whose clock offset vs server time exceeds tolerance.
+
+    Always ingest+flag: returns a finding (or None); never withholds. The
+    independent reference is the server receive time the controller cannot
+    poison. ``suggested_correction_seconds`` is the offset to ADD (via the
+    /corrections endpoints) to realign the newest event to ~now.
+    """
+    offset = compute_clock_offset(events, server_now)
+    if offset is None:
+        return None
+    offset_seconds = offset.total_seconds()
+    if abs(offset_seconds) <= tolerance_seconds:
+        return None
+    return IntegrityFinding(
+        check_name=CHECK_TEMPORAL_INTEGRITY,
+        severity=WARNING,
+        summary="file clock offset exceeds tolerance (possible bad controller clock)",
+        detail={
+            "offset_seconds": offset_seconds,
+            "suggested_correction_seconds": -offset_seconds,
+            "server_now": server_now.isoformat(),
+            "newest_event": max(e.timestamp for e in events).isoformat(),
+            "events": len(events),
         },
     )
 
@@ -693,6 +742,8 @@ __all__ = [
     "IntegrityFinding",
     "check_controller_replacement",
     "check_configured_phases",
+    "compute_clock_offset",
+    "check_temporal_integrity",
     # decode + persist
     "decode_and_persist_message",
     # decoder resolution

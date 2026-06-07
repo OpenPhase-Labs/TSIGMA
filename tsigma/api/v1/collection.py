@@ -17,8 +17,9 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import UUID
 
 import defusedxml.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -27,9 +28,11 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.dependencies import require_access, require_admin
+from ...auth.sessions import SessionData
 from ...dependencies import get_session
 from ...models.checkpoint import PollingCheckpoint
 from ...models.event import ControllerEventLog
+from ...models.ingest_review import IngestReview
 from ...models.signal import Signal
 
 logger = logging.getLogger(__name__)
@@ -647,3 +650,103 @@ async def anchor_timestamp_correction(
         "end_time": body.end_time.isoformat(),
         "rows_updated": result.rowcount,
     }
+
+
+# ---------------------------------------------------------------------------
+# Ingest review worklist (needs-review / correction worklist)
+# ---------------------------------------------------------------------------
+
+
+class ReviewResolveRequest(BaseModel):
+    """Request body for resolving an ingest review item."""
+
+    note: Optional[str] = None
+
+
+def _to_review_dict(r) -> dict:
+    """Convert an IngestReview row to a JSON-serialisable dict."""
+    return {
+        "review_id": str(r.review_id),
+        "signal_id": r.signal_id,
+        "reason": r.reason,
+        "source_filename": r.source_filename,
+        "provenance_id": str(r.provenance_id) if r.provenance_id else None,
+        "severity": r.severity,
+        "summary": r.summary,
+        "detail": r.detail,
+        "status": r.status,
+        "detected_at": r.detected_at.isoformat() if r.detected_at else None,
+        "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+        "resolved_by": r.resolved_by,
+    }
+
+
+@router.get("/reviews")
+async def list_reviews(
+    status: Optional[str] = None,
+    signal_id: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+    _access=Depends(require_access("management")),
+):
+    """
+    List ingest review worklist items (newest first).
+
+    Optionally filter by status and/or signal_id. Read access governed by
+    the "management" access policy (same as the checkpoint-read endpoints).
+
+    Args:
+        status: Filter by review status (e.g. "open", "resolved").
+        signal_id: Filter by traffic signal identifier.
+        session: Database session (injected).
+
+    Returns:
+        List of review records.
+    """
+    stmt = select(IngestReview)
+    if status is not None:
+        stmt = stmt.where(IngestReview.status == status)
+    if signal_id is not None:
+        stmt = stmt.where(IngestReview.signal_id == signal_id)
+    stmt = stmt.order_by(IngestReview.detected_at.desc())
+
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+
+    return [_to_review_dict(r) for r in rows]
+
+
+@router.post("/reviews/{review_id}/resolve")
+async def resolve_review(
+    review_id: UUID,
+    body: Optional[ReviewResolveRequest] = None,
+    session: AsyncSession = Depends(get_session),
+    user: SessionData = Depends(require_admin),
+):
+    """
+    Resolve an ingest review item (admin only).
+
+    Marks the review resolved, stamping resolved_at and resolved_by with
+    the acting admin's identity.
+
+    Args:
+        review_id: Review item identifier.
+        body: Optional resolution note.
+        session: Database session (injected).
+        user: Authenticated admin user (injected).
+
+    Returns:
+        The updated review record.
+
+    Raises:
+        HTTPException: 404 if the review id is not found.
+    """
+    review = await session.get(IngestReview, review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    review.status = "resolved"
+    review.resolved_at = datetime.now(timezone.utc)
+    review.resolved_by = user.username
+    await session.commit()
+
+    return _to_review_dict(review)
