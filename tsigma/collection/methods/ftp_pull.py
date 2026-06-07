@@ -51,7 +51,9 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from ...models.checkpoint import PollingCheckpoint
+from ...notifications.registry import WARNING, notify
 from ..registry import IngestionMethodRegistry, PollingIngestionMethod
+from ..sdk import is_backward_poisoned
 from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
@@ -609,6 +611,52 @@ class FTPPullMethod(PollingIngestionMethod):
         new_files.sort(key=lambda rf: rf.mtime or datetime.min)
         return new_files
 
+    async def _flag_if_backward_poison(
+        self,
+        events,
+        device_id: str,
+        filename: str,
+        last_successful_poll: Optional[datetime],
+    ) -> None:
+        """Flag a backward-poisoned batch for review (log + notify).
+
+        Never blocks ingest — callers always persist. A slow/reset controller
+        clock (newest event before the last poll) is flagged, not dropped
+        (spec principle: ingest + flag for review).
+        """
+        if not is_backward_poisoned(events, last_successful_poll):
+            return
+        last_polled_str = (
+            last_successful_poll.isoformat() if last_successful_poll else "n/a"
+        )
+        logger.warning(
+            "Backward-poisoned batch from %s for %s: newest event predates "
+            "last poll (%s) — ingesting and flagging for review",
+            filename, device_id, last_polled_str,
+        )
+        try:
+            await notify(
+                subject=f"Clock backward-poison: {device_id}",
+                message=(
+                    f"Device {device_id} file {filename}: the newest event timestamp "
+                    f"predates the last successful poll ({last_polled_str}) — a slow "
+                    f"or reset controller clock. Events were ingested and flagged "
+                    f"for review."
+                ),
+                severity=WARNING,
+                metadata={
+                    "signal_id": device_id,
+                    "file": filename,
+                    "alert_type": "clock_backward_poison",
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send backward-poison notification for %s (%s) — "
+                "events still ingested",
+                filename, device_id,
+            )
+
     async def _download_and_ingest(
         self,
         client: _FileTransferClient,
@@ -618,6 +666,7 @@ class FTPPullMethod(PollingIngestionMethod):
         session_factory,
         prior_mtime: Optional[datetime],
         target: IngestionTarget,
+        last_successful_poll: Optional[datetime] = None,
     ) -> tuple[int, int, Optional[str], Optional[datetime]]:
         """
         Download, decode, and persist a list of remote files via
@@ -642,6 +691,9 @@ class FTPPullMethod(PollingIngestionMethod):
                     filename=rf.name,
                 )
                 events = decoder.decode_bytes(data)
+                await self._flag_if_backward_poison(
+                    events, device_id, rf.name, last_successful_poll,
+                )
                 await target.persist_with_drift_check(
                     events, device_id, session_factory,
                 )
@@ -802,6 +854,13 @@ class FTPPullMethod(PollingIngestionMethod):
         leftovers from previous cycles or new files the controller
         creates after step 4.
         """
+        checkpoint = await target.load_checkpoint(
+            self.name, device_id, session_factory,
+        )
+        last_successful_poll = (
+            checkpoint.last_successful_poll if checkpoint else None
+        )
+
         # Phase 1: Ingest leftovers from previous crashed cycles
         all_files = await client.list_dir(ftp_config.remote_dir)
         leftovers = [
@@ -811,6 +870,7 @@ class FTPPullMethod(PollingIngestionMethod):
         for rf in leftovers:
             await self._ingest_and_delete(
                 client, rf.name, ftp_config, device_id, session_factory, target,
+                last_successful_poll,
             )
 
         # Phase 2: Rename all active files with UTC timestamp
@@ -858,6 +918,7 @@ class FTPPullMethod(PollingIngestionMethod):
         for dst_name in renamed:
             await self._ingest_and_delete(
                 client, dst_name, ftp_config, device_id, session_factory, target,
+                last_successful_poll,
             )
 
     async def _ingest_and_delete(
@@ -868,6 +929,7 @@ class FTPPullMethod(PollingIngestionMethod):
         device_id: str,
         session_factory,
         target: IngestionTarget,
+        last_successful_poll: Optional[datetime] = None,
     ) -> None:
         """Download, decode, persist, then delete a remote file."""
         file_path = str(PurePosixPath(ftp_config.remote_dir) / filename)
@@ -897,6 +959,10 @@ class FTPPullMethod(PollingIngestionMethod):
                 "Failed to decode %s for device %s", filename, device_id,
             )
             return
+
+        await self._flag_if_backward_poison(
+            events, device_id, original_name, last_successful_poll,
+        )
 
         try:
             await target.persist_with_drift_check(
@@ -1040,6 +1106,7 @@ class FTPPullMethod(PollingIngestionMethod):
             await self._download_and_ingest(
                 client, new_files, ftp_config,
                 device_id, session_factory, prior_mtime, target,
+                checkpoint.last_successful_poll if checkpoint else None,
             )
         )
 

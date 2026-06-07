@@ -76,6 +76,32 @@ class SensorDetection:
 AnyDecodedOutput = Union[DecodedEvent, SensorDetection]
 
 
+@dataclass
+class FileMetadata:
+    """File-level provenance captured from a decoder that has a file header.
+
+    Populated by decoders with a header (ASC/3 first); every field optional.
+    """
+
+    device_ip: str | None = None
+    device_mac: str | None = None
+    log_version: str | None = None
+    source_filename: str | None = None
+    phases_in_use: list[int] | None = None
+    log_begin: datetime | None = None
+    header_anchor: datetime | None = None
+    header_anchor_secondary: datetime | None = None
+    raw: dict[str, str] | None = None
+
+
+@dataclass
+class DecodeResult:
+    """Decode envelope: events plus optional file-level metadata."""
+
+    events: list[AnyDecodedOutput]
+    metadata: FileMetadata | None = None
+
+
 class BaseDecoder(ABC):
     """
     Base class for controller-event decoder plugins.
@@ -115,6 +141,15 @@ class BaseDecoder(ABC):
             True if this decoder can decode the data.
         """
         ...
+
+    def decode(self, data: bytes) -> "DecodeResult":
+        """Decode into an envelope (events + optional file metadata).
+
+        Default implementation wraps ``decode_bytes`` with no metadata.
+        Decoders with a file header (e.g. ASC/3) override this to populate
+        ``FileMetadata``; ``decode_bytes`` remains the pure record core.
+        """
+        return DecodeResult(events=self.decode_bytes(data))
 
 
 class BaseSensorDecoder(ABC):

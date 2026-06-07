@@ -5,7 +5,7 @@ Tests configuration, protocol adapters, poll cycle logic,
 and config construction from signal_metadata JSONB dicts.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1799,3 +1799,181 @@ class TestBuildConfigSNMPv3:
         config = FTPPullMethod._build_config("SIG-001", raw)
         assert config.snmp_version == "v2c"
         assert config.snmp_community == "private"
+
+
+class TestPollOnceBackwardPoison:
+    """poll_once backward-poison policy: ALWAYS ingest, flag for review.
+
+    A slow/reset controller clock is detected (newest event < last poll) but
+    the batch is still persisted; a notify() flag is raised for review. Clean
+    batches and the first poll are ingested with no flag.
+    """
+
+    @pytest.mark.asyncio
+    async def test_poison_is_ingested_and_flagged(self):
+        from tsigma.models.checkpoint import PollingCheckpoint
+
+        method = FTPPullMethod()
+        config = _make_config_dict()
+        now = datetime.now(timezone.utc)
+        checkpoint = MagicMock(spec=PollingCheckpoint)
+        checkpoint.files_hash = None
+        checkpoint.last_file_mtime = None
+        checkpoint.last_successful_poll = now
+        stale = [DecodedEvent(timestamp=now - timedelta(hours=1), event_code=1, event_param=2)]
+        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
+        client = _mock_client(files=files)
+        decoder = _mock_decoder(events=stale)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.load_checkpoint.return_value = checkpoint
+        target.resolve_decoder.return_value = decoder
+        with patch.object(method, "_create_client", return_value=client), \
+             patch.object(method, "_save_checkpoint",
+                          new_callable=AsyncMock) as mock_save, \
+             patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify:
+            await method.poll_once("SIG-001", config, factory, target=target)
+        # ALWAYS ingest, even when poisoned — the stale events still reach persist
+        target.persist_with_drift_check.assert_awaited_once()
+        assert target.persist_with_drift_check.call_args[0][0] == stale
+        # ...and flag it for review
+        mock_notify.assert_awaited_once()
+        # ...and the checkpoint advances (file treated as ingested)
+        mock_save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_clean_overlap_ingested_without_flag(self):
+        from tsigma.models.checkpoint import PollingCheckpoint
+
+        method = FTPPullMethod()
+        config = _make_config_dict()
+        now = datetime.now(timezone.utc)
+        checkpoint = MagicMock(spec=PollingCheckpoint)
+        checkpoint.files_hash = None
+        checkpoint.last_file_mtime = None
+        checkpoint.last_successful_poll = now - timedelta(minutes=5)
+        # old events but a CURRENT newest event = normal overlap, not poison
+        events = [
+            DecodedEvent(timestamp=now - timedelta(hours=2), event_code=1, event_param=2),
+            DecodedEvent(timestamp=now, event_code=3, event_param=4),
+        ]
+        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
+        client = _mock_client(files=files)
+        decoder = _mock_decoder(events=events)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.load_checkpoint.return_value = checkpoint
+        target.resolve_decoder.return_value = decoder
+        with patch.object(method, "_create_client", return_value=client), \
+             patch.object(method, "_save_checkpoint", new_callable=AsyncMock), \
+             patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify:
+            await method.poll_once("SIG-001", config, factory, target=target)
+        target.persist_with_drift_check.assert_awaited_once()
+        mock_notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_first_poll_ingested_without_flag(self):
+        # no checkpoint yet (first poll) -> no lower bound -> ingest, no flag
+        method = FTPPullMethod()
+        config = _make_config_dict()
+        now = datetime.now(timezone.utc)
+        stale = [DecodedEvent(timestamp=now - timedelta(days=5), event_code=1, event_param=2)]
+        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
+        client = _mock_client(files=files)
+        decoder = _mock_decoder(events=stale)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        # load_checkpoint default returns None (first poll)
+        target.resolve_decoder.return_value = decoder
+        with patch.object(method, "_create_client", return_value=client), \
+             patch.object(method, "_save_checkpoint", new_callable=AsyncMock), \
+             patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify:
+            await method.poll_once("SIG-001", config, factory, target=target)
+        target.persist_with_drift_check.assert_awaited_once()
+        mock_notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_poison_ingested_even_if_notify_fails(self):
+        # the flag is best-effort: a notify() failure must NOT block ingest
+        from tsigma.models.checkpoint import PollingCheckpoint
+
+        method = FTPPullMethod()
+        config = _make_config_dict()
+        now = datetime.now(timezone.utc)
+        checkpoint = MagicMock(spec=PollingCheckpoint)
+        checkpoint.files_hash = None
+        checkpoint.last_file_mtime = None
+        checkpoint.last_successful_poll = now
+        stale = [DecodedEvent(timestamp=now - timedelta(hours=1), event_code=1, event_param=2)]
+        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
+        client = _mock_client(files=files)
+        decoder = _mock_decoder(events=stale)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.load_checkpoint.return_value = checkpoint
+        target.resolve_decoder.return_value = decoder
+        with patch.object(method, "_create_client", return_value=client), \
+             patch.object(method, "_save_checkpoint", new_callable=AsyncMock), \
+             patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock,
+                   side_effect=RuntimeError("notify down")):
+            await method.poll_once("SIG-001", config, factory, target=target)
+        # notify failed, but the events were still ingested
+        target.persist_with_drift_check.assert_awaited_once()
+        assert target.persist_with_drift_check.call_args[0][0] == stale
+
+
+class TestIngestAndDeleteBackwardPoison:
+    """Rotate path (_ingest_and_delete): always ingest + flag for review."""
+
+    @pytest.mark.asyncio
+    async def test_rotate_poison_ingested_flagged_and_deleted(self):
+        method = FTPPullMethod()
+        config = FTPPullMethod._build_config("SIG-001", _make_config_dict(mode="rotate"))
+        now = datetime.now(timezone.utc)
+        stale = [DecodedEvent(timestamp=now - timedelta(hours=1), event_code=1, event_param=2)]
+        client = _mock_client()
+        client.download = AsyncMock(return_value=b"data")
+        client.delete = AsyncMock()
+        decoder = _mock_decoder(events=stale)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify:
+            await method._ingest_and_delete(
+                client, "events.dat", config, "SIG-001", factory, target, now,
+            )
+        # always ingest, even when poisoned
+        target.persist_with_drift_check.assert_awaited_once()
+        assert target.persist_with_drift_check.call_args[0][0] == stale
+        # flag for review
+        mock_notify.assert_awaited_once()
+        # still deletes after successful ingest
+        client.delete.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_rotate_clean_batch_ingested_without_flag(self):
+        method = FTPPullMethod()
+        config = FTPPullMethod._build_config("SIG-001", _make_config_dict(mode="rotate"))
+        now = datetime.now(timezone.utc)
+        fresh = [DecodedEvent(timestamp=now, event_code=1, event_param=2)]
+        client = _mock_client()
+        client.download = AsyncMock(return_value=b"data")
+        client.delete = AsyncMock()
+        decoder = _mock_decoder(events=fresh)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify:
+            await method._ingest_and_delete(
+                client, "events.dat", config, "SIG-001", factory, target,
+                now - timedelta(minutes=5),
+            )
+        target.persist_with_drift_check.assert_awaited_once()
+        mock_notify.assert_not_awaited()
+        client.delete.assert_awaited_once()

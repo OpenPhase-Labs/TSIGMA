@@ -219,6 +219,35 @@ async def _warn_on_drift(events, signal_id: str, *, source_label: str) -> None:
     )
 
 
+def is_backward_poisoned(events, last_successful_poll) -> bool:
+    """Return True when a batch's NEWEST event predates the last poll.
+
+    A slow or reset controller clock makes the whole file stale. Gate on the
+    batch's newest event so normal overlap (old events plus a current newest
+    event) is NOT flagged — idempotent upserts dedupe that span. On the first
+    poll there is no reference yet (``last_successful_poll`` is None), so the
+    check is skipped.
+
+    Precondition: ``last_successful_poll`` and the event timestamps must both
+    be timezone-aware UTC (the production path loads it from a TIMESTAMPTZ
+    column via asyncpg, which is aware). A naive value would raise TypeError
+    on comparison — the caller guarantees aware, this predicate does not
+    normalize.
+
+    Args:
+        events: Decoded events (each carrying a tz-aware ``timestamp``).
+        last_successful_poll: Tz-aware server wall-clock time of the last
+            successful poll, or None on the first poll.
+
+    Returns:
+        True if the batch is backward-poisoned (caller should reject it).
+    """
+    if not events or last_successful_poll is None:
+        return False
+    newest = max(event.timestamp for event in events)
+    return newest < last_successful_poll
+
+
 # ---------------------------------------------------------------------------
 # Idempotent insert helper — type-dispatched
 # ---------------------------------------------------------------------------
@@ -570,6 +599,7 @@ __all__ = [
     # persistence
     "persist_events",
     "persist_events_with_drift_check",
+    "is_backward_poisoned",
     # decode + persist
     "decode_and_persist_message",
     # decoder resolution

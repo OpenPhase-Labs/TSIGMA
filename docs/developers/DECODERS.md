@@ -33,7 +33,7 @@ TSIGMA supports multiple event log formats from different traffic signal control
 
 | Decoder | Manufacturer | Format | Extensions |
 |---------|--------------|--------|------------|
-| `asc3` | Econolite | Binary | `.dat`, `.datz` |
+| `asc3` | Econolite | Text header + Binary | `.dat`, `.datz` |
 | `siemens` | Siemens | Text (SEPAC) | `.log`, `.txt`, `.csv`, `.sepac` |
 | `peek` | Peek/McCain | Binary (ATC) | `.bin`, `.dat`, `.atc`, `.log` |
 | `maxtime` | Intelight/Trafficware | XML/Binary | `.xml`, `.maxtime`, `.mtl`, `.bin`, `.synchro` |
@@ -48,15 +48,34 @@ TSIGMA supports multiple event log formats from different traffic signal control
 
 ### Format: `asc3`
 
-Decodes binary `.dat` files from Econolite ASC/3 controllers (Indiana Hi-Resolution format).
+Decodes Econolite ASC/3 controller logs (Indiana Hi-Resolution format). Each
+file is a **7-line comma-delimited ASCII header** followed by packed **binary
+records**. The header line 1 leading field is the anchor datetime; every event
+timestamp is `anchor + offset`.
 
 ### File Structure
 
 ```
-Bytes 0-19:   Date string (ASCII) "MM/DD/YYYY HH:MM:SS "
-Bytes 20-N:  7 header lines (newline terminated)
-Bytes N+:    Binary records (4 bytes each)
+Line 1:   "<anchor datetime>,Version #:,<n>"   e.g. 8-9-2021 18:41:58.4,Version #:,3
+Lines 2-7: header fields (MAC, IP, phases-in-use, "Controller Data Log Beginning", ...)
+Binary:    records (4 bytes each) immediately after the 7 header lines
 ```
+
+The anchor (line 1 leading field) is parsed leniently: **hyphen OR slash**
+separators (`8-9-2021` or `08/09/2021`) and **optional fractional tenths**
+(`18:41:58.4`). The decoder is lenient on format but **strict on validity** —
+if nothing parses, it **fails closed** (`ASC3DecodeError`) rather than
+fabricating an anchor. Real Econolite files use the hyphen/fractional form; the
+older strict `MM/DD/YYYY HH:MM:SS ` form still decodes (backward-compatible).
+
+The anchor appears twice — line 1 prefix and line 6 "Controller Data Log
+Beginning". `decode()` cross-checks the two and logs a warning on disagreement.
+
+> **Poison-aware:** the line-1 anchor is the single point of failure for the
+> whole file — a wrong controller clock uniformly shifts every event. Backward
+> poison (newest event predates the last successful poll) is detected at the
+> ingestion layer and the batch is **always ingested and flagged for review**,
+> never dropped. See the ingestion methods for `is_backward_poisoned`.
 
 ### Record Format (4 bytes)
 
@@ -402,6 +421,58 @@ events = decoder.decode_bytes(open("/path/to/unknown_format.dat", "rb").read())
 
 ---
 
+## Decode Result Envelope
+
+`decode_bytes()` returns the pure record core — `list[DecodedEvent]` (or
+`list[SensorDetection]`). Some files also carry **file-level provenance** in a
+header (device IP/MAC, log version, phases-in-use, log-begin, the parsed
+anchors). To surface that without changing `decode_bytes`, `BaseDecoder`
+exposes `decode()`, which returns a `DecodeResult` envelope:
+
+```python
+@dataclass
+class FileMetadata:
+    device_ip: str | None = None
+    device_mac: str | None = None
+    log_version: str | None = None
+    source_filename: str | None = None
+    phases_in_use: list[int] | None = None
+    log_begin: datetime | None = None
+    header_anchor: datetime | None = None
+    header_anchor_secondary: datetime | None = None
+    raw: dict[str, str] | None = None
+
+@dataclass
+class DecodeResult:
+    events: list[AnyDecodedOutput]
+    metadata: FileMetadata | None = None
+```
+
+The default `decode()` wraps `decode_bytes` with `metadata=None`, so decoders
+without a header need no changes:
+
+```python
+def decode(self, data: bytes) -> DecodeResult:
+    return DecodeResult(events=self.decode_bytes(data))
+```
+
+Decoders with a header (ASC/3 first) override `decode()` to populate
+`FileMetadata` from the header lines while `decode_bytes` stays the pure record
+core. Callers that want provenance use `decode()`; callers that only need events
+keep calling `decode_bytes()`.
+
+```python
+from tsigma.collection.decoders.asc3 import ASC3Decoder
+
+result = ASC3Decoder().decode(raw_bytes)
+for event in result.events:
+    ...
+if result.metadata:
+    print(result.metadata.device_ip, result.metadata.header_anchor)
+```
+
+---
+
 ## Decoder Registry Pattern
 
 **Self-registering plugin system** - same pattern as ingestion methods, background jobs, and reports.
@@ -645,13 +716,15 @@ INSERT INTO signal (signal_identifier, primary_name)
 VALUES ('1234', 'Main St & 1st Ave');
 ```
 
-### "Invalid date header"
+### `ASC3DecodeError` ("could not parse header anchor")
 
-ASC/3 decoder couldn't parse the date string. Check:
+The ASC/3 decoder fails closed when the line-1 anchor won't parse — it never
+fabricates a base time. Check:
 
-1. File is not truncated
-2. Date format matches expected patterns
-3. File encoding is correct
+1. File is not truncated (line 1 must contain the leading anchor field)
+2. Anchor matches a supported form — hyphen or slash separators, optional
+   fractional tenths (e.g. `8-9-2021 18:41:58.4` or `08/09/2021 18:41:58`)
+3. File encoding is correct (header is ASCII)
 
 ### Decoder selection for ambiguous extensions
 
