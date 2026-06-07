@@ -47,13 +47,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, Optional
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from ...config import settings
 from ...models.approach import Approach
 from ...models.checkpoint import PollingCheckpoint
 from ...models.file_provenance import FileIngestProvenance
+from ...models.ingest_review import IngestReview
 from ...models.signal import Signal
 from ...notifications.registry import WARNING, notify
 from ...notifications.suppression import is_suppressed
@@ -61,6 +64,7 @@ from ..registry import IngestionMethodRegistry, PollingIngestionMethod
 from ..sdk import (
     check_configured_phases,
     check_controller_replacement,
+    check_temporal_integrity,
     is_backward_poisoned,
 )
 from ..targets import ControllerTarget, IngestionTarget
@@ -672,6 +676,7 @@ class FTPPullMethod(PollingIngestionMethod):
         device_id: str,
         metadata,
         decoder_name,
+        events=None,
     ) -> None:
         """Validate header identity/config and record file provenance.
 
@@ -683,6 +688,7 @@ class FTPPullMethod(PollingIngestionMethod):
         """
         if metadata is None:
             return
+        provenance_id = uuid4()
         try:
             async with session_factory() as session:
                 signal = await session.get(Signal, device_id)
@@ -718,6 +724,26 @@ class FTPPullMethod(PollingIngestionMethod):
                     drift = check_configured_phases(metadata, configured)
                     if drift is not None:
                         findings.append(drift)
+                if events:
+                    server_now = datetime.now(timezone.utc)
+                    temporal = check_temporal_integrity(
+                        events, server_now,
+                        settings.checkpoint_future_tolerance_seconds,
+                    )
+                    if temporal is not None:
+                        findings.append(temporal)
+                        session.add(
+                            IngestReview(
+                                provenance_id=provenance_id,
+                                signal_id=device_id,
+                                reason=temporal.check_name,
+                                source_filename=metadata.source_filename,
+                                severity=temporal.severity,
+                                summary=temporal.summary,
+                                detail=temporal.detail,
+                                status="open",
+                            )
+                        )
                 for finding in findings:
                     if await is_suppressed(session, device_id, finding.check_name):
                         continue
@@ -747,6 +773,7 @@ class FTPPullMethod(PollingIngestionMethod):
                         )
                 session.add(
                     FileIngestProvenance(
+                        provenance_id=provenance_id,
                         signal_id=device_id,
                         source_filename=metadata.source_filename,
                         device_ip=metadata.device_ip,
@@ -807,7 +834,7 @@ class FTPPullMethod(PollingIngestionMethod):
                 try:
                     await self._validate_and_record_provenance(
                         session_factory, device_id, result.metadata,
-                        getattr(decoder, "name", None),
+                        getattr(decoder, "name", None), events,
                     )
                 except Exception:
                     logger.exception(
@@ -1089,7 +1116,7 @@ class FTPPullMethod(PollingIngestionMethod):
         try:
             await self._validate_and_record_provenance(
                 session_factory, device_id, result.metadata,
-                getattr(decoder, "name", None),
+                getattr(decoder, "name", None), events,
             )
         except Exception:
             logger.exception(

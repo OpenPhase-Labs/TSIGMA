@@ -27,6 +27,7 @@ from tsigma.collection.methods.ftp_pull import (
 )
 from tsigma.collection.registry import ExecutionMode, IngestionMethodRegistry
 from tsigma.models.file_provenance import FileIngestProvenance
+from tsigma.models.ingest_review import IngestReview
 from tsigma.notifications.registry import WARNING
 
 # Module path prefix for patching SDK imports used in ftp_pull.py
@@ -2268,3 +2269,189 @@ class TestIngestIdentityConfigValidation:
             )
         # validation blew up, but persist still ran
         target.persist_with_drift_check.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Inc-3 Task 3: temporal-integrity review during provenance recording
+# ---------------------------------------------------------------------------
+
+
+def _evt(ts):
+    """Build a DecodedEvent at the given tz-aware timestamp."""
+    return DecodedEvent(timestamp=ts, event_code=1, event_param=0)
+
+
+def _added_reviews(session):
+    """All IngestReview instances passed to session.add."""
+    return [
+        call.args[0]
+        for call in session.add.call_args_list
+        if call.args and isinstance(call.args[0], IngestReview)
+    ]
+
+
+def _added_provenance(session):
+    """All FileIngestProvenance instances passed to session.add."""
+    return [
+        call.args[0]
+        for call in session.add.call_args_list
+        if call.args and isinstance(call.args[0], FileIngestProvenance)
+    ]
+
+
+# Deterministic extremes so the clock offset is unambiguous vs real wall-clock.
+_FAR_PAST = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_FAR_FUTURE = datetime(2100, 1, 1, tzinfo=timezone.utc)
+
+
+class TestTemporalIntegrityReview:
+    """Inc-3 Task 3: temporal-integrity finding -> IngestReview + notify.
+
+    When ``events`` are supplied, ``_validate_and_record_provenance`` runs the
+    temporal-integrity check against server-now and, on a finding, appends it to
+    the same suppressible notify loop AND records an ``IngestReview`` row. The
+    provenance row + commit still happen and any failure is swallowed (ingest
+    must never be blocked). Identity + phases are aligned in these tests so the
+    temporal finding is the only one in play.
+    """
+
+    @pytest.mark.asyncio
+    async def test_far_past_adds_review_and_notifies(self):
+        """Far-past events -> temporal IngestReview added + notify awaited."""
+        method = FTPPullMethod()
+        metadata = _make_metadata()
+        signal = _make_signal({"controller_mac": metadata.device_mac})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        events = [_evt(_FAR_PAST)]
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3", events,
+            )
+        reviews = _added_reviews(session)
+        assert len(reviews) == 1
+        review = reviews[0]
+        assert review.reason == "temporal_integrity"
+        assert review.status == "open"
+        assert review.signal_id == "SIG-001"
+        mock_notify.assert_awaited()
+        assert _added_provenance(session)
+        provenances = _added_provenance(session)
+        assert len(provenances) == 1
+        assert reviews[0].provenance_id is not None
+        assert reviews[0].provenance_id == provenances[0].provenance_id
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_far_future_adds_review_and_notifies(self):
+        """Far-future events -> temporal IngestReview added + notify awaited."""
+        method = FTPPullMethod()
+        metadata = _make_metadata()
+        signal = _make_signal({"controller_mac": metadata.device_mac})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        events = [_evt(_FAR_FUTURE)]
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3", events,
+            )
+        reviews = _added_reviews(session)
+        assert len(reviews) == 1
+        assert reviews[0].reason == "temporal_integrity"
+        mock_notify.assert_awaited()
+        provenances = _added_provenance(session)
+        assert len(provenances) == 1
+        assert reviews[0].provenance_id is not None
+        assert reviews[0].provenance_id == provenances[0].provenance_id
+
+    @pytest.mark.asyncio
+    async def test_within_tolerance_no_review(self):
+        """Events at ~now -> no temporal review, no notify; provenance + commit."""
+        method = FTPPullMethod()
+        metadata = _make_metadata()
+        signal = _make_signal({"controller_mac": metadata.device_mac})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        events = [_evt(datetime.now(timezone.utc))]
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3", events,
+            )
+        assert _added_reviews(session) == []
+        mock_notify.assert_not_awaited()
+        assert _added_provenance(session)
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_temporal_suppressed_no_notify_but_review_added(self):
+        """Suppression silences notify but the IngestReview is still recorded."""
+        method = FTPPullMethod()
+        metadata = _make_metadata()
+        signal = _make_signal({"controller_mac": metadata.device_mac})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        events = [_evt(_FAR_PAST)]
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock) as mock_notify, \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=True):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3", events,
+            )
+        mock_notify.assert_not_awaited()
+        reviews = _added_reviews(session)
+        assert len(reviews) == 1
+        assert reviews[0].reason == "temporal_integrity"
+
+    @pytest.mark.asyncio
+    async def test_no_events_no_temporal_review(self):
+        """events=None -> no temporal review; provenance still recorded."""
+        method = FTPPullMethod()
+        metadata = _make_metadata()
+        signal = _make_signal({"controller_mac": metadata.device_mac})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3", None,
+            )
+        assert _added_reviews(session) == []
+        assert _added_provenance(session)
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_review_insert_error_swallowed(self):
+        """A commit failure is swallowed — the helper never blocks ingest."""
+        method = FTPPullMethod()
+        metadata = _make_metadata()
+        signal = _make_signal({"controller_mac": metadata.device_mac})
+        factory, session = _make_validation_session_factory(
+            signal=signal, phase_rows=_PHASE_ROWS_2468,
+        )
+        session.commit.side_effect = RuntimeError("db down")
+        events = [_evt(_FAR_PAST)]
+        with patch("tsigma.collection.methods.ftp_pull.notify",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+                   new_callable=AsyncMock, return_value=False):
+            # must not raise despite commit blowing up
+            await method._validate_and_record_provenance(
+                factory, "SIG-001", metadata, "asc3", events,
+            )

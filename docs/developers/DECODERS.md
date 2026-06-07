@@ -524,6 +524,39 @@ Every ingested file that yields header metadata writes one row to
 exactly when a controller's MAC / firmware / IP changed and which files came
 from each unit.
 
+### Temporal integrity & the review queue
+
+The file header's clock is checked against an **independent reference the
+controller cannot poison** — the **server receive time** (`datetime.now(utc)` at
+ingest). (Transport mtime is not used: FTP/FTPS doesn't provide it; only SFTP
+does.) The check is file-level and bidirectional:
+
+- `check_temporal_integrity` compares the batch's **newest event timestamp** to
+  the server receive time. If the absolute offset exceeds
+  `settings.checkpoint_future_tolerance_seconds` (default 300), the file is
+  flagged with a `temporal_integrity` finding.
+- **Always ingest, never withhold.** Flagged events are persisted normally (same
+  rule as backward-poison and identity findings). Nothing is held back.
+- A row is recorded in the **`config.ingest_review`** worklist (`reason`,
+  `severity`, `summary`, `detail` with the signed `offset_seconds` and a
+  `suggested_correction_seconds`, `status="open"`, optional `provenance_id`
+  linking to the file's audit row). This general worklist is reusable by other
+  paths (e.g. SEPAC timezone issues) via their own `reason`.
+
+**Operator correction (no new engine).** The review carries the suggested offset;
+an operator applies it with the existing admin endpoints
+`POST /corrections/bulk` or `POST /corrections/anchor` (which shift already-
+ingested `controller_event_log` timestamps), then marks the review resolved:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /reviews?status=open&signal_id=…` | list open review items + suggested offset (`require_access("management")`) |
+| `POST /reviews/{review_id}/resolve` | mark resolved, stamp `resolved_at`/`resolved_by` (`require_admin`) |
+
+All temporal flags are suppressible via `alert_suppression` (check-name
+`temporal_integrity`) and notify is best-effort — a notify or review-write
+failure never blocks ingest.
+
 ---
 
 ## Decoder Registry Pattern
