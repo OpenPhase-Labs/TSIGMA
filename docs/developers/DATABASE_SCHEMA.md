@@ -1007,8 +1007,9 @@ CREATE TABLE polling_checkpoint (
 
     -- Poll cycle metadata
     last_successful_poll    TIMESTAMPTZ,         -- When the last poll cycle completed successfully
-    events_ingested         BIGINT DEFAULT 0,    -- Cumulative events ingested for this signal+method
+    events_ingested         BIGINT DEFAULT 0,    -- Cumulative rows actually inserted (excludes absorbed duplicates)
     files_ingested          BIGINT DEFAULT 0,    -- Cumulative files ingested for this signal+method
+    duplicates_absorbed     BIGINT DEFAULT 0,    -- Cumulative duplicate rows absorbed (re-offered but already present)
 
     -- Error tracking (for backoff and alerting)
     consecutive_errors      INTEGER DEFAULT 0,   -- Reset to 0 on success, increment on failure
@@ -1051,13 +1052,13 @@ Poll Cycle Start
     │   ├─ Filter: file.mtime > last_file_mtime
     │   ├─ Download + decode + ingest new files only
     │   └─ Update: last_filename, last_file_mtime, files_hash,
-    │              last_successful_poll, events_ingested, files_ingested,
+    │              last_successful_poll, events_ingested, files_ingested, duplicates_absorbed,
     │              consecutive_errors = 0
     │
     ├─ HTTP: Query with ?since=last_event_timestamp
     │   ├─ Decode + ingest returned events
     │   └─ Update: last_event_timestamp, last_successful_poll,
-    │              events_ingested, consecutive_errors = 0
+    │              events_ingested, duplicates_absorbed, consecutive_errors = 0
     │
     └─ On Error:
         └─ Update: consecutive_errors += 1, last_error, last_error_time

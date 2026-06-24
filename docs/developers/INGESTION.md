@@ -193,6 +193,7 @@ Each `(signal_id, method)` pair maintains an independent checkpoint row in the `
 - **Restart-safe**: Persistent in database, survives service restarts
 - **Multi-consumer safe**: Each ingestion method maintains its own checkpoint
 - **Idempotent**: Re-processing the same file produces duplicate events, but the composite PK on `controller_event_log` rejects duplicates via `ON CONFLICT DO NOTHING`
+- **Observable dedup**: the count of duplicate rows absorbed per cycle is recorded on the checkpoint as `duplicates_absorbed` (attempted minus actually-inserted); a spike flags a regressed watermark or an over-wide pull window re-offering already-ingested data, even though the row-level dedup is otherwise silent
 
 ### Error Handling
 

@@ -61,7 +61,7 @@ class IngestionTarget(Protocol):
         session_factory,
         *,
         source_label: str = "device",
-    ) -> None:
+    ) -> int:
         """Persist events, warning on future-dated event timestamps."""
         ...
 

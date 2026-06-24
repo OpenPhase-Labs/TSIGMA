@@ -200,3 +200,51 @@ async def test_controller_event_log_idempotent_reinsert_postgresql(
     assert len(fetched) == 3, (
         f"expected 3 rows after idempotent re-insert, got {len(fetched)}"
     )
+
+
+@pytest.mark.asyncio
+async def test_upsert_events_returns_inserted_count_postgresql(
+    pg_engine,
+) -> None:
+    """``_upsert_events`` returns the number of rows actually inserted.
+
+    The ``INSERT ... ON CONFLICT DO NOTHING`` rowcount must come back so the
+    pull methods can record ``events_ingested`` (inserted) vs
+    ``duplicates_absorbed`` (attempted - inserted). PostgreSQL-only because the
+    helper uses ``sqlalchemy.dialects.postgresql.insert``.
+    """
+    signal_id = "SIG-INSERTED-COUNT"
+    base = datetime(2026, 4, 24, 14, 0, 0, tzinfo=timezone.utc)
+    events = [
+        DecodedEvent(
+            timestamp=base + timedelta(seconds=i),
+            event_code=9,
+            event_param=i,
+        )
+        for i in range(3)
+    ]
+
+    session_factory = async_sessionmaker(
+        bind=pg_engine, class_=AsyncSession, expire_on_commit=False,
+    )
+
+    # First insert of 3 fresh events -> all 3 inserted.
+    inserted = await _upsert_events(events, signal_id, session_factory)
+    assert inserted == 3
+
+    # Re-inserting the same 3 -> all conflict -> 0 inserted.
+    inserted_again = await _upsert_events(events, signal_id, session_factory)
+    assert inserted_again == 0
+
+    # Mixed batch: 2 existing duplicates + 1 brand-new event -> only 1 inserted.
+    mixed = [
+        events[0],
+        events[1],
+        DecodedEvent(
+            timestamp=base + timedelta(seconds=99),
+            event_code=9,
+            event_param=99,
+        ),
+    ]
+    inserted_mixed = await _upsert_events(mixed, signal_id, session_factory)
+    assert inserted_mixed == 1

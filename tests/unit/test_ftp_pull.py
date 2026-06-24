@@ -1568,6 +1568,7 @@ class TestSaveCheckpoint:
             last_file_mtime=None,
             files_hash="abc123",
             events_ingested=10,
+            duplicates_absorbed=0,
             files_ingested=1,
         )
 
@@ -1590,6 +1591,7 @@ class TestSaveCheckpoint:
             last_file_mtime=None,
             files_hash=None,
             events_ingested=10,
+            duplicates_absorbed=0,
             files_ingested=1,
         )
 
@@ -1720,14 +1722,128 @@ class TestDownloadAndIngest:
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
         target.resolve_decoder.return_value = decoder
+        # 1 event per file, all inserted -> 2 inserted total, 0 absorbed
+        target.persist_with_drift_check = AsyncMock(return_value=1)
 
-        _total_events, total_files, newest_name, newest_mtime = \
+        total_inserted, total_files, newest_name, newest_mtime, total_absorbed = \
             await method._download_and_ingest(
                 client, files, config, "SIG-001", factory, None, target,
             )
         assert total_files == 2
+        assert total_inserted == 2
+        assert total_absorbed == 0
         assert newest_mtime == t2
         assert newest_name == "b.dat"
+
+
+class TestFtpAbsorbedCount:
+    """poll_once records inserted vs absorbed (dup) counts on the checkpoint.
+
+    Seam choice: the checkpoint-save seam (``target.save_checkpoint`` kwargs),
+    matching the http_pull test. A passive-mode poll is driven end to end
+    WITHOUT patching ``_save_checkpoint`` (which forwards straight to
+    ``target.save_checkpoint`` per ``TestSaveCheckpoint``), so the inserted /
+    absorbed totals are observed where they actually land. This avoids
+    dictating the internal ``_download_and_ingest`` tuple shape (which still
+    carries last_filename / last_file_mtime for the file-based checkpoint).
+    """
+
+    @pytest.mark.asyncio
+    async def test_records_inserted_and_absorbed(self):
+        """Checkpoint gets events_ingested=<inserted> and duplicates_absorbed.
+
+        Two files, 3 events each (6 attempted); persist returns 2 then 1 inserted
+        (3 inserted total) so 3 were absorbed as duplicates. The checkpoint save
+        must receive events_ingested=3 and duplicates_absorbed=3.
+        """
+        method = FTPPullMethod()
+        config = _make_config_dict()
+        files = [
+            RemoteFile(name="a.dat", size=100, mtime=None),
+            RemoteFile(name="b.dat", size=200, mtime=None),
+        ]
+        client = _mock_client(files=files)
+        client.download = AsyncMock(return_value=b"\x00")
+        now = datetime.now(timezone.utc)
+        events = [
+            DecodedEvent(timestamp=now, event_code=1, event_param=0),
+            DecodedEvent(timestamp=now, event_code=2, event_param=0),
+            DecodedEvent(timestamp=now, event_code=3, event_param=0),
+        ]
+        decoder = _mock_decoder(events=events)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
+        # 3 attempted per file; 2 then 1 actually inserted (3 absorbed total)
+        target.persist_with_drift_check = AsyncMock(side_effect=[2, 1])
+
+        # Do NOT patch _save_checkpoint: let it forward to target.save_checkpoint.
+        with patch.object(method, "_create_client", return_value=client):
+            await method.poll_once("SIG-001", config, factory, target=target)
+
+        target.save_checkpoint.assert_awaited_once()
+        kwargs = target.save_checkpoint.await_args.kwargs
+        assert kwargs["events_ingested"] == 3
+        assert kwargs["duplicates_absorbed"] == 3
+
+
+class TestFtpRotateAbsorbedCount:
+    """Rotate mode records inserted vs absorbed counts on the checkpoint.
+
+    Mirrors ``TestFtpAbsorbedCount`` but for the rotate per-file ingest path
+    (``_ingest_and_delete``). A rotate-mode ``poll_once`` is driven end to end
+    for a single active file WITHOUT patching ``_save_checkpoint`` (which
+    forwards straight to ``target.save_checkpoint``), so the inserted /
+    absorbed totals are observed where they actually land. Only the SNMP
+    stop/start cycle is patched (no controller), matching
+    ``TestPollRotate.test_rotate_renames_downloads_deletes``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rotate_records_inserted_and_absorbed(self):
+        """Checkpoint gets events_ingested=<inserted> and duplicates_absorbed.
+
+        One file decodes to 3 events; persist returns 2 inserted, so 1 was
+        absorbed as a duplicate. The checkpoint save must receive
+        events_ingested=2 and duplicates_absorbed=1.
+        """
+        method = FTPPullMethod()
+        config = _make_config_dict(mode="rotate", file_extensions=[".dat"])
+
+        active_file = RemoteFile(name="event1.dat", size=100, mtime=None)
+        client = _mock_client()
+        # First list_dir: no leftovers; second list_dir: one active file
+        client.list_dir = AsyncMock(side_effect=[[], [active_file]])
+        client.rename = AsyncMock()
+        client.download = AsyncMock(return_value=b"\x00")
+        client.delete = AsyncMock()
+
+        now = datetime.now(timezone.utc)
+        events = [
+            DecodedEvent(timestamp=now, event_code=1, event_param=0),
+            DecodedEvent(timestamp=now, event_code=2, event_param=0),
+            DecodedEvent(timestamp=now, event_code=3, event_param=0),
+        ]
+        decoder = _mock_decoder(events=events)
+        factory, _ = _mock_session_factory()
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
+        # 3 attempted; 2 actually inserted (1 absorbed as duplicate)
+        target.persist_with_drift_check = AsyncMock(return_value=2)
+
+        # Do NOT patch _ingest_and_delete or _save_checkpoint: let the real
+        # rotate ingest path forward the counts to target.save_checkpoint.
+        with patch.object(method, "_create_client", return_value=client), \
+             patch.object(method, "_snmp_stop_logging",
+                          new_callable=AsyncMock), \
+             patch.object(method, "_snmp_start_logging",
+                          new_callable=AsyncMock):
+            await method.poll_once("SIG-001", config, factory, target=target)
+
+        target.save_checkpoint.assert_awaited_once()
+        kwargs = target.save_checkpoint.await_args.kwargs
+        assert kwargs["events_ingested"] == 2
+        assert kwargs["duplicates_absorbed"] == 1
 
 
 # ---------------------------------------------------------------------------

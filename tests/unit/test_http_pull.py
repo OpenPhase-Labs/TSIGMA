@@ -358,6 +358,8 @@ class TestPollOnce:
         decoder.decode_bytes.return_value = events
         target = _make_mock_target()
         target.resolve_decoder.return_value = decoder
+        # 1 event attempted, 1 actually inserted (none absorbed as duplicate)
+        target.persist_with_drift_check = AsyncMock(return_value=1)
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
@@ -367,6 +369,7 @@ class TestPollOnce:
         target.save_checkpoint.assert_awaited_once()
         assert target.save_checkpoint.call_args[1]["last_event_timestamp"] == now
         assert target.save_checkpoint.call_args[1]["events_ingested"] == 1
+        assert target.save_checkpoint.call_args[1]["duplicates_absorbed"] == 0
 
     @pytest.mark.asyncio
     async def test_uses_since_param_on_subsequent_poll(self):
@@ -679,6 +682,80 @@ class TestPollOnceDecodeError:
 
         target.record_error.assert_awaited_once()
         target.persist_with_drift_check.assert_not_awaited()
+
+
+class TestPollOncePersistError:
+    """Tests for persist error path in poll_once."""
+
+    @pytest.mark.asyncio
+    async def test_poll_once_persist_error(self):
+        """Persist raises, error recorded and checkpoint not advanced."""
+        method = HTTPPullMethod()
+        config = _make_config_dict()
+        factory, _ = _mock_session_factory()
+
+        now = datetime.now(timezone.utc)
+        events = [DecodedEvent(timestamp=now, event_code=1, event_param=2)]
+
+        response = _mock_aiohttp_response(body=b"<xml/>")
+        mock_ctx, _ = _mock_aiohttp_session(response)
+
+        mock_decoder = MagicMock()
+        mock_decoder.decode_bytes.return_value = events
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = mock_decoder
+        target.persist_with_drift_check.side_effect = RuntimeError("db down")
+
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession.return_value = mock_ctx
+            mock_aiohttp.ClientTimeout = MagicMock()
+            await method.poll_once("SIG-001", config, factory, target=target)
+
+        target.record_error.assert_awaited_once()
+        target.save_checkpoint.assert_not_awaited()
+
+
+class TestPollOnceAbsorbedCount:
+    """Tests that poll_once records inserted vs absorbed (dup) counts."""
+
+    @pytest.mark.asyncio
+    async def test_poll_once_records_inserted_and_absorbed(self):
+        """Checkpoint gets events_ingested=<inserted> and duplicates_absorbed.
+
+        persist returns the number of rows ACTUALLY inserted (ON CONFLICT DO
+        NOTHING rowcount). With 3 attempted and 2 inserted, the checkpoint
+        save must receive events_ingested=2 and duplicates_absorbed=1.
+        """
+        method = HTTPPullMethod()
+        config = _make_config_dict()
+        factory, _ = _mock_session_factory()
+
+        now = datetime(2024, 3, 15, 14, 30, 45, tzinfo=timezone.utc)
+        events = [
+            DecodedEvent(timestamp=now, event_code=1, event_param=2),
+            DecodedEvent(timestamp=now, event_code=82, event_param=5),
+            DecodedEvent(timestamp=now, event_code=7, event_param=0),
+        ]
+
+        response = _mock_aiohttp_response(body=b"<xml/>")
+        mock_ctx, _ = _mock_aiohttp_session(response)
+
+        decoder = MagicMock()
+        decoder.decode_bytes.return_value = events
+        target = _make_mock_target()
+        target.resolve_decoder.return_value = decoder
+        # 3 attempted, only 2 actually inserted (1 was a duplicate)
+        target.persist_with_drift_check = AsyncMock(return_value=2)
+
+        with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession.return_value = mock_ctx
+            mock_aiohttp.ClientTimeout = MagicMock()
+            await method.poll_once("SIG-001", config, factory, target=target)
+
+        target.save_checkpoint.assert_awaited_once()
+        kwargs = target.save_checkpoint.await_args.kwargs
+        assert kwargs["events_ingested"] == 2
+        assert kwargs["duplicates_absorbed"] == 1
 
 
 class TestHTTPPullHealthCheck:
