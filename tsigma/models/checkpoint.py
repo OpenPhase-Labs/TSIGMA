@@ -66,6 +66,9 @@ class PollingCheckpoint(Base, TimestampMixin):
     events_ingested: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default="0",
     )
+    duplicates_absorbed: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0",
+    )
     files_ingested: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default="0",
     )

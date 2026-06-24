@@ -59,8 +59,8 @@ class RoadsideTarget:
         session_factory,
         *,
         source_label: str = "sensor",
-    ) -> None:
-        await sdk.persist_events_with_drift_check(
+    ) -> int:
+        return await sdk.persist_events_with_drift_check(
             events,
             device_id,
             session_factory,

@@ -129,7 +129,7 @@ async def persist_events(
     events,
     signal_id: str,
     session_factory,
-) -> None:
+) -> int:
     """Write decoded events to the database (idempotent).
 
     Uses ``INSERT ... ON CONFLICT DO NOTHING`` so re-ingesting the
@@ -147,9 +147,9 @@ async def persist_events(
         session_factory: Async session factory for DB writes.
     """
     if not events:
-        return
+        return 0
 
-    await _upsert_events(events, signal_id, session_factory)
+    return await _upsert_events(events, signal_id, session_factory)
 
 
 async def persist_events_with_drift_check(
@@ -158,7 +158,7 @@ async def persist_events_with_drift_check(
     session_factory,
     *,
     source_label: str = "signal",
-) -> None:
+) -> int:
     """Write decoded events to the database with clock-drift detection.
 
     Dispatches on the element type of ``events``:
@@ -174,7 +174,7 @@ async def persist_events_with_drift_check(
     not discarded.
     """
     if not events:
-        return
+        return 0
 
     # Drift check only applies to controller-shaped events.  Sensor
     # detections are stamped by the radar at detection-time and don't
@@ -183,7 +183,7 @@ async def persist_events_with_drift_check(
         await _warn_on_drift(events, signal_id, source_label=source_label)
         await _record_clock_offset(events=events, signal_id=signal_id, session_factory=session_factory)
 
-    await _upsert_events(events, signal_id, session_factory)
+    return await _upsert_events(events, signal_id, session_factory)
 
 
 async def _warn_on_drift(events, signal_id: str, *, source_label: str) -> None:
@@ -424,7 +424,7 @@ async def _upsert_events(
     events,
     signal_id: str,
     session_factory,
-) -> None:
+) -> int:
     """Bulk-insert events with ON CONFLICT DO NOTHING.
 
     Dispatches on the element type of ``events`` — the events
@@ -449,7 +449,7 @@ async def _upsert_events(
         session_factory: Async session factory for DB writes.
     """
     if not events:
-        return
+        return 0
 
     first = events[0]
     if isinstance(first, DecodedEvent):
@@ -458,14 +458,14 @@ async def _upsert_events(
                 "_upsert_events: mixed event types in batch; decoders must "
                 "emit homogeneous lists (all DecodedEvent OR all SensorDetection)",
             )
-        await _upsert_controller_events(events, signal_id, session_factory)
+        return await _upsert_controller_events(events, signal_id, session_factory)
     elif isinstance(first, SensorDetection):
         if not all(isinstance(e, SensorDetection) for e in events):
             raise TypeError(
                 "_upsert_events: mixed event types in batch; decoders must "
                 "emit homogeneous lists (all DecodedEvent OR all SensorDetection)",
             )
-        await _upsert_sensor_detections(events, session_factory)
+        return await _upsert_sensor_detections(events, session_factory)
     else:
         raise TypeError(
             f"_upsert_events: unknown event type {type(first).__name__!r}; "
@@ -475,10 +475,10 @@ async def _upsert_events(
 
 async def _upsert_controller_events(
     events, signal_id: str, session_factory,
-) -> None:
+) -> int:
     """Bulk INSERT controller event-log rows (the original 4.x-style path)."""
     if not events:
-        return
+        return 0
     rows = [
         {
             "signal_id": signal_id,
@@ -492,11 +492,12 @@ async def _upsert_controller_events(
         index_elements=["signal_id", "event_time", "event_code", "event_param"],
     )
     async with session_factory() as session:
-        await session.execute(stmt)
+        result = await session.execute(stmt)
         await session.flush()
+    return result.rowcount
 
 
-async def _upsert_sensor_detections(events, session_factory) -> None:
+async def _upsert_sensor_detections(events, session_factory) -> int:
     """Bulk INSERT sensor detections after resolving vendor_tag -> sensor UUID.
 
     The vendor wire protocol carries a human-readable tag (Wavetronix'
@@ -511,7 +512,7 @@ async def _upsert_sensor_detections(events, session_factory) -> None:
     has registered it in ``roadside_sensor_lane``.
     """
     if not events:
-        return
+        return 0
     unique_tags = {e.vendor_tag for e in events}
     lookup_stmt = (
         select(
@@ -562,14 +563,15 @@ async def _upsert_sensor_detections(events, session_factory) -> None:
         })
 
     if not rows:
-        return
+        return 0
 
     stmt = pg_insert(RoadsideEvent).values(rows).on_conflict_do_nothing(
         index_elements=["signal_id", "sensor_id", "event_time", "event_type"],
     )
     async with session_factory() as session:
-        await session.execute(stmt)
+        insert_result = await session.execute(stmt)
         await session.flush()
+    return insert_result.rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +650,7 @@ async def save_checkpoint(
         last_file_mtime: Modification time of newest ingested file.
         files_hash: SHA-256 of sorted filenames from directory listing.
         events_ingested: Number of NEW events ingested this cycle (added).
+        duplicates_absorbed: Number of duplicate events absorbed this cycle (added).
         files_ingested: Number of NEW files ingested this cycle (added).
 
     Args:
@@ -705,6 +708,10 @@ async def save_checkpoint(
         if "events_ingested" in kwargs:
             checkpoint.events_ingested = (
                 (checkpoint.events_ingested or 0) + kwargs.pop("events_ingested")
+            )
+        if "duplicates_absorbed" in kwargs:
+            checkpoint.duplicates_absorbed = (
+                (checkpoint.duplicates_absorbed or 0) + kwargs.pop("duplicates_absorbed")
             )
         if "files_ingested" in kwargs:
             checkpoint.files_ingested = (

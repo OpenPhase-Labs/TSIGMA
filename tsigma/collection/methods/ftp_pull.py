@@ -558,6 +558,7 @@ class FTPPullMethod(PollingIngestionMethod):
         last_file_mtime: Optional[datetime] = None,
         files_hash: Optional[str] = None,
         new_events: int = 0,
+        new_absorbed: int = 0,
         new_files: int = 0,
     ) -> None:
         """
@@ -576,6 +577,7 @@ class FTPPullMethod(PollingIngestionMethod):
             last_file_mtime=last_file_mtime,
             files_hash=files_hash,
             events_ingested=new_events,
+            duplicates_absorbed=new_absorbed,
             files_ingested=new_files,
         )
 
@@ -803,19 +805,20 @@ class FTPPullMethod(PollingIngestionMethod):
         prior_mtime: Optional[datetime],
         target: IngestionTarget,
         last_successful_poll: Optional[datetime] = None,
-    ) -> tuple[int, int, Optional[str], Optional[datetime]]:
+    ) -> tuple[int, int, Optional[str], Optional[datetime], int]:
         """
         Download, decode, and persist a list of remote files via
         ``target``.
 
         Returns:
-            Tuple of (total_events, total_files, newest_filename,
-            newest_mtime).
+            Tuple of (total_inserted, total_files, newest_filename,
+            newest_mtime, total_absorbed).
         """
-        total_events = 0
+        total_inserted = 0
         total_files = 0
         newest_filename = None
         newest_mtime = prior_mtime
+        total_absorbed = 0
 
         for rf in new_files:
             file_path = PurePosixPath(ftp_config.remote_dir) / rf.name
@@ -842,11 +845,12 @@ class FTPPullMethod(PollingIngestionMethod):
                         "events still ingested",
                         rf.name, device_id,
                     )
-                await target.persist_with_drift_check(
+                inserted = await target.persist_with_drift_check(
                     events, device_id, session_factory,
                 )
 
-                total_events += len(events)
+                total_inserted += inserted
+                total_absorbed += (len(events) - inserted)
                 total_files += 1
                 newest_filename = rf.name
                 if rf.mtime and (newest_mtime is None or rf.mtime > newest_mtime):
@@ -859,7 +863,13 @@ class FTPPullMethod(PollingIngestionMethod):
             except Exception:
                 logger.exception("Failed to process %s for %s", rf.name, device_id)
 
-        return total_events, total_files, newest_filename, newest_mtime
+        return (
+            total_inserted,
+            total_files,
+            newest_filename,
+            newest_mtime,
+            total_absorbed,
+        )
 
     # -------------------------------------------------------------------
     # SNMP helpers (rotate mode)
@@ -1126,7 +1136,7 @@ class FTPPullMethod(PollingIngestionMethod):
             )
 
         try:
-            await target.persist_with_drift_check(
+            inserted = await target.persist_with_drift_check(
                 events, device_id, session_factory,
             )
         except Exception:
@@ -1157,7 +1167,8 @@ class FTPPullMethod(PollingIngestionMethod):
             device_id,
             session_factory,
             last_filename=original_name,
-            new_events=len(events),
+            new_events=inserted,
+            new_absorbed=len(events) - inserted,
             new_files=1,
         )
 
@@ -1263,12 +1274,16 @@ class FTPPullMethod(PollingIngestionMethod):
 
         # Download, decode, persist
         prior_mtime = checkpoint.last_file_mtime if checkpoint else None
-        total_events, total_files, newest_filename, newest_mtime = (
-            await self._download_and_ingest(
-                client, new_files, ftp_config,
-                device_id, session_factory, prior_mtime, target,
-                checkpoint.last_successful_poll if checkpoint else None,
-            )
+        (
+            total_inserted,
+            total_files,
+            newest_filename,
+            newest_mtime,
+            total_absorbed,
+        ) = await self._download_and_ingest(
+            client, new_files, ftp_config,
+            device_id, session_factory, prior_mtime, target,
+            checkpoint.last_successful_poll if checkpoint else None,
         )
 
         # Update checkpoint after successful ingest
@@ -1280,6 +1295,7 @@ class FTPPullMethod(PollingIngestionMethod):
                 last_filename=newest_filename,
                 last_file_mtime=newest_mtime,
                 files_hash=current_hash,
-                new_events=total_events,
+                new_events=total_inserted,
+                new_absorbed=total_absorbed,
                 new_files=total_files,
             )

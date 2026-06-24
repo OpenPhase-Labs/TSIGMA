@@ -207,9 +207,20 @@ class HTTPPullMethod(PollingIngestionMethod):
             )
             return
 
-        await target.persist_with_drift_check(
-            events, device_id, session_factory,
-        )
+        try:
+            inserted = await target.persist_with_drift_check(
+                events, device_id, session_factory,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to persist events from %s for device %s",
+                http_config.host,
+                device_id,
+            )
+            await target.record_error(
+                self.name, device_id, session_factory, str(exc),
+            )
+            return
 
         if events:
             latest = max(e.timestamp for e in events)
@@ -218,7 +229,8 @@ class HTTPPullMethod(PollingIngestionMethod):
                 device_id,
                 session_factory,
                 last_event_timestamp=latest,
-                events_ingested=len(events),
+                events_ingested=inserted,
+                duplicates_absorbed=len(events) - inserted,
             )
             logger.info(
                 "Collected %d events from %s for device %s",
