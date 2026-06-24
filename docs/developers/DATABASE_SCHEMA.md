@@ -991,8 +991,9 @@ INSERT INTO detection_hardware (detection_hardware_id, name) VALUES
 --     enabling fast "anything changed?" checks without re-listing every file
 
 CREATE TABLE polling_checkpoint (
-    -- Which signal and which ingestion method
-    signal_id               TEXT NOT NULL,
+    -- Which device (controller signal or roadside sensor) and which ingestion method
+    device_type             TEXT NOT NULL,       -- 'controller' or 'sensor'
+    device_id               TEXT NOT NULL,       -- signal_id (controller) or sensor_id (sensor)
     method                  TEXT NOT NULL,       -- 'ftp_pull', 'http_pull', etc.
 
     -- File-based checkpoint (FTP/SFTP polling)
@@ -1020,7 +1021,7 @@ CREATE TABLE polling_checkpoint (
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    PRIMARY KEY (signal_id, method)
+    PRIMARY KEY (device_type, device_id, method)
 );
 
 -- Index for health monitoring queries ("which signals haven't polled recently?")
@@ -1032,11 +1033,8 @@ CREATE INDEX idx_checkpoint_errors
     ON polling_checkpoint (consecutive_errors DESC)
     WHERE consecutive_errors > 0;
 
--- Foreign key to signal table (ensures checkpoint cleanup when signal is deleted)
-ALTER TABLE polling_checkpoint
-    ADD CONSTRAINT fk_checkpoint_signal
-    FOREIGN KEY (signal_id) REFERENCES signal(signal_id)
-    ON DELETE CASCADE;
+-- No FK on device_id: the target table varies with device_type (signal vs
+-- roadside_sensor), so referential integrity is enforced at the application layer.
 ```
 
 #### Checkpoint Update Flow
