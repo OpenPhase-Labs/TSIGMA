@@ -59,6 +59,10 @@ class Signal(Base, TimestampMixin):
     # signal_metadata.collection JSONB.
     protocol: Mapped[Optional[str]] = mapped_column(Text)
     note: Mapped[Optional[str]] = mapped_column(Text)
+    # IANA timezone name (e.g. "America/New_York") for this controller's
+    # source clock, or NULL to fall back to the deployment default. Used by
+    # per-signal source-timezone normalization.
+    source_timezone: Mapped[Optional[str]] = mapped_column(Text)
     signal_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSONB)
     enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true",

@@ -27,12 +27,14 @@ from ...models.controller_clock_offset import ControllerClockOffset
 from ...models.event import ControllerEventLog
 from ...models.roadside_event import RoadsideEvent
 from ...models.roadside_sensor import RoadsideSensor, RoadsideSensorLane
+from ...models.signal import Signal
 from ...notifications.registry import WARNING, notify
 from ...notifications.suppression import (
     CHECK_CONFIG_PHASE_DRIFT,
     CHECK_CONTROLLER_REPLACEMENT,
     CHECK_TEMPORAL_INTEGRITY,
 )
+from ...settings_service import settings_cache
 from ..decoders.base import (
     DecodedEvent,
     DecoderRegistry,
@@ -765,6 +767,39 @@ async def decode_and_persist_message(
     return len(events) if events else 0
 
 
+# ---------------------------------------------------------------------------
+# Source-timezone resolution (per-signal normalization, Phase A)
+# ---------------------------------------------------------------------------
+
+
+async def resolve_source_timezone(signal_id: str, session) -> str | None:
+    """Resolve the source timezone for a signal.
+
+    Resolution order:
+
+    1. The Signal row's non-null ``source_timezone`` (short-circuits; the
+       deployment default is NOT consulted).
+    2. The ``collection.default_timezone`` deployment default, read via the
+       untyped settings cache so a missing row can resolve to ``None``.
+    3. ``None`` when neither is set.
+
+    Args:
+        signal_id: Traffic signal identifier.
+        session: Async session used for the Signal lookup and settings read.
+
+    Returns:
+        An IANA timezone name, or ``None``.
+    """
+    result = await session.execute(
+        select(Signal).where(Signal.signal_id == signal_id)
+    )
+    signal = result.scalar_one_or_none()
+    if signal is not None and signal.source_timezone is not None:
+        return signal.source_timezone
+
+    return await settings_cache.get("collection.default_timezone", session)
+
+
 __all__ = [
     # checkpoint
     "load_checkpoint",
@@ -785,4 +820,6 @@ __all__ = [
     # decoder resolution
     "resolve_decoder_by_name",
     "resolve_decoder_by_extension",
+    # source-timezone resolution
+    "resolve_source_timezone",
 ]

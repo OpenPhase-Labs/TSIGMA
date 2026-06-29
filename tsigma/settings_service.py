@@ -707,3 +707,14 @@ register(
     description="Age (days) beyond which raw controller_clock_offset rows are pruned.",
     category="watchdog",
 )
+register(
+    "collection.default_timezone",
+    str,
+    default="UTC",
+    description=(
+        "Deployment-wide fallback IANA timezone for controllers whose signal "
+        "row carries no source_timezone. Deployments SHOULD override this with "
+        "their controllers' regional IANA zone (e.g. America/New_York)."
+    ),
+    category="collection",
+)
