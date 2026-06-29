@@ -75,7 +75,16 @@ async def login_page(request: Request):
 @_authenticated_router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     """Main dashboard page."""
-    return templates.TemplateResponse(request, "pages/dashboard.html")
+    # Off-switch: when the tile cache is enabled the renderer points at the
+    # local proxy; otherwise it falls back to the configured upstream tiles.
+    tile_url = (
+        "/tiles/{z}/{x}/{y}.png"
+        if settings.tile_cache_enabled
+        else settings.tile_source_url
+    )
+    return templates.TemplateResponse(
+        request, "pages/dashboard.html", {"tile_url": tile_url}
+    )
 
 
 @_authenticated_router.get("/signals", response_class=HTMLResponse)

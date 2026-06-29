@@ -137,6 +137,16 @@ class Settings(BaseSettings):
     storage_s3_access_key: str = ""
     storage_s3_secret_key: str = ""
 
+    # Raster tile-cache proxy (MapLibre basemap).  The router caches
+    # upstream tiles in the tile storage backend and serves them with
+    # stale-while-revalidate freshness.
+    tile_cache_enabled: bool = True
+    tile_source_url: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    tile_cache_ttl_days: int = 30
+    tile_storage_path: str = "/var/lib/tsigma/tiles"
+    tile_max_zoom: int = 19
+    tile_user_agent: str = "TSIGMA/1.0"
+
     # Collector settings.  Poll intervals are the default cadence for
     # each device class; the installed scheduler can override per
     # source at runtime.  Defaults align with typical controller /

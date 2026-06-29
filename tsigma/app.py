@@ -457,6 +457,12 @@ def create_app() -> FastAPI:
                 )
             return FileResponse(str(resolved))
 
+    # --- Raster tile-cache proxy (root-mounted, behind off-switch) -----------
+    if settings.tile_cache_enabled:
+        from .api.tiles import router as tiles_router
+
+        app.include_router(tiles_router, tags=["tiles"])
+
     # --- Web UI routes (must be AFTER API routes to avoid path conflicts) ----
     if settings.enable_api:
         app.include_router(ui_router)
