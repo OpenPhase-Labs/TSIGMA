@@ -291,6 +291,45 @@ The factory returns a `FilesystemBackend` or `S3Backend` based on `TSIGMA_STORAG
 
 S3-backed cold-tier tests use moto's `ThreadedMotoServer` (not the `@mock_aws` decorator) because `aiobotocore`'s async response handling does not compose with moto's in-process monkey-patch. The server pattern runs a real HTTP server in-process and points `S3Backend.endpoint_url` at it; this exercises the actual aiobotocore code path. Install with `pip install -e ".[dev,s3]"` — the `dev` extra includes `moto[s3,server]>=5.0`.
 
+## Tile Cache (MapLibre proxy)
+
+The dashboard map renders raster tiles through a local caching proxy instead of
+hitting the upstream tile server on every pan/zoom. `GET /tiles/{z}/{x}/{y}.png`
+(mounted at app root, not under `/api/v1`) is a closed proxy for the single
+configured `tile_source_url`.
+
+**Backend:** `get_tile_storage_backend()` (in `storage/factory.py`) mirrors the
+cold-tier factory, rooted at `tile_storage_path`. Cache key:
+`tiles/{source}/{z}/{x}/{y}.png`.
+
+**Request flow:**
+- **Hit (fresh):** cached tile newer than `tile_cache_ttl_days` -> served directly, no upstream call.
+- **Hit (stale):** older than the TTL -> the stale tile is served immediately and a
+  background task refreshes it (stale-while-revalidate).
+- **Miss:** fetched once from `tile_source_url` (with `tile_user_agent`), stored, served.
+- **Single-flight:** concurrent misses for the same key coalesce into one upstream
+  fetch (in-process per-key Future).
+- Responses carry `Cache-Control: public, max-age=<ttl>` and an `ETag`.
+- **Bounds:** `z > tile_max_zoom`, or `x`/`y` outside `[0, 2**z)`, returns 404.
+
+**Off-switch:** with `tile_cache_enabled=false`, the `/tiles` route is not mounted
+and the dashboard renderer falls back to `tile_source_url` directly (the view injects
+the chosen URL; attribution is preserved either way).
+
+**Config (env prefix `TSIGMA_`):**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `tile_cache_enabled` | `true` | Mount the proxy + point the renderer at it. |
+| `tile_source_url` | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | Upstream raster tile template. |
+| `tile_cache_ttl_days` | `30` | Freshness window before a tile is treated as stale. |
+| `tile_storage_path` | `/var/lib/tsigma/tiles` | Filesystem root for the tile cache. |
+| `tile_max_zoom` | `19` | Upper zoom bound (closed proxy). |
+| `tile_user_agent` | `TSIGMA/1.0` | User-Agent sent on upstream fetches. |
+
+**Offline seed (follow-on, not in the MVP):** a scheduled job can walk an agency's
+bbox x zoom to prime the cache and emit a read-only MBTiles pack for air-gapped sites.
+
 ## Adding a New Storage Backend
 
 1. **Create the module** -- add `tsigma/storage/yourbackend.py`.
