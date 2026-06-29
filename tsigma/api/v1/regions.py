@@ -18,7 +18,7 @@ from ...auth.sessions import SessionData
 from ...dependencies import get_session
 from ...models import Region
 from .crud_factory import crud_router
-from .schemas import UPDATE_REQUIRED_MSG
+from .schemas import UPDATE_REQUIRED_MSG, RegionLookupItem
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas
@@ -56,6 +56,30 @@ class RegionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 router = APIRouter()
+
+
+# Registered before the crud_router so the literal /lookup path is not
+# shadowed by the factory's GET /{pk} route.
+@router.get("/lookup", response_model=list[RegionLookupItem])
+async def lookup_regions(
+    session: AsyncSession = Depends(get_session),
+    _access=Depends(require_access("signal_detail")),
+):
+    """Return compact id/label/parent items for all regions."""
+    rows = (await session.execute(select(Region))).scalars().all()
+    return [
+        RegionLookupItem(
+            id=str(r.region_id),
+            label=r.description,
+            parent_id=(
+                str(r.parent_region_id)
+                if r.parent_region_id is not None
+                else None
+            ),
+        )
+        for r in rows
+    ]
+
 
 router.include_router(
     crud_router(

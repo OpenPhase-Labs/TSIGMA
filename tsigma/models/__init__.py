@@ -46,6 +46,7 @@ from .event import ControllerEventLog
 from .file_provenance import FileIngestProvenance
 from .ingest_review import IngestReview
 from .reference import (
+    Area,
     ControllerType,
     Corridor,
     DetectionHardware,
@@ -53,10 +54,12 @@ from .reference import (
     EventCodeDefinition,
     Jurisdiction,
     LaneType,
+    MetricType,
     MovementType,
     Region,
     RoadsideSensorModel,
     RoadsideSensorVendor,
+    SignalArea,
 )
 from .roadside_event import (
     ROADSIDE_EVENT_TYPE_CLASSIFICATION,
@@ -126,6 +129,7 @@ __all__ = [
     "SplitFailureHourly",
     "YellowRedActivation15Min",
     # Reference
+    "Area",
     "Corridor",
     "ControllerType",
     "DetectionHardware",
@@ -133,10 +137,12 @@ __all__ = [
     "EventCodeDefinition",
     "Jurisdiction",
     "LaneType",
+    "MetricType",
     "MovementType",
     "Region",
     "RoadsideSensorModel",
     "RoadsideSensorVendor",
+    "SignalArea",
     # System
     "SystemSetting",
     "SystemSettingAudit",

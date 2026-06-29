@@ -19,7 +19,7 @@ from ...auth.sessions import SessionData
 from ...dependencies import get_session
 from ...models import Corridor, Jurisdiction
 from .crud_factory import crud_router
-from .schemas import UPDATE_REQUIRED_MSG
+from .schemas import UPDATE_REQUIRED_MSG, LookupItem
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,19 @@ async def _validate_jurisdiction(
 # ---------------------------------------------------------------------------
 
 router = APIRouter()
+
+
+# Registered before the crud_router so the literal /lookup path is not
+# shadowed by the factory's GET /{pk} route.
+@router.get("/lookup", response_model=list[LookupItem])
+async def lookup_corridors(
+    session: AsyncSession = Depends(get_session),
+    _access=Depends(require_access("signal_detail")),
+):
+    """Return compact id/label items for all corridors."""
+    rows = (await session.execute(select(Corridor))).scalars().all()
+    return [LookupItem(id=str(c.corridor_id), label=c.name) for c in rows]
+
 
 router.include_router(
     crud_router(

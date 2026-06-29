@@ -43,7 +43,27 @@ DELETE /api/v1/detectors/{detector_id}
 # Organization
 /api/v1/regions/
 /api/v1/corridors/
-/api/v1/jurisdictions/
+/api/v1/jurisdictions/                               # Create/Update also accept `other_partners` (free-text)
+/api/v1/areas/                                       # CRUD; admin writes, require_access("signal_detail") reads
+
+# Compact lookup lists -> [{id, label}] (regions add parent_id) — require_access("signal_detail")
+GET    /api/v1/jurisdictions/lookup
+GET    /api/v1/regions/lookup
+GET    /api/v1/corridors/lookup
+GET    /api/v1/areas/lookup
+
+# Area <-> signal membership
+GET    /api/v1/areas/{area_id}/signals
+POST   /api/v1/areas/{area_id}/signals               # body: {signal_id}; admin
+DELETE /api/v1/areas/{area_id}/signals/{signal_id}   # admin
+GET    /api/v1/signals/{signal_id}/areas
+
+# Metric types (report-metric reference table; key validated against the report registry)
+GET    /api/v1/metric-types/                         # ordered by display_order; require_access("reports")
+GET    /api/v1/metric-types/{key}
+POST   /api/v1/metric-types/                         # admin; 422 if key not in the report registry
+PUT    /api/v1/metric-types/{key}                    # admin
+DELETE /api/v1/metric-types/{key}                    # admin
 
 # Routes
 /api/v1/routes/

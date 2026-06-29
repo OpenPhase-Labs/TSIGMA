@@ -53,6 +53,7 @@ def _mock_jurisdiction(**overrides):
         "name": "City of Atlanta",
         "mpo_name": "Atlanta Regional Commission",
         "county_name": "Fulton County",
+        "other_partners": None,
     }
     defaults.update(overrides)
     mock = MagicMock(spec=Jurisdiction)

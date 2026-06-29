@@ -20,10 +20,12 @@ from .api.graphql.schema import graphql_router
 from .api.ui import router as ui_router
 from .api.v1.analytics import router as analytics_router
 from .api.v1.approaches import router as approaches_router
+from .api.v1.areas import router as areas_router
 from .api.v1.collection import router as collection_router
 from .api.v1.corridors import router as corridors_router
 from .api.v1.detectors import router as detectors_router
 from .api.v1.jurisdictions import router as jurisdictions_router
+from .api.v1.metric_types import router as metric_types_router
 from .api.v1.reference import router as reference_router
 from .api.v1.regions import router as regions_router
 from .api.v1.reports import router as reports_router
@@ -418,8 +420,10 @@ def create_app() -> FastAPI:
         app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
         app.include_router(collection_router, prefix="/api/v1", tags=["collection"])
         app.include_router(reference_router, prefix="/api/v1", tags=["reference"])
+        app.include_router(metric_types_router, prefix="/api/v1/metric-types", tags=["metric-types"])
         app.include_router(regions_router, prefix="/api/v1/regions", tags=["regions"])
         app.include_router(corridors_router, prefix="/api/v1/corridors", tags=["corridors"])
+        app.include_router(areas_router, prefix="/api/v1/areas", tags=["areas"])
         app.include_router(routes_router, prefix="/api/v1", tags=["routes"])
         app.include_router(reports_router, prefix="/api/v1", tags=["reports"])
         app.include_router(settings_router, prefix="/api/v1/settings", tags=["settings"])
