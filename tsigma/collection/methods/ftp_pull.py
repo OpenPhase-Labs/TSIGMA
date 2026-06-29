@@ -252,6 +252,9 @@ class FTPPullConfig(BaseModel):
     snmp_priv_passphrase: str = ""
     logging_oid: str = _ASC3_LOGGING_OID
     rotate_filename: Optional[str] = None
+    recursive: bool = False
+    max_depth: int = 5
+    follow_symlinks: bool = False
 
     @property
     def default_port(self) -> int:
@@ -278,7 +281,13 @@ class _FileTransferClient(ABC):
         ...
 
     @abstractmethod
-    async def list_dir(self, path: str) -> list[RemoteFile]:
+    async def list_dir(
+        self,
+        path: str,
+        recursive: bool = False,
+        max_depth: int = 5,
+        follow_symlinks: bool = False,
+    ) -> list[RemoteFile]:
         """List files in a remote directory."""
         ...
 
@@ -342,14 +351,66 @@ class _AioFTPClient(_FileTransferClient):
             )
         self._ctx = await self._client.__aenter__()
 
-    async def list_dir(self, path: str) -> list[RemoteFile]:
-        """List files in remote FTP directory."""
-        result = []
-        async for item_path, info in self._ctx.list(path):
-            if info.get("type") == "file":
-                name = PurePosixPath(item_path).name
-                size = int(info.get("size", 0))
-                result.append(RemoteFile(name=name, size=size, mtime=None))
+    async def list_dir(
+        self,
+        path: str,
+        recursive: bool = False,
+        max_depth: int = 5,
+        follow_symlinks: bool = False,
+    ) -> list[RemoteFile]:
+        """List files in a remote FTP directory.
+
+        With ``recursive=False`` (default) only regular files directly in
+        ``path`` are returned with bare filenames. With ``recursive=True``
+        the listing descends subdirectories up to ``max_depth`` levels below
+        the root; each returned ``RemoteFile.name`` is the POSIX-relative
+        subpath from ``path``. Symlinked directories are descended only when
+        ``follow_symlinks=True``.
+
+        Cycle safety on FTP relies on ``max_depth``: aioftp exposes no
+        ``realpath``, so link targets cannot be resolved and a symlink cycle
+        cannot be detected by identity. The ``visited`` set below only dedups
+        identical downward paths reached via multiple routes; it does NOT
+        guard against symlink cycles. ``max_depth`` is what bounds an FTP
+        cycle.
+        """
+        root = PurePosixPath(path)
+        result: list[RemoteFile] = []
+        # Dedup of identical downward paths only (see method docstring):
+        # this is NOT symlink-cycle protection on FTP — max_depth bounds that.
+        visited: set[str] = {str(root)}
+        # Stack of (dir_path, depth) to walk iteratively.
+        stack: list[tuple[PurePosixPath, int]] = [(root, 0)]
+
+        while stack:
+            current, depth = stack.pop()
+            async for item_path, info in self._ctx.list(str(current)):
+                item_type = info.get("type")
+                child = PurePosixPath(current) / PurePosixPath(item_path).name
+                if item_type == "file":
+                    size = int(info.get("size", 0))
+                    rel = child.relative_to(root)
+                    result.append(
+                        RemoteFile(name=rel.as_posix(), size=size, mtime=None)
+                    )
+                    continue
+                if not recursive:
+                    continue
+                is_dir = item_type == "dir"
+                is_link = item_type == "link"
+                if not (is_dir or (is_link and follow_symlinks)):
+                    continue
+                if depth + 1 > max_depth:
+                    logger.debug(
+                        "Max recursion depth %d reached at %s — not descending",
+                        max_depth, child,
+                    )
+                    continue
+                key = str(child)
+                if key in visited:
+                    continue
+                visited.add(key)
+                stack.append((child, depth + 1))
         return result
 
     async def download(self, path: str) -> bytes:
@@ -411,19 +472,75 @@ class _AsyncSSHClient(_FileTransferClient):
         self._conn = await asyncssh.connect(**kwargs)
         self._sftp = await self._conn.start_sftp_client()
 
-    async def list_dir(self, path: str) -> list[RemoteFile]:
-        """List files in remote SFTP directory."""
-        result = []
-        for entry in await self._sftp.readdir(path):
-            attrs = entry.attrs
-            if attrs.type != 1:  # Not a regular file
-                continue
-            mtime = None
-            if attrs.mtime is not None:
-                mtime = datetime.fromtimestamp(attrs.mtime, tz=timezone.utc)
-            result.append(
-                RemoteFile(name=entry.filename, size=attrs.size or 0, mtime=mtime)
-            )
+    async def list_dir(
+        self,
+        path: str,
+        recursive: bool = False,
+        max_depth: int = 5,
+        follow_symlinks: bool = False,
+    ) -> list[RemoteFile]:
+        """List files in a remote SFTP directory.
+
+        With ``recursive=False`` (default) only regular files directly in
+        ``path`` are returned with bare filenames. With ``recursive=True``
+        the listing descends subdirectories up to ``max_depth`` levels below
+        the root; each returned ``RemoteFile.name`` is the POSIX-relative
+        subpath from ``path``. Symlinked directories (SFTP type 3) are
+        descended only when ``follow_symlinks=True``; in that case resolved
+        real paths are tracked to guard against symlink cycles.
+
+        ``realpath`` is only invoked when cycle tracking is actually needed
+        (``recursive`` and ``follow_symlinks``). The non-recursive default
+        path and the recursive-without-symlink-follow path never resolve real
+        paths, so the common 9000+ signal poll pays no extra round-trip.
+        """
+        root = PurePosixPath(path)
+        result: list[RemoteFile] = []
+        track_cycles = recursive and follow_symlinks
+        visited: set[str] = set()
+        if track_cycles:
+            visited.add(await self._sftp.realpath(str(root)))
+        # Stack of (dir_path, depth) to walk iteratively.
+        stack: list[tuple[PurePosixPath, int]] = [(root, 0)]
+
+        while stack:
+            current, depth = stack.pop()
+            for entry in await self._sftp.readdir(str(current)):
+                attrs = entry.attrs
+                child = PurePosixPath(current) / entry.filename
+                if attrs.type == 1:  # Regular file
+                    mtime = None
+                    if attrs.mtime is not None:
+                        mtime = datetime.fromtimestamp(
+                            attrs.mtime, tz=timezone.utc
+                        )
+                    rel = child.relative_to(root)
+                    result.append(
+                        RemoteFile(
+                            name=rel.as_posix(),
+                            size=attrs.size or 0,
+                            mtime=mtime,
+                        )
+                    )
+                    continue
+                if not recursive:
+                    continue
+                is_dir = attrs.type == 2
+                is_link = attrs.type == 3
+                if not (is_dir or (is_link and follow_symlinks)):
+                    continue
+                if depth + 1 > max_depth:
+                    logger.debug(
+                        "Max recursion depth %d reached at %s — not descending",
+                        max_depth, child,
+                    )
+                    continue
+                if track_cycles:
+                    real = await self._sftp.realpath(str(child))
+                    if real in visited:
+                        continue
+                    visited.add(real)
+                stack.append((child, depth + 1))
         return result
 
     async def download(self, path: str) -> bytes:
@@ -531,6 +648,9 @@ class FTPPullMethod(PollingIngestionMethod):
             snmp_priv_passphrase=raw.get("snmp_priv_passphrase", ""),
             logging_oid=raw.get("logging_oid", _ASC3_LOGGING_OID),
             rotate_filename=raw.get("rotate_filename"),
+            recursive=raw.get("recursive", False),
+            max_depth=raw.get("max_depth", 5),
+            follow_symlinks=raw.get("follow_symlinks", False),
         )
 
     def _create_client(self, config: FTPPullConfig) -> _FileTransferClient:
@@ -1020,7 +1140,12 @@ class FTPPullMethod(PollingIngestionMethod):
         )
 
         # Phase 1: Ingest leftovers from previous crashed cycles
-        all_files = await client.list_dir(ftp_config.remote_dir)
+        all_files = await client.list_dir(
+            ftp_config.remote_dir,
+            recursive=ftp_config.recursive,
+            max_depth=ftp_config.max_depth,
+            follow_symlinks=ftp_config.follow_symlinks,
+        )
         leftovers = [
             rf for rf in all_files
             if self._is_tsigma_renamed(rf.name)
@@ -1032,7 +1157,12 @@ class FTPPullMethod(PollingIngestionMethod):
             )
 
         # Phase 2: Rename all active files with UTC timestamp
-        all_files = await client.list_dir(ftp_config.remote_dir)
+        all_files = await client.list_dir(
+            ftp_config.remote_dir,
+            recursive=ftp_config.recursive,
+            max_depth=ftp_config.max_depth,
+            follow_symlinks=ftp_config.follow_symlinks,
+        )
         rotate_targets = self._resolve_rotate_targets(ftp_config, all_files)
         if not rotate_targets:
             logger.debug("No files to rotate for device %s", device_id)
@@ -1247,7 +1377,12 @@ class FTPPullMethod(PollingIngestionMethod):
         )
 
         # List and filter remote files
-        all_files = await client.list_dir(ftp_config.remote_dir)
+        all_files = await client.list_dir(
+            ftp_config.remote_dir,
+            recursive=ftp_config.recursive,
+            max_depth=ftp_config.max_depth,
+            follow_symlinks=ftp_config.follow_symlinks,
+        )
         matching_files = [
             rf for rf in all_files
             if PurePosixPath(rf.name).suffix.lower() in ftp_config.file_extensions
