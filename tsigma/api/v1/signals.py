@@ -18,14 +18,15 @@ from ...auth.dependencies import require_access, require_admin
 from ...auth.sessions import SessionData
 from ...crypto import encrypt_sensitive_fields, has_encryption_key, redact_metadata
 from ...dependencies import get_audited_session, get_session
-from ...models import Signal, SignalAudit
+from ...models import Area, Signal, SignalArea, SignalAudit
 from ...reports.sdk.limits import (
     require_max_aggregation_days,
     require_max_lookback,
 )
 from ...reports.sdk.pagination import paginated_event_list
 from ...reports.sdk.queries import fetch_events
-from .schemas import SignalCreate, SignalUpdate
+from .helpers import get_or_404
+from .schemas import AreaResponse, SignalCreate, SignalUpdate
 
 router = APIRouter()
 
@@ -319,6 +320,23 @@ async def list_signal_audit(
         }
         for row in rows
     ]
+
+
+@router.get("/{signal_id}/areas", response_model=list[AreaResponse])
+async def list_signal_areas(
+    signal_id: str,
+    session: AsyncSession = Depends(get_session),
+    _access=Depends(require_access("signal_detail")),
+):
+    """List all areas a signal belongs to."""
+    await get_or_404(session, Signal, Signal.signal_id, signal_id, "Signal")
+
+    result = await session.execute(
+        select(Area)
+        .join(SignalArea, SignalArea.area_id == Area.area_id)
+        .where(SignalArea.signal_id == signal_id)
+    )
+    return result.scalars().all()
 
 
 @router.get("/{signal_id}/events")

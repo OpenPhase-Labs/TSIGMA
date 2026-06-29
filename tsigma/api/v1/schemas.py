@@ -215,6 +215,7 @@ class JurisdictionCreate(BaseModel):
     name: str = Field(..., min_length=1)
     mpo_name: Optional[str] = None
     county_name: Optional[str] = None
+    other_partners: Optional[str] = None
 
 
 class JurisdictionUpdate(BaseModel):
@@ -223,6 +224,7 @@ class JurisdictionUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1)
     mpo_name: Optional[str] = None
     county_name: Optional[str] = None
+    other_partners: Optional[str] = None
 
     @model_validator(mode="after")
     def check_at_least_one_field(self) -> "JurisdictionUpdate":
@@ -242,3 +244,77 @@ class JurisdictionResponse(BaseModel):
     name: str
     mpo_name: Optional[str] = None
     county_name: Optional[str] = None
+    other_partners: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Config lookup schemas
+# ---------------------------------------------------------------------------
+
+
+class LookupItem(BaseModel):
+    """Generic id/label lookup item."""
+
+    id: str
+    label: str
+
+
+class RegionLookupItem(BaseModel):
+    """Region lookup item with an optional parent reference."""
+
+    id: str
+    label: str
+    parent_id: Optional[str] = None
+
+
+class MetricTypeItem(BaseModel):
+    """Metric type lookup item."""
+
+    model_config = {"from_attributes": True}
+
+    key: str
+    label: str
+    display_order: int
+
+
+# ---------------------------------------------------------------------------
+# Area schemas
+# ---------------------------------------------------------------------------
+
+
+class AreaCreate(BaseModel):
+    """Schema for creating an area."""
+
+    name: str = Field(..., min_length=1)
+    description: Optional[str] = None
+
+
+class AreaUpdate(BaseModel):
+    """Schema for updating an area (partial update)."""
+
+    name: Optional[str] = Field(None, min_length=1)
+    description: Optional[str] = None
+
+    @model_validator(mode="after")
+    def check_at_least_one_field(self) -> "AreaUpdate":
+        """Ensure at least one field is provided for update."""
+        values = self.model_dump(exclude_unset=True)
+        if not values:
+            raise ValueError(UPDATE_REQUIRED_MSG)
+        return self
+
+
+class AreaResponse(BaseModel):
+    """Area data returned in API responses."""
+
+    model_config = {"from_attributes": True}
+
+    area_id: UUID
+    name: str
+    description: Optional[str] = None
+
+
+class AreaSignalCreate(BaseModel):
+    """Schema for adding a signal to an area."""
+
+    signal_id: str = Field(..., min_length=1)

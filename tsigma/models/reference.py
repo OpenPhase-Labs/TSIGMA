@@ -132,6 +132,7 @@ class Jurisdiction(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     mpo_name: Mapped[Optional[str]] = mapped_column(Text)
     county_name: Mapped[Optional[str]] = mapped_column(Text)
+    other_partners: Mapped[Optional[str]] = mapped_column(Text)
 
     __table_args__ = {"schema": tsigma_schema("config")}
 
@@ -255,5 +256,67 @@ class EventCodeDefinition(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     category: Mapped[str] = mapped_column(Text, nullable=False)
     param_type: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = {"schema": tsigma_schema("config")}
+
+
+class Area(Base):
+    """
+    Named operational area grouping (e.g., "Downtown District").
+
+    Flat organizational tag for signals — different from Region (hierarchical)
+    and Corridor (linear). Signals join via the ``signal_area`` association.
+    """
+
+    __tablename__ = "area"
+
+    area_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+
+    __table_args__ = {"schema": tsigma_schema("config")}
+
+
+class SignalArea(Base):
+    """
+    Association of signals to areas (many-to-many).
+
+    Composite primary key ``(signal_id, area_id)``. Cascades on deletion of
+    either the signal or the area.
+    """
+
+    __tablename__ = "signal_area"
+
+    signal_id: Mapped[str] = mapped_column(
+        Text,
+        schema_fk("config", "signal.signal_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    area_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        schema_fk("config", "area.area_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    __table_args__ = {"schema": tsigma_schema("config")}
+
+
+class MetricType(Base):
+    """
+    Catalogue of selectable metrics with display ordering.
+
+    ``key`` is the stable identifier (e.g., "avg_speed"); ``label`` is the
+    human-readable name; ``display_order`` controls presentation order.
+    """
+
+    __tablename__ = "metric_type"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False)
 
     __table_args__ = {"schema": tsigma_schema("config")}

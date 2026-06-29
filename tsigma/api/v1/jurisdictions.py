@@ -13,9 +13,27 @@ from ...auth.dependencies import require_access
 from ...dependencies import get_session
 from ...models import Jurisdiction
 from .crud_factory import crud_router
-from .schemas import JurisdictionCreate, JurisdictionResponse, JurisdictionUpdate
+from .schemas import (
+    JurisdictionCreate,
+    JurisdictionResponse,
+    JurisdictionUpdate,
+    LookupItem,
+)
 
 router = APIRouter()
+
+
+# Registered before the crud_router so the literal /lookup path is not
+# shadowed by the factory's GET /{pk} route.
+@router.get("/lookup", response_model=list[LookupItem])
+async def lookup_jurisdictions(
+    session: AsyncSession = Depends(get_session),
+    _access=Depends(require_access("signal_detail")),
+):
+    """Return compact id/label items for all jurisdictions."""
+    rows = (await session.execute(select(Jurisdiction))).scalars().all()
+    return [LookupItem(id=str(j.jurisdiction_id), label=j.name) for j in rows]
+
 
 # Factory handles get/create/update/delete; custom list below for pagination.
 router.include_router(
