@@ -320,7 +320,10 @@ class TestPollOnce:
         target = _make_mock_target()
         with patch.object(method, "_create_client", return_value=client):
             await method.poll_once("SIG-001", config, factory, target=target)
-        client.list_dir.assert_awaited_once_with("/")
+        # list_dir now carries the (default) recursion options through from config.
+        client.list_dir.assert_awaited_once_with(
+            "/", recursive=False, max_depth=5, follow_symlinks=False
+        )
 
     @pytest.mark.asyncio
     async def test_filters_by_extension(self):

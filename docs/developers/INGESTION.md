@@ -73,6 +73,29 @@ TSIGMA watches local directories for files dropped by external processes.
 
 **If you don't use a method, simply exclude that `.py` file from your deployment.**
 
+#### Recursive Directory Traversal (FTP / FTPS / SFTP)
+
+By default `ftp_pull` lists only the configured `remote_dir` (flat, backward-compatible).
+Some vendors lay logs in per-signal subdirectories (D4 `/sram` `/atc`, Trafficware per-dir,
+Siemens/Yunex per-signal), which require descending into subdirectories. Recursion is
+opt-in per signal via the collection config (`signal_metadata['collection']`):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `recursive` | `false` | Descend into subdirectories. Off = current flat behavior. |
+| `max_depth` | `5` | Maximum levels below `remote_dir` to descend. Fail-closed: files deeper than this are not listed. |
+| `follow_symlinks` | `false` | Follow symlinked directories. Off = symlinked dirs are not descended. |
+
+Behavior notes:
+- Returned files carry their **relative subpath** (e.g. `sram/f.dat`), so download and
+  rename/archive target the file in its subdirectory (the path round-trips via
+  `remote_dir / name`).
+- **Loop safety:** with `follow_symlinks` on, SFTP resolves real paths (`realpath`) and
+  skips already-visited directories, so a symlink cycle terminates. FTP/FTPS cannot resolve
+  link targets (aioftp exposes no `realpath`), so on FTP a symlink cycle is bounded by
+  `max_depth` alone - keep `max_depth` modest when enabling `follow_symlinks` over FTP.
+- `recursive=false` is byte-for-byte the prior behavior; existing signals are unaffected.
+
 ---
 
 ## Decoder Plugin Architecture
