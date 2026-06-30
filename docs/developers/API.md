@@ -73,8 +73,19 @@ DELETE /api/v1/metric-types/{key}                    # admin
 
 # Reports
 GET    /api/v1/reports                              # list available
+GET    /api/v1/reports/{name}/schema                # JSON schema of the report's params
 POST   /api/v1/reports/{name}/execute               # run report
 POST   /api/v1/reports/{name}/export?format=csv     # export
+
+# Report execute/export status codes:
+#   200  success
+#   404  unknown report
+#   463  invalid report parameters (custom 4xx) - params failed the report's schema;
+#        body: {detail: {error: "invalid_report_params", failures: [{field, message}]}}.
+#        Kept distinct from gating 422 so clients can tell "bad params" from "not ready".
+#   422  report gating - the report ran but its data is not ready (preferred_http_status)
+#   500  report execution error
+# Untyped/legacy reports (no Pydantic params model) bypass validation and receive the raw dict.
 
 # Analytics
 GET    /api/v1/analytics/detectors/stuck
