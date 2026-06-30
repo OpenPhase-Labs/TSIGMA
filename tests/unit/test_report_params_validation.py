@@ -71,6 +71,22 @@ def _add_session_override(app, mock_session):
     app.dependency_overrides[get_session] = override_session
 
 
+def _report_session():
+    """A request session whose measure_default read yields no admin rows.
+
+    The report chokepoint now resolves admin defaults from the
+    ``measure_default`` table via ``session.execute(...).scalars().all()``
+    before validation. These tests exercise validation/gating with no admin
+    defaults configured, so the read returns an empty list (code/model
+    defaults apply).
+    """
+    session = make_mock_session()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=result)
+    return session
+
+
 def _make_fake_report_cls(execute_result=None, export_result=None):
     """Create a fake (untyped/legacy) report class for mocking ReportRegistry.
 
@@ -161,7 +177,7 @@ class TestTypedReportRun:
         """Valid params -> 200; default threshold applied via the model."""
         mock_registry.get.return_value = _TReport
 
-        mock_session = make_mock_session()
+        mock_session = _report_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -180,7 +196,7 @@ class TestTypedReportRun:
         """Missing signal_id -> 463 structured body naming signal_id."""
         mock_registry.get.return_value = _TReport
 
-        mock_session = make_mock_session()
+        mock_session = _report_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -201,7 +217,7 @@ class TestTypedReportRun:
         """Non-numeric threshold -> 463; failures name threshold."""
         mock_registry.get.return_value = _TReport
 
-        mock_session = make_mock_session()
+        mock_session = _report_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -257,7 +273,7 @@ class TestTypedReportExport:
     def test_export_missing_param_returns_463(self, mock_registry):
         mock_registry.get.return_value = _TReport
 
-        mock_session = make_mock_session()
+        mock_session = _report_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -277,7 +293,7 @@ class TestTypedReportExport:
     def test_export_valid_params_returns_200_bytes(self, mock_registry):
         mock_registry.get.return_value = _TReport
 
-        mock_session = make_mock_session()
+        mock_session = _report_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)
@@ -300,7 +316,7 @@ class TestGatingStaysDistinct:
     def test_gating_422_on_valid_params(self, mock_registry):
         mock_registry.get.return_value = _GatingReport
 
-        mock_session = make_mock_session()
+        mock_session = _report_session()
         app = _create_test_app()
         _add_access_overrides(app)
         _add_session_override(app, mock_session)

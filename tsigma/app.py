@@ -25,6 +25,7 @@ from .api.v1.collection import router as collection_router
 from .api.v1.corridors import router as corridors_router
 from .api.v1.detectors import router as detectors_router
 from .api.v1.jurisdictions import router as jurisdictions_router
+from .api.v1.measure_defaults import router as measure_defaults_router
 from .api.v1.metric_types import router as metric_types_router
 from .api.v1.reference import router as reference_router
 from .api.v1.regions import router as regions_router
@@ -426,6 +427,11 @@ def create_app() -> FastAPI:
         app.include_router(areas_router, prefix="/api/v1/areas", tags=["areas"])
         app.include_router(routes_router, prefix="/api/v1", tags=["routes"])
         app.include_router(reports_router, prefix="/api/v1", tags=["reports"])
+        app.include_router(
+            measure_defaults_router,
+            prefix="/api/v1",
+            tags=["measure-defaults"],
+        )
         app.include_router(settings_router, prefix="/api/v1/settings", tags=["settings"])
         app.include_router(
             graphql_router,

@@ -5,10 +5,11 @@ These are lookup tables with relatively static data (directions, controller type
 Most have seed data loaded during database initialization.
 """
 
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy import Boolean, Integer, SmallInteger, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -318,5 +319,22 @@ class MetricType(Base):
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     label: Mapped[str] = mapped_column(Text, nullable=False)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = {"schema": tsigma_schema("config")}
+
+
+class MeasureDefault(Base):
+    """
+    Admin-configurable default parameter values per report/measure.
+
+    Composite primary key ``(report_name, param_name)`` keys a JSONB
+    ``value`` holding the default for that report's named parameter.
+    """
+
+    __tablename__ = "measure_default"
+
+    report_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    param_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[Any] = mapped_column(JSONB, nullable=False)
 
     __table_args__ = {"schema": tsigma_schema("config")}
