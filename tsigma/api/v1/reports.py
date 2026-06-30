@@ -11,10 +11,12 @@ import typing
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.dependencies import require_access
 from ...dependencies import get_session
+from ...models import MeasureDefault
 from ...reports.registry import ReportRegistry, ReportResourceNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,10 @@ logger = logging.getLogger(__name__)
 # Custom 4xx for report param-validation failure, kept distinct from the
 # gating 422 a report may return via ``preferred_http_status``.
 HTTP_INVALID_REPORT_PARAMS = 463
+
+# Params that are ALWAYS supplied per-request and must NEVER be filled from
+# an admin ``measure_default`` row, even if a stray row exists for one.
+STRUCTURAL_PARAMS = frozenset({"signal_id", "start", "end"})
 
 router = APIRouter()
 
@@ -62,6 +68,36 @@ def _validate_params(report_cls: type, params):
             status_code=HTTP_INVALID_REPORT_PARAMS,
             detail={"error": "invalid_report_params", "failures": failures},
         ) from exc
+
+
+async def _resolve_and_validate_params(report_cls, report_name, params, session):
+    """Resolve admin defaults then validate at the report chokepoint.
+
+    Precedence is ``per-request value -> admin default -> code default``:
+    admin ``measure_default`` rows (keyed by ``report_name``) are merged
+    UNDER the per-request ``params``, then validated into the report's
+    Pydantic model so the model's field defaults supply anything neither
+    layer set. Structural params (see ``STRUCTURAL_PARAMS``) are never
+    admin-defaulted. Untyped/legacy reports keep raw-dict passthrough and
+    read no admin defaults. Validation failures raise ``HTTPException(463)``
+    via the shared ``_validate_params``.
+    """
+    params_cls = _params_cls_for(report_cls)
+    if params_cls is None:
+        return params  # untyped/legacy report: no admin defaults to resolve
+
+    rows = (
+        await session.execute(
+            select(MeasureDefault).where(MeasureDefault.report_name == report_name)
+        )
+    ).scalars().all()
+    admin_defaults = {
+        row.param_name: row.value
+        for row in rows
+        if row.param_name not in STRUCTURAL_PARAMS
+    }
+    merged = {**admin_defaults, **params}
+    return _validate_params(report_cls, merged)
 
 
 @router.get("/reports")
@@ -151,9 +187,12 @@ async def run_report(
             detail=f"Report not found: {report_name}",
         ) from None
 
-    # Validate params at the chokepoint BEFORE the broad try/except so a
-    # 463 (invalid params) is not swallowed and re-raised as a 500.
-    params = _validate_params(report_cls, params)
+    # Resolve admin defaults and validate at the chokepoint BEFORE the broad
+    # try/except so a 463 (invalid params) is not swallowed and re-raised as
+    # a 500.
+    params = await _resolve_and_validate_params(
+        report_cls, report_name, params, session
+    )
 
     try:
         report = report_cls()
@@ -221,9 +260,12 @@ async def export_report(
             detail=f"Report not found: {report_name}",
         ) from None
 
-    # Validate params at the chokepoint BEFORE the broad try/except so a
-    # 463 (invalid params) is not swallowed and re-raised as a 500.
-    params = _validate_params(report_cls, params)
+    # Resolve admin defaults and validate at the chokepoint BEFORE the broad
+    # try/except so a 463 (invalid params) is not swallowed and re-raised as
+    # a 500.
+    params = await _resolve_and_validate_params(
+        report_cls, report_name, params, session
+    )
 
     try:
         report = report_cls()

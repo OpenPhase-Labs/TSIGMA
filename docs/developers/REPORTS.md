@@ -205,6 +205,27 @@ class ApproachDelayReport(Report[ApproachDelayParams]):
 
 ---
 
+## Parameter Resolution (per-request -> admin default -> code default)
+
+At the execute/export chokepoint the framework validates the request params into the
+report's Pydantic model. Before validation it merges admin-configured defaults UNDER the
+per-request values, so each tunable param resolves as:
+
+1. **Per-request value** (if the caller supplied it) wins.
+2. else **Admin default** from the `measure_default` table (keyed by report name + param name).
+3. else **Code default** - the model field's `Field(default=...)`.
+
+**Structural params** (`signal_id`, `start`, `end`) are always per-request and are NEVER
+admin-defaulted (excluded from the merge). Admins manage defaults via
+`POST/DELETE /api/v1/measure-defaults` (require_admin) and inspect the resolved values via
+`GET /api/v1/reports/{name}/effective-defaults`. Setting a default for an unknown or structural
+param is rejected (400); a value that fails the param's type is rejected with the custom **463**
+(`{detail:{error:"invalid_report_params", failures:[...]}}`), kept distinct from the gating 422.
+
+Untyped/legacy reports (no Pydantic params model) skip resolution and receive the raw dict.
+
+---
+
 ## Report SDK
 
 Reports use the SDK for all data access. The SDK handles database queries

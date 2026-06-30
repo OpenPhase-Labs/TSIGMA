@@ -87,6 +87,15 @@ POST   /api/v1/reports/{name}/export?format=csv     # export
 #   500  report execution error
 # Untyped/legacy reports (no Pydantic params model) bypass validation and receive the raw dict.
 
+# Measure defaults (admin-configurable report parameter defaults)
+GET    /api/v1/reports/{name}/effective-defaults    # effective tunable defaults (admin overlaid on code)
+GET    /api/v1/measure-defaults?report_name=...     # list admin defaults (require_access reports)
+POST   /api/v1/measure-defaults                     # admin upsert {report_name, param_name, value}
+DELETE /api/v1/measure-defaults/{report}/{param}    # admin remove
+# Resolution at execute/export: per-request value -> admin default -> code (model) default.
+# Structural params (signal_id, start, end) are always per-request and never admin-defaulted.
+# POST validates: unknown report 404; unknown/structural param 400; bad value type 463.
+
 # Analytics
 GET    /api/v1/analytics/detectors/stuck
 GET    /api/v1/analytics/detectors/gaps
