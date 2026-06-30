@@ -10,7 +10,7 @@ import typing
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.dependencies import require_access
@@ -18,6 +18,10 @@ from ...dependencies import get_session
 from ...reports.registry import ReportRegistry, ReportResourceNotFoundError
 
 logger = logging.getLogger(__name__)
+
+# Custom 4xx for report param-validation failure, kept distinct from the
+# gating 422 a report may return via ``preferred_http_status``.
+HTTP_INVALID_REPORT_PARAMS = 463
 
 router = APIRouter()
 
@@ -34,6 +38,30 @@ def _params_cls_for(report_cls: type) -> type[BaseModel] | None:
             if isinstance(arg, type) and issubclass(arg, BaseModel):
                 return arg
     return None
+
+
+def _validate_params(report_cls: type, params):
+    """Validate raw params into the report's declared Pydantic model.
+
+    Returns a validated model instance for typed reports. Untyped/legacy
+    reports (``_params_cls_for`` -> ``None``) get the raw dict passed
+    through unchanged for backward compatibility. A validation failure
+    raises ``HTTPException(463)`` with a structured failures body.
+    """
+    params_cls = _params_cls_for(report_cls)
+    if params_cls is None:
+        return params  # untyped/legacy report: pass the raw dict through
+    try:
+        return params_cls.model_validate(params)
+    except ValidationError as exc:
+        failures = [
+            {"field": ".".join(str(p) for p in err["loc"]), "message": err["msg"]}
+            for err in exc.errors()
+        ]
+        raise HTTPException(
+            status_code=HTTP_INVALID_REPORT_PARAMS,
+            detail={"error": "invalid_report_params", "failures": failures},
+        ) from exc
 
 
 @router.get("/reports")
@@ -123,6 +151,10 @@ async def run_report(
             detail=f"Report not found: {report_name}",
         ) from None
 
+    # Validate params at the chokepoint BEFORE the broad try/except so a
+    # 463 (invalid params) is not swallowed and re-raised as a 500.
+    params = _validate_params(report_cls, params)
+
     try:
         report = report_cls()
         result = await report.execute(params, session)
@@ -188,6 +220,10 @@ async def export_report(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Report not found: {report_name}",
         ) from None
+
+    # Validate params at the chokepoint BEFORE the broad try/except so a
+    # 463 (invalid params) is not swallowed and re-raised as a 500.
+    params = _validate_params(report_cls, params)
 
     try:
         report = report_cls()
