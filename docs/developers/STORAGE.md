@@ -147,6 +147,34 @@ Related cold-tier settings (not part of the storage backend, but relevant to dat
 
 The `cold_tier.*` keys (query routing) are consumed by the cold-tier query layer; see [Cold-Tier Query](#cold-tier-query) below.
 
+## Warm Placement (partition relocation)
+
+Warm tiering relocates old event-log partitions to cheaper "warm" storage while keeping
+them in-table and queryable (transparent - same queries, no read layer). It is opt-in:
+
+| Setting                  | Env Var                         | Type   | Default | Notes |
+|--------------------------|---------------------------------|--------|---------|-------|
+| `warm_placement_enabled` | `TSIGMA_WARM_PLACEMENT_ENABLED` | `bool` | `false` | Master switch for the relocate job. |
+| `warm_tablespace_target` | `TSIGMA_WARM_TABLESPACE_TARGET` | `str`  | `""`    | Deployment-specific tablespace/filegroup. Job no-ops if empty. |
+| `storage_warm_after`     | `TSIGMA_STORAGE_WARM_AFTER`     | `str`  | `"7 days"` | Age past which a partition is warm-eligible. |
+
+The `move_to_warm` scheduled job (`scheduler/jobs/move_to_warm.py`, mirrors `compress_chunks`)
+relocates partitions older than `storage_warm_after` for the managed event tables, via
+per-dialect SQL from `DialectHelper.move_partition_tablespace_sql`:
+
+| Dialect | Relocation SQL | Status |
+|---------|----------------|--------|
+| PostgreSQL | `ALTER TABLE events.<part> SET TABLESPACE <target>` | generated; live-validate per instance |
+| Oracle | `ALTER TABLE <t> MOVE PARTITION <p> TABLESPACE <target>` | generated; live-validate |
+| MS-SQL | best-effort index `REBUILD ... ON <filegroup>` | **best-effort, live-validate** (true filegroup move needs partition-scheme `NEXT USED`) |
+| MySQL | `[]` (placement is creation-time `DATA DIRECTORY`) | deferred |
+
+Safety: the job is inert until BOTH `warm_placement_enabled` and `warm_tablespace_target`
+are set; a malformed `storage_warm_after` skips relocation (demotes nothing) rather than
+collapsing the window. TimescaleDB deployments use native chunk compression
+(`compress_chunks`) instead. **Live per-engine relocation behavior is validated post-boot
+against real instances** - the SQL strings are unit-tested, not the engine effect.
+
 ## Cold-Tier Query
 
 The cold-tier query layer (`tsigma.database.cold_tier.ColdTierQuery`) reads partitioned Parquet archives written by the `export_cold` scheduler job. It works database-agnostically — PostgreSQL deployments can also read cold Parquet in-database via `pg_duckdb` (preferred), `duckdb_fdw`, or `parquet_fdw` and expose the result through the unified view (see [ARCHITECTURE.md § Unified Cold View](ARCHITECTURE.md#unified-cold-view-postgresql)), but every other database family (MS-SQL, Oracle, MySQL) relies on this application-layer reader.

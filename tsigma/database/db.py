@@ -558,6 +558,54 @@ VALUES ({old_id_list}, @app_user, 'DELETE', JSON_OBJECT());
             return [f"ALTER TABLE {table} DROP PARTITION {partition_name}"]
         raise ValueError(f"drop_partition_sql not supported for {self.db_type}")
 
+    def move_partition_tablespace_sql(
+        self, table: str, partition_name: str, target: str,
+    ) -> list[str]:
+        """SQL statements to move a partition to a cheaper "warm" tablespace.
+
+        Relocates an aged partition off the hot tablespace / filegroup onto
+        ``target`` so cold-but-online data lands on cheaper storage.
+
+        ``[]`` on MySQL (placement is fixed at partition-creation time via
+        ``DATA DIRECTORY`` and cannot be moved in place).  The MS-SQL and
+        Oracle DDL is generated here but its live per-engine behavior is
+        validated post-boot — MS-SQL filegroup placement in particular is a
+        best-effort index rebuild onto ``target``.
+        """
+        _validate_identifier(table, "table name")
+        _validate_identifier(target, "tablespace target")
+        # ``partition_name`` is validated ONLY where it is interpolated as an
+        # identifier (pg / oracle).  MS-SQL's list_partitions_sql yields NUMERIC
+        # names ("1", "2", ...) that a leading-digit-rejecting identifier regex
+        # would reject — and the MS-SQL / MySQL branches never interpolate it,
+        # so validating it there would dead-end the move path.
+
+        if self.db_type == "postgresql":
+            _validate_identifier(partition_name, "partition name")
+            evt = self.schema("events")
+            child = f"{evt}.{table}_{partition_name}"
+            return [f"ALTER TABLE {child} SET TABLESPACE {target}"]
+        if self.db_type == "oracle":
+            _validate_identifier(partition_name, "partition name")
+            return [
+                f"ALTER TABLE {table} MOVE PARTITION {partition_name} "
+                f"TABLESPACE {target}"
+            ]
+        if self.db_type == "mssql":
+            # Best-effort: SQL Server has no in-place partition tablespace move;
+            # rebuilding the table's indexes onto the ``target`` filegroup is the
+            # closest equivalent.  Live-validated per-engine post-boot (a real
+            # move needs a partition scheme NEXT USED on the target filegroup).
+            return [
+                f"ALTER INDEX ALL ON {table} REBUILD PARTITION = ALL "
+                f"WITH (DATA_COMPRESSION = NONE) ON {target}"
+            ]
+        if self.db_type == "mysql":
+            return []
+        raise ValueError(
+            f"move_partition_tablespace_sql not supported for {self.db_type}"
+        )
+
 
 class DatabaseFacade:
     """
