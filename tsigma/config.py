@@ -121,6 +121,12 @@ class Settings(BaseSettings):
     # in production.
     partition_retention_days: int | None = None
     storage_warm_after: str = "7 days"
+    # Warm-tier placement (MS-SQL / Oracle / MySQL; PostgreSQL uses
+    # TimescaleDB compression instead).  Opt-in: when enabled with a target
+    # tablespace / filegroup, the ``move_to_warm`` job relocates partitions
+    # older than ``storage_warm_after`` onto cheaper "warm" storage.
+    warm_placement_enabled: bool = False
+    warm_tablespace_target: str = ""
 
     # Cold tier (On-Prem only).
     # ``storage_cold_enabled`` and ``storage_cold_after`` are runtime-settings
