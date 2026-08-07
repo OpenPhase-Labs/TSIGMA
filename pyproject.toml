@@ -108,7 +108,7 @@ tsigma = "tsigma.main:main"
 packages = ["tsigma"]
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py313"
 line-length = 120
 # Generated protobuf code — do not lint.
 extend-exclude = ["tsigma/collection/decoders/proto/**"]
