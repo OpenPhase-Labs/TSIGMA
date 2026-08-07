@@ -105,7 +105,7 @@ Standard deployment runs everything in one process. Enterprise deployment scales
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
-| **Language** | Python 3.14+ | Free-threaded (PEP 703), no GIL, data analysis ecosystem |
+| **Language** | Python 3.13+ | Mature async I/O (asyncio), data analysis ecosystem |
 | **Web Framework** | FastAPI | Async, OpenAPI docs, Pydantic integration |
 | **ORM** | SQLAlchemy 2.0 (async) | Mature, flexible, async support, multi-DB |
 | **DB Driver (Primary)** | asyncpg | High performance PostgreSQL |
@@ -117,29 +117,31 @@ Standard deployment runs everything in one process. Enterprise deployment scales
 | **Background Jobs** | APScheduler | Lightweight, no broker needed |
 | **Validation** | Pydantic v2 | Fast, type-safe |
 
-#### Python 3.14 Free-Threaded Mode
+#### Concurrency Model: One Event Loop, Not Threads
 
-Python 3.14 includes **PEP 703** (optional GIL removal), enabling true parallel execution of Python threads. This is particularly valuable for TSIGMA's data processing workload:
+TSIGMA's hot paths — polling, ingestion, and serving requests — are **I/O-bound**:
+they spend nearly all their time waiting on a socket, not on CPU. asyncio runs
+them on a single event loop that switches at each `await`, so hundreds of
+connections make progress concurrently on one thread. The GIL is not a factor,
+because it is released during the socket wait.
 
-**Benefits for TSIGMA:**
-- **Concurrent event ingestion**: Process multiple controller files in parallel without multiprocessing overhead
-- **Faster view refreshes**: Materialized view computation can leverage multiple cores
-- **Scalable background jobs**: APScheduler can run jobs in parallel threads efficiently
+**What this means in practice:**
+- **Concurrent event ingestion**: many controller files stream in parallel on one
+  loop, bounded by the `collector_max_concurrent` semaphore — no threads, no
+  multiprocessing overhead
+- **Background jobs**: APScheduler jobs are coroutines on the same loop
+- **The one CPU-bound step** — decoding raw bytes into events — runs in a
+  **separate decoder plugin process** (see the gRPC plugin contract), off the
+  loop entirely
 
-**Deployment:**
-```bash
-# Enable free-threaded mode (Python 3.14+)
-PYTHON_GIL=0 python -m tsigma
+**Free-threading (the no-GIL build) does not speed up this path.** A single event
+loop is one thread regardless of the GIL. Threads help only a CPU-bound workload,
+and the CPU-bound work already lives in its own process.
 
-# Or build Python with --disable-gil
-python3.14t  # "t" suffix indicates free-threaded build
-```
-
-**Compatibility:**
-- Free-threaded mode is **opt-in** in Python 3.14
-- TSIGMA works in both standard and free-threaded modes
-- For maximum performance on multi-core systems, use free-threaded mode
-- All dependencies (FastAPI, SQLAlchemy, Polars) support free-threaded Python
+**Scaling past one loop** is host-process sharding: run multiple worker
+processes, each owning a shard of the signal set (see "Signal Sharding" in
+INGESTION.md). Share-nothing worker processes — not threads — are the
+horizontal-scaling primitive.
 
 ### Database
 

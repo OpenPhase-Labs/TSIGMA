@@ -13,7 +13,7 @@ TSIGMA is a modern, modular platform for collecting, storing, and analyzing traf
 ## Quick Start
 
 ### Requirements
-- Python 3.14+ (free-threaded for true multi-threaded performance)
+- Python 3.13+
 - MS-SQL, Oracle, MySQL, PostgreSQL 18+ (recommended) (with TimescaleDB also recommended)
 
 ### Installation
@@ -24,7 +24,7 @@ git clone https://github.com/OpenPhase-Labs/TSIGMA.git
 cd TSIGMA
 
 # Create virtual environment
-python3.14 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 
 # Install in development mode
@@ -255,7 +255,7 @@ TSIGMA provides a plugin interface for extending functionality. Modules can:
 
 | Component | Technology |
 |-----------|------------|
-| Language | Python 3.14+ |
+| Language | Python 3.13+ |
 | Web Framework | FastAPI + uvicorn |
 | Database | PostgreSQL 18+ with TimescaleDB (preferred); MS-SQL, Oracle, MySQL supported |
 | Migrations | Alembic (async) |

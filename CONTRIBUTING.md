@@ -35,7 +35,7 @@ Be respectful, be specific, and assume good intent. Hostile, harassing, or discr
 
 ### Prerequisites
 
-- Python 3.14+ (free-threaded build recommended)
+- Python 3.13+
 - PostgreSQL 18+ for development (TimescaleDB extension recommended; runs against MS-SQL/Oracle/MySQL too via the dialect abstraction)
 - Git
 
@@ -45,7 +45,7 @@ Be respectful, be specific, and assume good intent. Hostile, harassing, or discr
 git clone https://github.com/OpenPhase-Labs/TSIGMA.git
 cd TSIGMA
 
-python3.14 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
 pip install -e ".[dev]"            # editable install + test/lint deps

@@ -166,7 +166,10 @@ WHERE controller_type_id = (
 | **200** | 16 cores | 12 GB | Large agencies (3K-9K signals) |
 | **500** | 32 cores | 24 GB | Ultra-fast burst (9K+ signals) |
 
-**Python 3.14+ required** for 200+ concurrent connections. Free-threaded execution (no GIL) enables true parallel I/O.
+Concurrency comes from the asyncio event loop, not threads: polling is I/O-bound,
+so one loop multiplexes hundreds of connections on a single thread. The CPU-core
+counts above are for the rest of the host's workload (database, decoding,
+aggregation) — raising `collector_max_concurrent` alone does not consume cores.
 
 ---
 
