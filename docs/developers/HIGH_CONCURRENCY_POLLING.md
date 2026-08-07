@@ -26,7 +26,12 @@ asyncio.Semaphore (collector_max_concurrent)
 9,000 Legacy Controllers
 ```
 
-**Key**: Python 3.14 free-threaded execution (no GIL) enables true parallel connections.
+**Key**: Concurrency comes from the asyncio event loop, not threads. Every
+poll runs on a single loop that multiplexes I/O -- while one poll waits on a
+socket, the others make progress -- and the `collector_max_concurrent`
+semaphore bounds how many are in flight. Polling is I/O-bound, so one loop
+saturates the network without threads. Horizontal scale beyond a single loop
+is host-process sharding (see INGESTION.md), not free-threading.
 
 ### Code Path
 
@@ -104,19 +109,25 @@ TSIGMA_COLLECTOR_POLL_INTERVAL=300    # Seconds between poll cycles
 
 ---
 
-## Python 3.14 Free-Threaded Impact
+## Why a Single Event Loop (Not Threads)
 
-**Without GIL (Python 3.14+)**:
-- 200 workers execute in true parallel
-- Effective parallelism: 200 FTP connections
-- CPU utilization: ~50-70% across all cores
+Polling is I/O-bound: each poll spends nearly all its time waiting on a
+socket, not on CPU. asyncio runs every poll on one event loop and switches
+between them at each `await`, so hundreds of connections make progress
+concurrently on a single thread. The GIL is not a factor -- it is released
+during the socket wait, and the loop never needs more than one thread to
+keep the network busy.
 
-**With GIL (Python 3.13)**:
-- 200 workers blocked by GIL
-- Effective parallelism: ~10-20 workers (limited by GIL contention)
-- Performance degradation: **10x slower**
+Free-threading (the no-GIL build) does **not** speed up this
+path: a single event loop is one thread regardless of the GIL. Threads help
+only a CPU-bound workload, and the one CPU-bound step -- decoding raw bytes
+into events -- runs in a **separate decoder plugin process** (see the gRPC
+plugin contract), off the poll loop entirely.
 
-**Critical**: Python 3.14+ required for 200+ worker performance.
+Scale past what one loop can drive by running multiple **host-worker
+processes**, each owning a shard of the signal set (see "Signal Sharding" in
+INGESTION.md). Share-nothing worker processes -- not threads -- are the
+horizontal-scaling primitive.
 
 ---
 

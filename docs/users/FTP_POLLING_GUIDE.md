@@ -448,9 +448,11 @@ ORDER BY consecutive_errors DESC;
 
 ## Performance Tuning
 
-### Parallel Polling (Python 3.14+ Free-Threaded)
+### Parallel Polling
 
-With GIL removed, TSIGMA can poll multiple controllers in true parallel. The `CollectorService` uses an `asyncio.Semaphore` to bound concurrent connections:
+TSIGMA polls many controllers concurrently on a single asyncio event loop — while
+one poll waits on its socket, the others make progress. The `CollectorService`
+uses an `asyncio.Semaphore` to bound how many are in flight at once:
 
 ```env
 # Control max simultaneous FTP connections
@@ -621,7 +623,7 @@ See also the `polling_checkpoint` table which tracks per-signal ingestion state.
 
 **Estimated Load**: 500 signals × 1 hour interval = ~5 minutes of FTP activity per hour
 
-**Scaling**: Single TSIGMA instance (Python 3.14 free-threaded handles parallelism)
+**Scaling**: Single TSIGMA instance (one event loop handles this concurrency comfortably)
 
 ---
 
