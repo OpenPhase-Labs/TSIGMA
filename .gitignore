@@ -2,7 +2,9 @@
 .antigravity/
 __pycache__/
 
-.env
+# Every .env variant is a secret-bearing file — only the template is committed.
+.env*
+!.env.example
 .venv
 venv
 
@@ -10,12 +12,21 @@ venv
 htmlcov/
 .pytest_cache/
 
+# Python build / type-check artifacts
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+
 # Agent workspace directories
 plans/
 specs/
 issues/
 .claude/
 .zoocode/
+.tdd-bridge.log
+
+.ruff_cache/
 
 # MCP cache
 .playwright-mcp/
