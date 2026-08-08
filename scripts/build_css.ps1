@@ -4,10 +4,15 @@
   standalone CLI binary.
 
 .DESCRIPTION
-  Developer-side build (Windows). Compiles tsigma/static/css/tailwind.src.css
-  into the committed tsigma/static/css/tailwind.css. Deployers never run this -
-  they serve the committed tailwind.css as-is (no Node, no Tailwind, no extra
-  packages).
+  The Windows build path. scripts/build_css.sh is the Linux equivalent and takes
+  the same -Check / --check flag; contribute from either platform. Both pin the
+  same Tailwind release (v4.3.0), so either script produces a committable
+  tailwind.css. -Check is byte-exact, so if the two platforms' binaries ever do
+  diverge it surfaces as a stale-CSS failure rather than silent drift.
+
+  Compiles tsigma/static/css/tailwind.src.css into the committed
+  tsigma/static/css/tailwind.css. Deployers never run this - they serve the
+  committed tailwind.css as-is (no Node, no Tailwind, no extra packages).
 
   The standalone binary is NOT committed (it is ~125 MB and platform-specific).
   Download the pinned version once into tools/tailwind/tailwindcss.exe:
@@ -15,8 +20,8 @@
     Tailwind CSS v4.3.0 (pinned)
     https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.0/tailwindcss-windows-x64.exe
 
-  Cross-platform / CI builds are a future concern (Linux migration, agency
-  pipelines); for now this Windows binary is the build path.
+  NOTE: the interpreter pin below (C:\Python314\python.exe) predates the move to
+  a Python 3.13 floor; it falls back to `python` on PATH when absent.
 
 .PARAMETER Check
   Build to a temp file and diff against the committed tailwind.css instead of
