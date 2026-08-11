@@ -1,0 +1,11 @@
+# LF everywhere.
+* text=auto eol=lf
+
+# Binary - never normalize.
+*.woff2 binary
+*.dat   binary
+*.datZ  binary
+
+*.mako  text eol=lf
+*.tpl   text eol=lf
+*.sh    text eol=lf
