@@ -183,11 +183,23 @@ class CollectorService:
         transport writes decoded events and checkpoints through the
         right destination for the source's device class.
         """
+        timeout_s = config.get(
+            "poll_timeout_seconds",
+            self._settings.collector_poll_timeout_seconds,
+        )
         async with self._semaphore:
             try:
-                await method.poll_once(
-                    device_id, config, self._session_factory,
-                    target=source.target,
+                await asyncio.wait_for(
+                    method.poll_once(
+                        device_id, config, self._session_factory,
+                        target=source.target,
+                    ),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Poll timed out after %ss: %s/%s device %s",
+                    timeout_s, method.name, source.device_type, device_id,
                 )
             except Exception:
                 logger.exception(

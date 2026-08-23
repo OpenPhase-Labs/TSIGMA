@@ -444,6 +444,63 @@ class TestProcessSignal:
         # Semaphore should be released after call
         assert svc._semaphore._value == 1
 
+    @pytest.mark.asyncio
+    async def test_times_out_slow_poll_and_releases_semaphore(self):
+        """A hung poll is cancelled at the deadline and frees its slot."""
+        sf = AsyncMock()
+
+        cancelled = False
+
+        async def hung_poll(device_id, config, session_factory, *, target=None):
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        mock_method = AsyncMock(spec=PollingIngestionMethod)
+        mock_method.name = "test_poll"
+        mock_method.poll_once = hung_poll
+
+        svc = CollectorService(sf, _make_settings(collector_max_concurrent=1))
+
+        await svc._process_device(
+            mock_method,
+            svc._sources[0],
+            "SIG-001",
+            {"host": "10.0.0.1", "poll_timeout_seconds": 0.05},
+        )
+
+        assert cancelled is True
+        assert svc._semaphore._value == 1
+
+    @pytest.mark.asyncio
+    async def test_per_device_timeout_override(self):
+        """A per-device poll_timeout_seconds overrides the admin default."""
+        sf = AsyncMock()
+
+        async def hung_poll(device_id, config, session_factory, *, target=None):
+            await asyncio.sleep(10)
+
+        mock_method = AsyncMock(spec=PollingIngestionMethod)
+        mock_method.name = "test_poll"
+        mock_method.poll_once = hung_poll
+
+        svc = CollectorService(
+            sf, _make_settings(collector_poll_timeout_seconds=30),
+        )
+
+        await asyncio.wait_for(
+            svc._process_device(
+                mock_method,
+                svc._sources[0],
+                "SIG-001",
+                {"host": "10.0.0.1", "poll_timeout_seconds": 0.05},
+            ),
+            timeout=2,
+        )
+
 
 class TestGetMethod:
     """Tests for CollectorService.get_method()."""
