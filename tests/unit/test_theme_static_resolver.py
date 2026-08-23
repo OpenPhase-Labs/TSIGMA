@@ -31,7 +31,8 @@ def test_falls_back_to_default_when_not_overridden(tmp_path):
 def test_missing_everywhere_returns_none(tmp_path):
     theme_s = tmp_path / "theme"
     default_s = tmp_path / "default"
-    theme_s.mkdir(); default_s.mkdir()
+    theme_s.mkdir()
+    default_s.mkdir()
     assert resolve_static_file("nope.png", [theme_s, default_s]) is None
 
 

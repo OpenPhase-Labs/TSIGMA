@@ -6,8 +6,9 @@ semantic utilities. Visual "is it Modern Airy" is verified manually.
 
 from pathlib import Path
 
-import tsigma
 from jinja2 import Environment, FileSystemLoader
+
+import tsigma
 
 TEMPLATES = Path(tsigma.__path__[0]) / "templates"
 
