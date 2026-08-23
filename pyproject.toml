@@ -80,6 +80,7 @@ dev = [
     "pytest-cov>=6.0",
     "httpx",
     "ruff>=0.9",
+    "grpcio-tools>=1.60",
     "moto[s3,server]>=5.0",
     "pysnmp>=7.1",
     "aiobotocore>=2.15",
