@@ -78,6 +78,7 @@ ADRs that genuinely span areas are listed under more than one heading. The
 - [0007](0007-license-mpl2.md) — License: MPL-2.0
 - [0008](0008-vocabulary-pattern.md) — Vocabulary / controlled-lookup pattern
 - [0014](0014-core-complete-as-is.md) — Core is complete as-is (usable without plugins, except live ingestion)
+- [0081](0081-pin-dependency-versions-exactly.md) — Dependency versions are pinned exactly
 
 **Event model & data typing**
 - [0009](0009-canonical-event-model-openphase.md) — Canonical HiRes event model (OPENPHASE / NTCIP / Indiana Hi-Res)
@@ -269,6 +270,7 @@ here and filed into an [Index by topic](#index-by-topic) heading.
 | [0078](0078-signal-identity-tsigma-owned.md) | Signal identity is TSIGMA-owned, not vendor-provided | Accepted | 2026-07-16 |
 | [0079](0079-database-access-in-process-not-plugin.md) | The database access layer is in-process, not a gRPC plugin | Accepted | 2026-07-16 |
 | [0080](0080-decode-scales-as-format-pool.md) | Decoding scales as a format-keyed pool, not by shard | Accepted | 2026-07-16 |
+| [0081](0081-pin-dependency-versions-exactly.md) | Dependency versions are pinned exactly | Accepted | 2026-08-22 |
 
 ---
 
