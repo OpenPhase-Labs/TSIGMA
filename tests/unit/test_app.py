@@ -76,6 +76,26 @@ def _apply_mock_settings(mock_settings, **overrides):
         setattr(mock_settings, k, v)
 
 
+def _route_paths(app):
+    """Every registered path, descending into included routers.
+
+    FastAPI >=0.14 leaves an _IncludedRouter wrapper in app.routes instead of
+    flattening; older versions flatten. Duck-typed, so both work.
+    """
+    found = []
+
+    def walk(routes, prefix=""):
+        for r in routes:
+            ctx = getattr(r, "include_context", None)
+            if ctx is not None:
+                walk(r.original_router.routes, prefix + ctx.prefix)
+            elif getattr(r, "path", None) is not None:
+                found.append(prefix + r.path)
+
+    walk(app.routes)
+    return found
+
+
 class TestAppCreation:
     """Tests for app factory."""
 
@@ -103,7 +123,7 @@ class TestAppCreation:
     def test_signals_router_registered(self):
         """Test signals API router is included."""
         app = create_app()
-        routes = [r.path for r in app.routes]
+        routes = _route_paths(app)
         assert "/api/v1/signals/" in routes
         assert "/api/v1/signals/{signal_id}" in routes
 
@@ -311,7 +331,7 @@ class TestAuthWiring:
     def test_auth_router_registered(self):
         """Test auth API router is included in the app."""
         app = create_app()
-        routes = [r.path for r in app.routes]
+        routes = _route_paths(app)
         # Static auth routes (login is mounted dynamically by auth provider)
         assert "/api/v1/auth/provider" in routes
         assert "/api/v1/auth/logout" in routes
