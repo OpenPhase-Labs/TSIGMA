@@ -168,6 +168,9 @@ class Settings(BaseSettings):
     # cadence by default; most roadside sensors push over TCP / MQTT
     # and don't touch this setting.
     sensor_poll_interval: int = 900
+    # Per-device poll deadline (seconds).  Override with
+    # "poll_timeout_seconds" in the signal_metadata collection config.
+    collector_poll_timeout_seconds: int = 30
 
     # Checkpoint resilience
     checkpoint_future_tolerance_seconds: int = 300  # 5 minutes
