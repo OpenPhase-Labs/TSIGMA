@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tsigma.collection.decoders.asc3 import ASC3Decoder, ASC3DecodeError
+from tsigma.collection.decoders.asc3 import ASC3DecodeError, ASC3Decoder
 from tsigma.collection.decoders.base import DecodeResult, DecoderRegistry, FileMetadata
 from tsigma.collection.decoders.csv_decoder import CSVDecoder
 
