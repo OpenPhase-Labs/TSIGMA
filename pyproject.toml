@@ -15,75 +15,75 @@ authors = [
 
 dependencies = [
     # Web framework
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.34",
-    "starlette>=1.1.0",   # >=1.1.0: GHSA-x746-7m8f-x49c (HTTPEndpoint getattr dispatch), GHSA-wqp7-x3pw-xc5r (StaticFiles SSRF/NTLM on Windows); >=1.0.1 covered PYSEC-2026-161
-    "jinja2>=3.1",
-    "python-multipart>=0.0.9",
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.1",
+    "starlette==1.6.0",   # covers GHSA-x746-7m8f-x49c, GHSA-wqp7-x3pw-xc5r, PYSEC-2026-161
+    "jinja2==3.1.6",
+    "python-multipart==0.0.32",
 
     # Database
-    "sqlalchemy[asyncio]>=2.0",
-    "asyncpg>=0.30",
-    "alembic>=1.14",
+    "sqlalchemy[asyncio]==2.0.51",
+    "asyncpg==0.31.0",
+    "alembic==1.19.1",
 
     # Data processing
-    "pandas>=2.2",
+    "pandas==3.0.5",
 
     # Configuration
-    "pydantic>=2.10",
-    "pydantic-settings>=2.7",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.15.0",
 
     # Authentication
-    "bcrypt>=4.2",
+    "bcrypt==5.0.0",
 
     # Session store / cache
-    "valkey>=6.0",
+    "valkey==6.1.1",
 
     # GraphQL
-    "strawberry-graphql[fastapi]>=0.315.4",   # >=0.315.4 mitigates CVE-2026-45739 GraphiQL header leak
+    "strawberry-graphql[fastapi]==0.324.0",   # covers CVE-2026-45739 GraphiQL header leak
 
     # HTTP clients
-    "httpx>=0.28",
-    "aiohttp>=3.11",
+    "httpx==0.28.1",
+    "aiohttp==3.14.3",
 
     # XML security
-    "defusedxml>=0.7",
+    "defusedxml==0.7.1",
 
     # Credential encryption
-    "cryptography>=44.0",
+    "cryptography==50.0.0",
 
     # Real-time streaming
-    "nats-py>=2.9",
-    "aiomqtt>=2.3",
-    "grpcio>=1.60",
+    "nats-py==2.15.0",
+    "aiomqtt==2.5.1",
+    "grpcio==1.83.0",
 
     # Protobuf decoding (OpenPhase protocol)
-    "protobuf>=5.29",
+    "protobuf==7.35.1",
 
     # Scheduling
-    "apscheduler>=3.10,<4",
+    "apscheduler==3.11.3",
 
     # File watching
-    "watchdog>=6.0",
+    "watchdog==6.0.0",
 
     # Cold-tier query
-    "duckdb>=1.1.0",
+    "duckdb==1.5.5",
 
     # Security floor for a transitive dep (pulled in by httpx, requests, etc.)
-    "idna>=3.15",   # >=3.15 mitigates CVE-2026-45409 idna.encode() DoS
+    "idna==3.18",   # covers CVE-2026-45409 idna.encode() DoS
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-    "pytest-cov>=6.0",
-    "httpx",
-    "ruff>=0.9",
-    "grpcio-tools>=1.60",
-    "moto[s3,server]>=5.0",
-    "pysnmp>=7.1",
-    "aiobotocore>=2.15",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "httpx==0.28.1",
+    "ruff==0.16.2",
+    "grpcio-tools==1.83.0",
+    "moto[s3,server]==5.2.2",
+    "pysnmp==7.1.28",
+    "aiobotocore==3.9.0",
 ]
 # Multi-dialect integration-test extras.  Each dialect's integration
 # tests prefer a dev-provided DB URL (TSIGMA_TEST_{PG,MSSQL,ORACLE,MYSQL}_URL)
@@ -91,16 +91,16 @@ dev = [
 # if the URL is unset and Docker is available.  Tests skip gracefully
 # when neither path is usable.
 integration = [
-    "testcontainers[postgres,mssql,oracle,mysql]>=4.8",
-    "aioodbc>=0.5",
-    "oracledb>=2.0",
-    "aiomysql>=0.2",
+    "testcontainers[postgres,mssql,oracle,mysql]==4.15.0",
+    "aioodbc==0.5.0",
+    "oracledb==4.0.2",
+    "aiomysql==0.3.2",
 ]
-mssql = ["aioodbc>=0.5"]
-oracle = ["oracledb>=2.0"]
-mysql = ["aiomysql>=0.2"]
-s3 = ["aiobotocore>=2.15"]
-snmp = ["pysnmp>=7.1"]
+mssql = ["aioodbc==0.5.0"]
+oracle = ["oracledb==4.0.2"]
+mysql = ["aiomysql==0.3.2"]
+s3 = ["aiobotocore==3.9.0"]
+snmp = ["pysnmp==7.1.28"]
 
 [project.scripts]
 tsigma = "tsigma.main:main"
