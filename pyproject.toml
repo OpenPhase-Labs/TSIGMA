@@ -59,6 +59,7 @@ dependencies = [
 
     # Protobuf decoding (OpenPhase protocol)
     "protobuf==7.35.1",
+    "pyarrow==25.0.1",   # Arrow IPC is the contract wire type for bulk/tabular (contract ADR-0008)
 
     # Scheduling
     "apscheduler==3.11.3",
@@ -81,6 +82,7 @@ dev = [
     "httpx==0.28.1",
     "ruff==0.16.2",
     "grpcio-tools==1.83.0",
+    "grpcio-health-checking==1.83.0",
     "moto[s3,server]==5.2.2",
     "pysnmp==7.1.28",
     "aiobotocore==3.9.0",
@@ -112,7 +114,10 @@ packages = ["tsigma"]
 target-version = "py313"
 line-length = 120
 # Generated protobuf code — do not lint.
-extend-exclude = ["tsigma/collection/decoders/proto/**"]
+extend-exclude = [
+    "tsigma/collection/decoders/proto/**",
+    "tsigma/plugins/gen/**",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
@@ -124,6 +129,13 @@ explicit-preview-rules = true
 #         Combined with the pre-commit hook in `.pre-commit-config.yaml`, new
 #         bare or unjustified suppressions cannot be silently introduced.
 extend-select = ["E302", "E303", "E305", "RUF100"]
+
+[tool.ruff.lint.isort]
+# The generated stub tree exposes tsigma.<subsystem>.v1, which isort would
+# otherwise treat as third-party and sort ABOVE tsigma.plugins - whose import
+# performs the sys.path insert those stubs need. Declaring the namespace
+# first-party keeps tsigma.plugins ahead of tsigma.report/decoder/method/notify.
+known-first-party = ["tsigma"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
