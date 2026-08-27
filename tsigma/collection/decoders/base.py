@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import ClassVar, Union
 
+from tsigma.plugins.coexistence import GrpcCoexistenceMixin
+
 
 @dataclass
 class DecodedEvent:
@@ -186,7 +188,7 @@ class BaseSensorDecoder(ABC):
 AnyDecoder = Union["BaseDecoder", "BaseSensorDecoder"]
 
 
-class DecoderRegistry:
+class DecoderRegistry(GrpcCoexistenceMixin):
     """
     Central registry for all decoder plugins.
 
@@ -260,3 +262,8 @@ class DecoderRegistry:
             Dictionary of decoder name -> decoder class.
         """
         return cls._decoders.copy()
+
+    @classmethod
+    def _in_process_names(cls) -> set[str]:
+        """Names served by the in-process decorator path (see GrpcCoexistenceMixin)."""
+        return set(cls._decoders)

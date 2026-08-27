@@ -14,6 +14,8 @@ import pandas as pd
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tsigma.plugins.coexistence import GrpcCoexistenceMixin
+
 TParams = TypeVar("TParams", bound=BaseModel)
 
 
@@ -154,7 +156,7 @@ class Report(ABC, Generic[TParams]):
 BaseReport = Report
 
 
-class ReportRegistry:
+class ReportRegistry(GrpcCoexistenceMixin):
     """
     Central registry for all report plugins.
 
@@ -191,3 +193,8 @@ class ReportRegistry:
     def list_all(cls) -> dict[str, type[Report]]:
         """List all registered reports."""
         return cls._reports.copy()
+
+    @classmethod
+    def _in_process_names(cls) -> set[str]:
+        """Names served by the in-process decorator path (see GrpcCoexistenceMixin)."""
+        return set(cls._reports)

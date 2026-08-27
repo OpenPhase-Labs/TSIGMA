@@ -9,6 +9,8 @@ import enum
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
+from tsigma.plugins.coexistence import GrpcCoexistenceMixin
+
 
 class ExecutionMode(str, enum.Enum):
     """Execution mode for ingestion methods."""
@@ -163,7 +165,7 @@ class EventDrivenIngestionMethod(BaseIngestionMethod):
         ...
 
 
-class IngestionMethodRegistry:
+class IngestionMethodRegistry(GrpcCoexistenceMixin):
     """
     Central registry for all ingestion method plugins.
 
@@ -262,3 +264,8 @@ class IngestionMethodRegistry:
             for name, method_cls in cls._methods.items()
             if getattr(method_cls, "execution_mode", None) == ExecutionMode.EVENT_DRIVEN
         }
+
+    @classmethod
+    def _in_process_names(cls) -> set[str]:
+        """Names served by the in-process decorator path (see GrpcCoexistenceMixin)."""
+        return set(cls._methods)
