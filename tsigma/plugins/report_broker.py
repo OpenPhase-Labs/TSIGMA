@@ -269,19 +269,21 @@ def to_channel_approach_map(mapping: dict[int, dict]):
 def to_signal_plan_list(plans: list):
     """SignalPlan rows -> SignalPlanList.
 
-    NOTE: the contract's SignalPlan carries only {effective_from, effective_to,
-    splits}. plan_number / cycle_length / offset are NOT on the wire, so a plugin
-    cannot reproduce reports that read them (e.g. preempt_service.py uses
-    plan.plan_number). Flagged; fixing it is an additive contract change.
+    cycle_length and offset are nullable in the store, so they are left UNSET
+    rather than zeroed - a plugin must be able to tell "unknown" from "zero".
     """
     from tsigma.report.v1 import report_pb2
 
     out = []
     for plan in plans:
-        msg = report_pb2.SignalPlan()
+        msg = report_pb2.SignalPlan(plan_number=plan.plan_number)
         msg.effective_from.FromDatetime(plan.effective_from)
         if plan.effective_to is not None:
             msg.effective_to.FromDatetime(plan.effective_to)
+        if plan.cycle_length is not None:
+            msg.cycle_length = plan.cycle_length
+        if plan.offset is not None:
+            msg.offset = plan.offset
         for phase, seconds in (plan.splits or {}).items():
             msg.splits[str(phase)] = float(seconds)
         out.append(msg)

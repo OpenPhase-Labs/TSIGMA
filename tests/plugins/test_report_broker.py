@@ -349,5 +349,30 @@ class TestConverters:
         assert out.plans[0].HasField("effective_to")
 
     def test_open_ended_plan_has_no_effective_to(self):
-        plan = SimpleNamespace(effective_from=START, effective_to=None, splits={})
+        plan = SimpleNamespace(
+            effective_from=START, effective_to=None, splits={},
+            plan_number=1, cycle_length=None, offset=None,
+        )
         assert to_signal_plan_list([plan]).plans[0].HasField("effective_to") is False
+
+    def test_carries_the_fields_shipped_reports_read(self):
+        # preempt_service reads plan_number; time_space_diagram_average reads
+        # cycle_length and offset.
+        plan = SimpleNamespace(
+            effective_from=START, effective_to=END, splits={},
+            plan_number=3, cycle_length=90, offset=12,
+        )
+        msg = to_signal_plan_list([plan]).plans[0]
+        assert msg.plan_number == 3
+        assert msg.cycle_length == 90
+        assert msg.offset == 12
+
+    def test_null_cycle_length_and_offset_stay_unset_not_zero(self):
+        """A plugin must be able to tell "unknown" from "zero"."""
+        plan = SimpleNamespace(
+            effective_from=START, effective_to=None, splits={},
+            plan_number=0, cycle_length=None, offset=None,
+        )
+        msg = to_signal_plan_list([plan]).plans[0]
+        assert msg.HasField("cycle_length") is False
+        assert msg.HasField("offset") is False
