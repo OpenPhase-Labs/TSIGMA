@@ -18,7 +18,11 @@ from datetime import timezone
 import pandas as pd
 
 from ..reports.sdk import aggregates as sdk_aggregates
+from ..reports.sdk import config as sdk_config
+from ..reports.sdk import cycles as sdk_cycles
+from ..reports.sdk import plans as sdk_plans
 from ..reports.sdk import queries as sdk_queries
+from .broker import scoped_session_for_plugin
 from .remote_report import dataframe_to_arrow_batch
 
 logger = logging.getLogger(__name__)
@@ -157,3 +161,128 @@ class AggregateQueryService:
             group_by=list(request.group_by) or None,
             filters=filters,
         )
+
+
+class CycleAggregateService:
+    """Mirrors tsigma/reports/sdk/cycles.py - pre-computed cycle aggregates.
+
+    These helpers open their own sessions, like queries.py, so no scoped session
+    is threaded through here.
+    """
+
+    async def fetch_cycle_boundaries(self, request) -> pd.DataFrame:
+        return await sdk_cycles.fetch_cycle_boundaries(
+            request.signal_id, request.phase, _dt(request.start), _dt(request.end)
+        )
+
+    async def fetch_cycle_arrivals(self, request) -> pd.DataFrame:
+        return await sdk_cycles.fetch_cycle_arrivals(
+            request.signal_id,
+            request.phase,
+            _dt(request.start),
+            _dt(request.end),
+            list(request.detector_channels) or None,
+        )
+
+    async def fetch_cycle_summary(self, request) -> pd.DataFrame:
+        return await sdk_cycles.fetch_cycle_summary(
+            request.signal_id, request.phase, _dt(request.start), _dt(request.end)
+        )
+
+
+class ConfigService:
+    """Mirrors tsigma/reports/sdk/config.py and plans.py.
+
+    Unlike the query helpers these take a session, so every call runs inside a
+    fresh per-invocation scoped session (P4) rather than sharing one.
+    """
+
+    def __init__(self, session_factory, username: str | None = None):
+        self._session_factory = session_factory
+        self._username = username
+
+    def _scope(self):
+        return scoped_session_for_plugin(self._session_factory, self._username)
+
+    async def load_channel_to_phase(self, request) -> dict[int, int]:
+        async with self._scope() as session:
+            return await sdk_config.load_channel_to_phase(
+                session, request.signal_id, _dt(request.as_of)
+            )
+
+    async def load_channels_for_phase(self, request) -> set[int]:
+        async with self._scope() as session:
+            return await sdk_config.load_channels_for_phase(
+                session, request.signal_id, request.phase, _dt(request.as_of)
+            )
+
+    async def load_channel_to_ped_phase(self, request) -> dict[int, int]:
+        async with self._scope() as session:
+            return await sdk_config.load_channel_to_ped_phase(
+                session, request.signal_id, _dt(request.as_of)
+            )
+
+    async def load_channel_to_approach(self, request) -> dict[int, dict]:
+        async with self._scope() as session:
+            return await sdk_config.load_channel_to_approach(
+                session, request.signal_id, _dt(request.as_of)
+            )
+
+    async def fetch_plans(self, request) -> list:
+        async with self._scope() as session:
+            return await sdk_plans.fetch_plans(
+                session, request.signal_id, _dt(request.start), _dt(request.end)
+            )
+
+
+def to_int_int_map(mapping: dict[int, int]):
+    """dict[int,int] -> IntIntMap."""
+    from tsigma.report.v1 import report_pb2
+
+    return report_pb2.IntIntMap(mapping=dict(mapping))
+
+
+def to_int_set(values) -> "object":
+    """set[int] -> IntSet, ordered for a deterministic wire form."""
+    from tsigma.report.v1 import report_pb2
+
+    return report_pb2.IntSet(values=sorted(values))
+
+
+def to_channel_approach_map(mapping: dict[int, dict]):
+    """dict[int, {approach_id, direction_type_id, distance_from_stop_bar}] -> proto."""
+    from tsigma.report.v1 import report_pb2
+
+    out = {}
+    for channel, info in mapping.items():
+        approach = report_pb2.ApproachInfo(
+            approach_id=info["approach_id"],
+            direction_type_id=info["direction_type_id"],
+        )
+        distance = info.get("distance_from_stop_bar")
+        if distance is not None:
+            approach.distance_from_stop_bar = int(distance)
+        out[channel] = approach
+    return report_pb2.ChannelApproachMap(mapping=out)
+
+
+def to_signal_plan_list(plans: list):
+    """SignalPlan rows -> SignalPlanList.
+
+    NOTE: the contract's SignalPlan carries only {effective_from, effective_to,
+    splits}. plan_number / cycle_length / offset are NOT on the wire, so a plugin
+    cannot reproduce reports that read them (e.g. preempt_service.py uses
+    plan.plan_number). Flagged; fixing it is an additive contract change.
+    """
+    from tsigma.report.v1 import report_pb2
+
+    out = []
+    for plan in plans:
+        msg = report_pb2.SignalPlan()
+        msg.effective_from.FromDatetime(plan.effective_from)
+        if plan.effective_to is not None:
+            msg.effective_to.FromDatetime(plan.effective_to)
+        for phase, seconds in (plan.splits or {}).items():
+            msg.splits[str(phase)] = float(seconds)
+        out.append(msg)
+    return report_pb2.SignalPlanList(plans=out)

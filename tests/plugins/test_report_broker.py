@@ -6,6 +6,7 @@ tests are as much a security boundary as a correctness one.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pandas as pd
@@ -16,11 +17,17 @@ from tsigma.plugins.remote_report import arrow_batches_to_dataframe
 from tsigma.plugins.report_broker import (
     PREDICATE_COLUMNS,
     AggregateQueryService,
+    ConfigService,
+    CycleAggregateService,
     EventQueryService,
     PredicateError,
     compile_agg_spec,
     compile_predicate,
     frame_to_batches,
+    to_channel_approach_map,
+    to_int_int_map,
+    to_int_set,
+    to_signal_plan_list,
 )
 from tsigma.report.v1 import report_pb2 as r
 
@@ -216,3 +223,131 @@ class TestAggregateQueryService:
             with pytest.raises(PredicateError):
                 await AggregateQueryService().aggregate_events(request)
         m.assert_not_awaited()
+
+
+class TestCycleAggregateService:
+    """cycles.py helpers open their own sessions - no scoped session threaded."""
+
+    @pytest.mark.asyncio
+    async def test_boundaries_forwarded(self):
+        req = r.CycleBoundariesRequest(signal_id="S", phase=2, start=_ts(START), end=_ts(END))
+        with patch("tsigma.reports.sdk.cycles.fetch_cycle_boundaries", new_callable=AsyncMock) as m:
+            m.return_value = pd.DataFrame()
+            await CycleAggregateService().fetch_cycle_boundaries(req)
+        assert m.call_args[0][:2] == ("S", 2)
+
+    @pytest.mark.asyncio
+    async def test_arrivals_empty_channels_means_all(self):
+        req = r.CycleArrivalsRequest(signal_id="S", phase=2, start=_ts(START), end=_ts(END))
+        with patch("tsigma.reports.sdk.cycles.fetch_cycle_arrivals", new_callable=AsyncMock) as m:
+            m.return_value = pd.DataFrame()
+            await CycleAggregateService().fetch_cycle_arrivals(req)
+        assert m.call_args[0][4] is None
+
+    @pytest.mark.asyncio
+    async def test_arrivals_passes_specific_channels(self):
+        req = r.CycleArrivalsRequest(
+            signal_id="S", phase=2, start=_ts(START), end=_ts(END), detector_channels=[3, 4]
+        )
+        with patch("tsigma.reports.sdk.cycles.fetch_cycle_arrivals", new_callable=AsyncMock) as m:
+            m.return_value = pd.DataFrame()
+            await CycleAggregateService().fetch_cycle_arrivals(req)
+        assert m.call_args[0][4] == [3, 4]
+
+    @pytest.mark.asyncio
+    async def test_summary_forwarded(self):
+        req = r.CycleSummaryRequest(signal_id="S", phase=6, start=_ts(START), end=_ts(END))
+        with patch("tsigma.reports.sdk.cycles.fetch_cycle_summary", new_callable=AsyncMock) as m:
+            m.return_value = pd.DataFrame()
+            await CycleAggregateService().fetch_cycle_summary(req)
+        assert m.call_args[0][1] == 6
+
+
+def _session_factory():
+    made = []
+
+    def factory():
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = False
+        made.append(session)
+        return session
+
+    return factory, made
+
+
+class TestConfigService:
+    """config.py / plans.py take a session, so each call is scoped per invocation."""
+
+    @pytest.mark.asyncio
+    async def test_channel_to_phase_runs_in_a_scoped_session(self):
+        factory, made = _session_factory()
+        req = r.ChannelMapRequest(signal_id="S", as_of=_ts(START))
+        with patch("tsigma.reports.sdk.config.load_channel_to_phase", new_callable=AsyncMock) as m:
+            m.return_value = {1: 2}
+            out = await ConfigService(factory).load_channel_to_phase(req)
+        assert out == {1: 2}
+        assert m.call_args[0][0] is made[0]      # the scoped session, not a shared one
+        made[0].commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_each_call_gets_its_own_session(self):
+        factory, made = _session_factory()
+        req = r.ChannelMapRequest(signal_id="S", as_of=_ts(START))
+        with patch("tsigma.reports.sdk.config.load_channel_to_phase", new_callable=AsyncMock) as m:
+            m.return_value = {}
+            svc = ConfigService(factory)
+            await svc.load_channel_to_phase(req)
+            await svc.load_channel_to_phase(req)
+        assert len(made) == 2
+        assert made[0] is not made[1]
+
+    @pytest.mark.asyncio
+    async def test_channels_for_phase_passes_the_phase(self):
+        factory, _ = _session_factory()
+        req = r.ChannelsForPhaseRequest(signal_id="S", phase=4, as_of=_ts(START))
+        with patch("tsigma.reports.sdk.config.load_channels_for_phase", new_callable=AsyncMock) as m:
+            m.return_value = {7}
+            await ConfigService(factory).load_channels_for_phase(req)
+        assert m.call_args[0][2] == 4
+
+    @pytest.mark.asyncio
+    async def test_fetch_plans_runs_scoped(self):
+        factory, made = _session_factory()
+        req = r.FetchPlansRequest(signal_id="S", start=_ts(START), end=_ts(END))
+        with patch("tsigma.reports.sdk.plans.fetch_plans", new_callable=AsyncMock) as m:
+            m.return_value = []
+            await ConfigService(factory).fetch_plans(req)
+        assert m.call_args[0][0] is made[0]
+
+
+class TestConverters:
+    def test_int_int_map(self):
+        assert dict(to_int_int_map({1: 2, 3: 4}).mapping) == {1: 2, 3: 4}
+
+    def test_int_set_is_ordered_for_a_deterministic_wire_form(self):
+        assert list(to_int_set({5, 1, 3}).values) == [1, 3, 5]
+
+    def test_channel_approach_map_carries_optional_distance(self):
+        out = to_channel_approach_map(
+            {
+                1: {"approach_id": 10, "direction_type_id": 2, "distance_from_stop_bar": 300},
+                2: {"approach_id": 11, "direction_type_id": 3, "distance_from_stop_bar": None},
+            }
+        )
+        assert out.mapping[1].distance_from_stop_bar == 300
+        assert out.mapping[2].HasField("distance_from_stop_bar") is False
+
+    def test_signal_plan_list_carries_timestamps_and_splits(self):
+        plan = SimpleNamespace(
+            effective_from=START, effective_to=END, splits={"2": 30.5, "6": 22.0},
+            plan_number=3, cycle_length=90, offset=12,
+        )
+        out = to_signal_plan_list([plan])
+        assert len(out.plans) == 1
+        assert dict(out.plans[0].splits) == {"2": 30.5, "6": 22.0}
+        assert out.plans[0].HasField("effective_to")
+
+    def test_open_ended_plan_has_no_effective_to(self):
+        plan = SimpleNamespace(effective_from=START, effective_to=None, splits={})
+        assert to_signal_plan_list([plan]).plans[0].HasField("effective_to") is False
