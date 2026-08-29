@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tsigma.collection.decoders.base import DecodedEvent
+from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.directory_watch import (
     DirectoryWatchMethod,
     DirectoryWatchServerConfig,
@@ -247,7 +247,9 @@ class TestProcessFile:
             move_after_processing=False,
         )
         method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1)
+        )
         method._session_factory = AsyncMock()
         method._device_overrides = {}
 
@@ -255,18 +257,14 @@ class TestProcessFile:
         f = tmp_path / "SIG-001_20260415_events.dat"
         f.write_bytes(b"\x01\x02\x03")
 
-        decoder_cls = MagicMock()
-        decoder_inst = MagicMock()
-        decoder_inst.decode_bytes.return_value = [
-            DecodedEvent(timestamp=None, event_code=82, event_param=1),
-        ]
-        decoder_cls.return_value = decoder_inst
-        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls):
-            await method._process_file(str(f), str(tmp_path))
+        await method._process_file(str(f), str(tmp_path))
 
-        method._target.persist.assert_awaited_once()
-        # device_id resolved from filename prefix
-        assert method._target.persist.call_args[0][1] == "SIG-001"
+        # Transport-only: the method hands over bytes and a decoder name.
+        method._target.ingest.assert_awaited_once()
+        args, kwargs = method._target.ingest.call_args
+        assert args[0] == b"\x01\x02\x03"
+        assert args[1] == "SIG-001"          # device_id from the filename prefix
+        assert kwargs["decoder_name"] == "asc3"
 
     @pytest.mark.asyncio
     @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
@@ -274,14 +272,16 @@ class TestProcessFile:
         method = DirectoryWatchMethod()
         method._cfg = DirectoryWatchServerConfig(paths=[str(tmp_path)])
         method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1)
+        )
         method._session_factory = AsyncMock()
         method._device_overrides = {}
 
         await method._process_file(
             str(tmp_path / "ghost.dat"), str(tmp_path),
         )
-        method._target.persist.assert_not_called()
+        method._target.ingest.assert_not_called()
 
     @pytest.mark.asyncio
     @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
@@ -289,7 +289,9 @@ class TestProcessFile:
         method = DirectoryWatchMethod()
         method._cfg = DirectoryWatchServerConfig(paths=[str(tmp_path)])
         method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1)
+        )
         method._session_factory = AsyncMock()
         method._device_overrides = {}
 
@@ -300,70 +302,59 @@ class TestProcessFile:
         with patch.object(method, "_move_to_error") as mock_move:
             await method._process_file(str(f), str(tmp_path))
         mock_move.assert_called_once()
-        method._target.persist.assert_not_called()
+        method._target.ingest.assert_not_called()
 
     @pytest.mark.asyncio
     @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_decode_error_moves_to_error(self, mock_sleep, tmp_path):
+    async def test_ingest_failure_moves_to_error(self, mock_sleep, tmp_path):
+        """The method can no longer tell decode failure from persist failure.
+
+        Both are one IngestOutcome.FAILURE now - the host owns the spine, so the
+        method only decides file disposition. Same outcome as before: error dir.
+        """
         method = DirectoryWatchMethod()
         method._cfg = DirectoryWatchServerConfig(paths=[str(tmp_path)])
         method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="decode failed: bad bytes"
+            )
+        )
         method._session_factory = AsyncMock()
         method._device_overrides = {}
 
         f = tmp_path / "SIG-001_x.dat"
         f.write_bytes(b"\xff")
 
-        decoder_cls = MagicMock()
-        decoder_inst = MagicMock()
-        decoder_inst.decode_bytes.side_effect = ValueError("bad bytes")
-        decoder_cls.return_value = decoder_inst
-
-        with (
-            patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls),
-            patch.object(method, "_move_to_error") as mock_move,
-        ):
+        with patch.object(method, "_move_to_error") as mock_move:
             await method._process_file(str(f), str(tmp_path))
 
         mock_move.assert_called_once()
-        method._target.persist.assert_not_called()
 
     @pytest.mark.asyncio
     @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_persist_error_moves_to_error(self, mock_sleep, tmp_path):
+    async def test_unreadable_file_never_reaches_ingest(self, mock_sleep, tmp_path):
+        """A file the method cannot read is a transport failure, still its own job."""
         method = DirectoryWatchMethod()
         method._cfg = DirectoryWatchServerConfig(paths=[str(tmp_path)])
         method._target = ControllerTarget()
-        method._target.persist = AsyncMock(side_effect=RuntimeError("db down"))
+        method._target.ingest = AsyncMock()
         method._session_factory = AsyncMock()
         method._device_overrides = {}
 
         f = tmp_path / "SIG-001_x.dat"
         f.write_bytes(b"\x01")
 
-        decoder_cls = MagicMock()
-        decoder_inst = MagicMock()
-        decoder_inst.decode_bytes.return_value = [
-            DecodedEvent(timestamp=None, event_code=82, event_param=1),
-        ]
-        decoder_cls.return_value = decoder_inst
-
         with (
-            patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls),
+            patch.object(method, "_read_file_with_retry",
+                         new_callable=AsyncMock, return_value=None),
             patch.object(method, "_move_to_error") as mock_move,
         ):
             await method._process_file(str(f), str(tmp_path))
 
         mock_move.assert_called_once()
+        method._target.ingest.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# _read_file_with_retry
-# ---------------------------------------------------------------------------
-
-
-class TestReadFileWithRetry:
     @pytest.mark.asyncio
     @patch(f"{_MOD}.asyncio.sleep", new_callable=AsyncMock)
     async def test_reads_successfully_first_attempt(self, mock_sleep, tmp_path):
@@ -398,7 +389,9 @@ class TestReadFileWithRetry:
 # ---------------------------------------------------------------------------
 
 
-class TestResolveDecoder:
+class TestDecoderName:
+    """The method resolves a decoder NAME; the host instantiates it (P7c)."""
+
     def _method(self, decoder_default="auto", per_device=None):
         m = DirectoryWatchMethod()
         m._cfg = DirectoryWatchServerConfig(
@@ -409,61 +402,32 @@ class TestResolveDecoder:
 
     def test_per_device_decoder_overrides_default(self):
         method = self._method(per_device={"SIG-1": {"decoder": "asc3"}})
-        decoder_cls = MagicMock()
-        decoder_cls.return_value = "instance"
-        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls) as g:
-            result = method._resolve_decoder("file.dat", "SIG-1")
-        g.assert_called_once_with("asc3")
-        assert result == "instance"
+        assert method._decoder_name("file.dat", "SIG-1") == "asc3"
 
     def test_server_default_used_when_no_override(self):
-        method = self._method(decoder_default="csv")
-        decoder_cls = MagicMock()
-        decoder_cls.return_value = "instance"
-        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls) as g:
-            result = method._resolve_decoder("file.dat", "SIG-1")
-        g.assert_called_once_with("csv")
-        assert result == "instance"
+        assert self._method(decoder_default="csv")._decoder_name("file.dat", "SIG-1") == "csv"
 
     def test_dat_extension_maps_to_asc3_when_default_is_auto(self):
-        method = self._method(decoder_default="auto")
-        decoder_cls = MagicMock()
-        decoder_cls.return_value = "instance"
-        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls) as g:
-            method._resolve_decoder("file.dat", "SIG-1")
-        g.assert_called_once_with("asc3")
+        assert self._method()._decoder_name("file.dat", "SIG-1") == "asc3"
 
     def test_csv_extension_maps_to_csv_when_default_is_auto(self):
-        method = self._method(decoder_default="auto")
-        decoder_cls = MagicMock()
-        decoder_cls.return_value = "instance"
-        with patch(f"{_MOD}.DecoderRegistry.get", return_value=decoder_cls) as g:
-            method._resolve_decoder("file.csv", "SIG-1")
-        g.assert_called_once_with("csv")
+        assert self._method()._decoder_name("file.csv", "SIG-1") == "csv"
 
     def test_unknown_extension_falls_back_to_registry(self):
-        method = self._method(decoder_default="auto")
-        decoder_cls = MagicMock()
-        decoder_cls.return_value = "instance"
+        method = self._method()
+        candidate = MagicMock()
+        candidate.name = "vendor"
         with patch(
-            f"{_MOD}.DecoderRegistry.get_for_extension",
-            return_value=[decoder_cls],
+            f"{_MOD}.DecoderRegistry.get_for_extension", return_value=[candidate],
         ) as g:
-            method._resolve_decoder("file.xyz", "SIG-1")
+            assert method._decoder_name("file.xyz", "SIG-1") == "vendor"
         g.assert_called_once_with(".xyz")
 
     def test_no_decoder_found_raises(self):
-        method = self._method(decoder_default="auto")
-        with patch(
-            f"{_MOD}.DecoderRegistry.get_for_extension", return_value=[],
-        ):
+        method = self._method()
+        with patch(f"{_MOD}.DecoderRegistry.get_for_extension", return_value=[]):
             with pytest.raises(ValueError, match="No decoder"):
-                method._resolve_decoder("file.unknown", "SIG-1")
-
-
-# ---------------------------------------------------------------------------
-# Stop
-# ---------------------------------------------------------------------------
+                method._decoder_name("file.xyz", "SIG-1")
 
 
 class TestStop:
