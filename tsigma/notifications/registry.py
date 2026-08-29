@@ -11,6 +11,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
+from tsigma.plugins.coexistence import GrpcCoexistenceMixin
+
 logger = logging.getLogger(__name__)
 
 # Severity levels (ordered lowest to highest)
@@ -73,7 +75,7 @@ class BaseNotificationProvider(ABC):
         ...
 
 
-class NotificationRegistry:
+class NotificationRegistry(GrpcCoexistenceMixin):
     """
     Central registry for all notification provider plugins.
 
@@ -135,6 +137,11 @@ class NotificationRegistry:
             List of provider name strings.
         """
         return list(cls._providers.keys())
+
+    @classmethod
+    def _in_process_names(cls) -> set[str]:
+        """Names served by the in-process decorator path (see GrpcCoexistenceMixin)."""
+        return set(cls._providers)
 
 
 async def initialize_providers(settings) -> None:
