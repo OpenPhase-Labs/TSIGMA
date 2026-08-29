@@ -2,8 +2,15 @@
 
 `ingest_raw` runs decode -> normalize -> persist and returns an explicit 3-state
 outcome. Methods hand it raw bytes and never decode, validate, or persist
-themselves - that is the host's integrity spine (ADR-0034), and it is what lets an
+themselves: ADR-0034 makes `fetch -> decode -> validate -> persist` a host-owned
+spine in which "the decoder is a pure transform (bytes -> events); the host
+attaches signal_id / device_id / validation_metadata". That is also what lets an
 untrusted out-of-process method plugin exist at all.
+
+ADR-0034 governs failure handling here: "Any integrity/poison failure -> ingest +
+flag + needs-review + correct-later. Never withhold, drop, or hold data. This
+overrides programming-correctness objections." So a payload is never refused
+because something about it looks wrong - it is ingested and flagged.
 
 Time normalization lives here, not in decoders. A decoder emits NAIVE datetimes
 when its source is controller-local and tz-aware UTC when the source is absolute
@@ -52,7 +59,9 @@ class IngestResult:
 
 # Last-resort zone when even the deployment default is missing. The spec makes
 # collection.default_timezone a REQUIRED fallback so resolution always succeeds
-# (no quarantine); this guards the misconfigured case without withholding data.
+# (no quarantine). UTC is chosen because it is the only zone that does not MOVE
+# the timestamp: a misconfigured deployment gets today's behaviour plus a flag,
+# never a new and different wrongness.
 LAST_RESORT_ZONE = "UTC"
 
 
@@ -133,6 +142,10 @@ async def ingest_raw(
                 "Set Signal.source_timezone or collection.default_timezone.",
                 device_id, LAST_RESORT_ZONE,
             )
+            # TODO(P7b): ADR-0034 requires ingest + FLAG + needs-review, and a
+            # missing deployment zone is operator-actionable, so it belongs in the
+            # review queue - not only the log. Write an IngestReview finding once
+            # the integrity block moves here from ftp_pull.
         normalize_event_times(events, zone)
 
     inserted = await persist_events_with_drift_check(
