@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.tcp_server import (
     TCPServerConfig,
     TCPServerMethod,
@@ -109,35 +110,29 @@ class TestTCPServerProcessConnection:
         method._target.persist.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_mapped_ip_decodes_and_persists_via_target(self):
+    async def test_mapped_ip_hands_bytes_to_the_target(self):
+        """Transport-only: the method hands over bytes + a decoder name (P7c)."""
         method = TCPServerMethod()
         method._config = TCPServerConfig(read_timeout_seconds=5, buffer_size=4096)
         method._device_map = {
             "10.0.0.1": ("SIG-001", {"decoder": "asc3"}),
         }
         method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 2)
+        )
         method._session_factory = AsyncMock()
 
         payload = b"\x01\x02\x03\x04"
         reader = AsyncMock()
         reader.read = AsyncMock(return_value=payload)
+        await method._process_connection(reader, "10.0.0.1")
 
-        mock_decoder = MagicMock()
-        fake_events = [MagicMock(), MagicMock()]
-        mock_decoder.decode_bytes.return_value = fake_events
-
-        with patch(
-            "tsigma.collection.methods.tcp_server.resolve_decoder_by_name",
-            return_value=mock_decoder,
-        ) as mock_resolve:
-            await method._process_connection(reader, "10.0.0.1")
-
-        mock_resolve.assert_called_once_with("asc3")
-        mock_decoder.decode_bytes.assert_called_once_with(payload)
-        method._target.persist.assert_awaited_once_with(
-            fake_events, "SIG-001", method._session_factory,
-        )
+        method._target.ingest.assert_awaited_once()
+        args, kwargs = method._target.ingest.call_args
+        assert args[0] == payload
+        assert args[1] == "SIG-001"
+        assert kwargs["decoder_name"] == "asc3"
 
     @pytest.mark.asyncio
     async def test_per_device_decoder_overrides_server_default(self):
@@ -147,18 +142,16 @@ class TestTCPServerProcessConnection:
             "10.0.0.1": ("SIG-001", {"decoder": "device-specific"}),
         }
         method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 0)
+        )
         method._session_factory = AsyncMock()
 
         reader = AsyncMock()
         reader.read = AsyncMock(return_value=b"\x01")
 
-        with patch(
-            "tsigma.collection.methods.tcp_server.resolve_decoder_by_name",
-            return_value=MagicMock(decode_bytes=MagicMock(return_value=[])),
-        ) as mock_resolve:
-            await method._process_connection(reader, "10.0.0.1")
-        mock_resolve.assert_called_once_with("device-specific")
+        await method._process_connection(reader, "10.0.0.1")
+        assert method._target.ingest.call_args[1]["decoder_name"] == "device-specific"
 
 
 class TestTCPServerStartStop:

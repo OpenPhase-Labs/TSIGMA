@@ -24,8 +24,8 @@ from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel
 
+from ..ingest import IngestOutcome
 from ..registry import IngestionMethodRegistry, ListenerIngestionMethod
-from ..sdk import resolve_decoder_by_name
 from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
@@ -100,16 +100,18 @@ class TCPServerMethod(ListenerIngestionMethod):
             out[host] = (device_id, config)
         return out
 
-    def _resolve_decoder(
+    def _decoder_name(
         self, per_device: dict[str, Any], server: TCPServerConfig,
     ):
-        """Per-device decoder takes precedence over the server default."""
-        name = (
+        """Per-device decoder takes precedence over the server default.
+
+        Returns the registry NAME; the host resolves and instantiates it.
+        """
+        return (
             per_device.get("decoder")
             or server.decoder
             or _DEFAULT_DECODER
         )
-        return resolve_decoder_by_name(name)
 
     async def health_check(self) -> bool:
         return self._server is not None and self._server.is_serving()
@@ -243,22 +245,23 @@ class TCPServerMethod(ListenerIngestionMethod):
             )
             return
 
-        try:
-            decoder = self._resolve_decoder(per_device, self._config)
-            events = decoder.decode_bytes(data)
-        except Exception:
-            logger.exception(
-                "Failed to decode TCP payload from %s for %s %s",
-                peer_ip, self._target.device_type, device_id,
+        # Transport-only: the host decodes, normalizes, and persists.
+        result = await self._target.ingest(
+            data, device_id, self._session_factory,
+            decoder_name=self._decoder_name(per_device, self._config),
+            source_label=self._target.device_type,
+        )
+        if result.outcome is IngestOutcome.FAILURE:
+            logger.error(
+                "Failed to ingest TCP payload from %s for %s %s: %s",
+                peer_ip, self._target.device_type, device_id, result.error,
             )
             return
 
-        await self._target.persist(events, device_id, self._session_factory)
-
-        if events:
+        if result.events_inserted:
             logger.info(
                 "Collected %d events from %s for %s %s",
-                len(events), peer_ip,
+                result.events_inserted, peer_ip,
                 self._target.device_type, device_id,
             )
 
