@@ -99,3 +99,24 @@ class ControllerTarget:
             session_factory,
             error_msg,
         )
+
+    async def ingest(
+        self,
+        raw: bytes,
+        device_id: str,
+        session_factory,
+        *,
+        decoder_name: str | None = None,
+        filename: str | None = None,
+        source_label: str = "device",
+    ):
+        from ..ingest import ingest_raw
+
+        return await ingest_raw(
+            raw,
+            device_id=device_id,
+            session_factory=session_factory,
+            decoder_name=decoder_name,
+            filename=filename,
+            source_label=source_label,
+        )

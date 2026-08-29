@@ -41,6 +41,7 @@ from .sdk import (
     check_controller_replacement,
     check_temporal_integrity,
     persist_events_with_drift_check,
+    resolve_decoder_by_extension,
     resolve_decoder_by_name,
     resolve_source_timezone,
 )
@@ -64,6 +65,10 @@ class IngestResult:
     events_inserted: int
     max_event_time: datetime | None = None
     error: str = ""
+    # Which step failed - "decode", "persist", or "" when nothing did. Methods
+    # used to distinguish these by having separate try/except blocks; the
+    # boundary took that away, so the result carries it instead.
+    failed_stage: str = ""
 
     @property
     def advanced(self) -> bool:
@@ -121,25 +126,40 @@ async def ingest_raw(
     raw: bytes,
     *,
     device_id: str,
-    decoder_name: str,
     session_factory,
+    decoder_name: str | None = None,
+    filename: str | None = None,
     source_label: str = "signal",
 ) -> IngestResult:
     """Decode, normalize, and persist one raw payload.
 
+    Exactly one of ``decoder_name`` (explicit) or ``filename`` (extension-based)
+    selects the decoder, matching `IngestionTarget.resolve_decoder`.
+
     Returns an explicit outcome rather than a bare count so the caller's
     advancement policy can distinguish "nothing to do" from "do not advance".
     """
+    hint = decoder_name or filename
     try:
-        decoder = resolve_decoder_by_name(decoder_name)
+        decoder = (
+            resolve_decoder_by_name(decoder_name)
+            if decoder_name
+            else resolve_decoder_by_extension(filename)
+        )
     except (ValueError, KeyError) as exc:
-        return IngestResult(IngestOutcome.FAILURE, 0, error=f"decoder {decoder_name!r}: {exc}")
+        return IngestResult(
+            IngestOutcome.FAILURE, 0,
+            error=f"decoder {hint!r}: {exc}", failed_stage="decode",
+        )
 
     try:
         result = decoder.decode(raw)
     except Exception as exc:  # a bad file must not take the poller down
         logger.exception("%s: decode failed for %s", decoder_name, device_id)
-        return IngestResult(IngestOutcome.FAILURE, 0, error=f"decode failed: {exc}")
+        return IngestResult(
+            IngestOutcome.FAILURE, 0,
+            error=f"decode failed: {exc}", failed_stage="decode",
+        )
 
     events = list(result.events or [])
     if not events:
@@ -167,12 +187,24 @@ async def ingest_raw(
     # times to server UTC, so running it on unconverted local timestamps
     # false-trips it - one of the symptoms the timezone bug produces today.
     await validate_and_record_provenance(
-        session_factory, device_id, result.metadata, decoder_name, events
+        session_factory, device_id, result.metadata,
+        getattr(decoder, "name", decoder_name), events,
     )
 
-    inserted = await persist_events_with_drift_check(
-        events, device_id, session_factory, source_label=source_label
-    )
+    try:
+        inserted = await persist_events_with_drift_check(
+            events, device_id, session_factory, source_label=source_label
+        )
+    except Exception as exc:
+        # A persist failure is FAILURE, not an exception: callers decide file
+        # disposition from the outcome, and an escaping exception would leave a
+        # watched file unquarantined and reprocessed forever.
+        logger.exception("%s: persist failed", device_id)
+        return IngestResult(
+            IngestOutcome.FAILURE, 0,
+            error=f"persist failed: {exc}", failed_stage="persist",
+        )
+
     return IngestResult(
         IngestOutcome.SUCCESS,
         inserted or 0,

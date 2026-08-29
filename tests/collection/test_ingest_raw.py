@@ -286,3 +286,41 @@ class TestUnresolvedTimezoneFlag:
         broken.__aenter__.side_effect = RuntimeError("db down")
         # Must return normally, not raise - ingest continues either way.
         await _flag_unresolved_timezone(lambda: broken, "SIG-1")
+
+
+class TestPersistFailure:
+    @pytest.mark.asyncio
+    async def test_persist_failure_is_an_outcome_not_an_exception(self):
+        """An escaping exception would leave a watched file unquarantined."""
+        dec = SimpleNamespace(
+            decode=lambda raw: DecodeResult(
+                events=[_ev(datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc))]
+            )
+        )
+        with patch("tsigma.collection.ingest.resolve_decoder_by_name", return_value=dec), \
+             patch("tsigma.collection.ingest.validate_and_record_provenance",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.ingest.persist_events_with_drift_check",
+                   new_callable=AsyncMock, side_effect=RuntimeError("db down")):
+            out = await ingest_raw(b"x", device_id="S", decoder_name="d",
+                                   session_factory=_factory())
+        assert out.outcome is IngestOutcome.FAILURE
+        assert out.failed_stage == "persist"
+        assert "db down" in out.error
+        assert out.advanced is False
+
+    @pytest.mark.asyncio
+    async def test_decode_failure_is_staged_as_decode(self):
+        boom = SimpleNamespace(decode=lambda raw: (_ for _ in ()).throw(ValueError("bad")))
+        with patch("tsigma.collection.ingest.resolve_decoder_by_name", return_value=boom):
+            out = await ingest_raw(b"x", device_id="S", decoder_name="d",
+                                   session_factory=_factory())
+        assert out.failed_stage == "decode"
+
+    @pytest.mark.asyncio
+    async def test_success_has_no_failed_stage(self):
+        dec = SimpleNamespace(decode=lambda raw: DecodeResult(events=[]))
+        with patch("tsigma.collection.ingest.resolve_decoder_by_name", return_value=dec):
+            out = await ingest_raw(b"x", device_id="S", decoder_name="d",
+                                   session_factory=_factory())
+        assert out.failed_stage == ""

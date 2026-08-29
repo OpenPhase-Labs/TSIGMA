@@ -65,6 +65,24 @@ class IngestionTarget(Protocol):
         """Persist events, warning on future-dated event timestamps."""
         ...
 
+    async def ingest(
+        self,
+        raw: bytes,
+        device_id: str,
+        session_factory,
+        *,
+        decoder_name: Optional[str] = None,
+        filename: Optional[str] = None,
+        source_label: str = "device",
+    ) -> Any:
+        """Decode, normalize, and persist raw bytes; return an ``IngestResult``.
+
+        The transport-only entry point: a method hands over bytes and never
+        decodes, validates, or persists itself (ADR-0034 host-owned spine).
+        Supersedes calling ``resolve_decoder`` + ``persist_with_drift_check``.
+        """
+        ...
+
     async def load_checkpoint(
         self, method_name: str, device_id: str, session_factory,
     ) -> Optional[PollingCheckpoint]:

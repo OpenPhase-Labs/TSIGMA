@@ -41,6 +41,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from ..decoders.base import DecoderRegistry
+from ..ingest import IngestOutcome
 from ..registry import EventDrivenIngestionMethod, IngestionMethodRegistry
 from ..targets import ControllerTarget, IngestionTarget
 
@@ -265,32 +266,24 @@ class DirectoryWatchMethod(EventDrivenIngestionMethod):
             self._move_to_error(fp, watch_dir)
             return
 
-        try:
-            decoder = self._resolve_decoder(filename, device_id)
-            events = decoder.decode_bytes(data)
-        except Exception:
-            logger.exception(
-                "Failed to decode file %s for %s %s",
-                filename, self._target.device_type, device_id,
-            )
-            self._move_to_error(fp, watch_dir)
-            return
-
-        try:
-            await self._target.persist(
-                events, device_id, self._session_factory,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to persist events from %s for %s %s",
-                filename, self._target.device_type, device_id,
+        # Transport-only: hand the bytes to the host and let it decode,
+        # normalize, run the integrity spine, and persist (ADR-0034).
+        result = await self._target.ingest(
+            data, device_id, self._session_factory,
+            decoder_name=self._decoder_name(filename, device_id),
+            source_label=self._target.device_type,
+        )
+        if result.outcome is IngestOutcome.FAILURE:
+            logger.error(
+                "Failed to ingest %s for %s %s: %s",
+                filename, self._target.device_type, device_id, result.error,
             )
             self._move_to_error(fp, watch_dir)
             return
 
         logger.info(
             "Processed %s: %d events for %s %s",
-            filename, len(events),
+            filename, result.events_inserted,
             self._target.device_type, device_id,
         )
 
@@ -310,25 +303,26 @@ class DirectoryWatchMethod(EventDrivenIngestionMethod):
             return stem.split("_", 1)[0]
         return None
 
-    def _resolve_decoder(self, filename: str, device_id: str):
-        """Per-device decoder override > server default > extension lookup."""
+    def _decoder_name(self, filename: str, device_id: str) -> str:
+        """Per-device decoder override > server default > extension lookup.
+
+        Returns the registry NAME; the host resolves and instantiates it.
+        """
         per_device = self._device_overrides.get(device_id, {})
         explicit = per_device.get("decoder") or (
             self._cfg.decoder if self._cfg.decoder != "auto" else None
         )
         if explicit:
-            cls = DecoderRegistry.get(explicit)
-            return cls()
+            return explicit
 
         ext = Path(filename).suffix.lower()
         if ext in _EXTENSION_DECODER_MAP:
-            cls = DecoderRegistry.get(_EXTENSION_DECODER_MAP[ext])
-            return cls()
+            return _EXTENSION_DECODER_MAP[ext]
 
         candidates = DecoderRegistry.get_for_extension(ext)
         if not candidates:
             raise ValueError(f"No decoder found for extension '{ext}'")
-        return candidates[0]()
+        return candidates[0].name
 
     @staticmethod
     async def _read_file_with_retry(file_path: Path) -> Optional[bytes]:
