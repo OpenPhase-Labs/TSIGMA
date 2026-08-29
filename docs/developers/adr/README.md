@@ -128,7 +128,7 @@ ADRs that genuinely span areas are listed under more than one heading. The
 - [0045](0045-two-tier-watchdog.md) — Two-tier watchdog: inline per-cycle + scheduled background
 
 **Decoders & validation**
-- [0046](0046-validation-plugin-layers.md) — Validation: plugin-based, three-layer, flag-never-block
+- [0046](0046-validation-plugin-layers.md) — Validation: in-process, three-layer, flag-never-block
 - [0047](0047-validation-metadata.md) — Per-event validation metadata (JSONB, worst-status merge)
 - [0048](0048-decoder-auto-detection.md) — Decoder selection: extensions + content probing, priority order
 - [0049](0049-decoder-output-contract.md) — Decoder output: canonical events + optional provenance envelope
@@ -236,7 +236,7 @@ here and filed into an [Index by topic](#index-by-topic) heading.
 | [0043](0043-checkpoint-resilience.md) | Checkpoint resilience: immunity, future-cap, drift detection, auto-recovery | Accepted | 2026-06-28 |
 | [0044](0044-file-provenance-and-integrity-detection.md) | File-ingest provenance and integrity detection → review queue | Accepted | 2026-06-28 |
 | [0045](0045-two-tier-watchdog.md) | Two-tier watchdog: inline per-cycle + scheduled background | Accepted | 2026-06-28 |
-| [0046](0046-validation-plugin-layers.md) | Validation: plugin-based, three-layer, flag-never-block | Accepted | 2026-06-28 |
+| [0046](0046-validation-plugin-layers.md) | Validation: in-process, three-layer, flag-never-block | Accepted | 2026-06-28 |
 | [0047](0047-validation-metadata.md) | Per-event validation metadata (JSONB, worst-status merge) | Accepted | 2026-06-28 |
 | [0048](0048-decoder-auto-detection.md) | Decoder selection: declared extensions + content probing, priority order | Accepted | 2026-06-28 |
 | [0049](0049-decoder-output-contract.md) | Decoder output: pure canonical events + optional provenance envelope | Accepted | 2026-06-28 |

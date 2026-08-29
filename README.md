@@ -10,6 +10,8 @@ An open source replacement for ATSPM (Automated Traffic Signal Performance Measu
 
 TSIGMA is a modern, modular platform for collecting, storing, and analyzing traffic signal performance data. It is a ground-up implementation of ATSPM, built for scale, performance, and extensibility.
 
+Traffic operations and TMC management are a closed ecosystem. Opening it is why TSIGMA exists: the interface every plugin targets is a [published standard](https://github.com/OpenPhase-Labs/TSIGMA-Contract) rather than an implementation detail of any one product, so an agency can pick its host, its vendors, and its plugins independently of each other — and take its data with it.
+
 ## Lineage
 
 TSIGMA was born from UDOT's ATSPM 4.x, with Kimley-Horn's functionality added in and ideas from ATSPM 5.x implemented alongside. The measures, the high-resolution event-code semantics, and the operational patterns come from that work. TSIGMA re-implements them on a different substrate; it does not originate them.
@@ -85,19 +87,24 @@ curl http://localhost:8080/ready
 ### Key Differences
 
 - **Queryable event storage.** Events are individually indexed rows. Queries by signal/event-code/time hit the index directly and return in milliseconds, with no app-side decompression step and no full-table scan.
-- **Plugin architecture end-to-end.** Every extensible surface is a registry-driven plugin — add a new one with a one-line decorator and it's automatically discovered, exposed via REST, and surfaced in the UI. No controller class, no recompile, no core changes:
-  - **Decoders** — `@DecoderRegistry.register` (ASC/3, Intelight MaxTime, Siemens, Peek, Wavetronics, OpenPhase Protobuf, CSV, auto-detect, …)
-  - **Ingestion methods** — `@IngestionMethodRegistry.register` (FTP/FTPS/SFTP, HTTP, NATS, MQTT, gRPC, TCP, UDP, directory watch, SOAP, …)
-  - **Reports** — `@ReportRegistry.register` (PCD, split monitor, preempt detail, etc. — 29 currently shipped)
-  - **Validators** — `@ValidatorRegistry.register` (schema/range, temporal anomaly, cross-signal corridor, …)
-  - **Storage backends** — `@StorageRegistry.register` (filesystem, S3, …)
-  - **Scheduled jobs** — `@JobRegistry.register` (aggregation, compression, watchdog, …)
+- **Plugin architecture end-to-end.** Extensible surfaces divide into two kinds, and the line between them is deliberate.
 
-  Adding support for a new controller vendor, a new transport, a new report, or a new validation pass is a single new file. In the C# implementations the equivalent change means editing core projects and recompiling.
+  **gRPC plugins** — separate process, separate repository, built against the [TSIGMA Contract](https://github.com/OpenPhase-Labs/TSIGMA-Contract). These are the surfaces a third party supplies:
+  - **Decoders** — ASC/3, Intelight MaxTime, Siemens, Peek, Wavetronics, OpenPhase Protobuf, CSV, auto-detect, …
+  - **Ingestion methods** — FTP/FTPS/SFTP, HTTP, NATS, MQTT, gRPC, TCP, UDP, directory watch, SOAP, …
+  - **Reports** — PCD, split monitor, preempt detail, etc. — 29 currently shipped
+  - **Notification providers** — email, Slack, Teams, …
+  - **Auth providers and storage backends** — privileged tier: these are trust roots, so registration is gated by whatever trust anchor the deployment's operator configures
+
+  **In-process extension points** — registries inside the core, with no wire contract and no third-party binary:
+  - **Validators** — schema/range, temporal anomaly, cross-signal corridor. The host is accountable for the integrity metadata it attaches, so validation is never delegated across the plugin boundary (ADR-0011 in the contract).
+  - **Scheduled jobs** — aggregation, compression, watchdog, … These run against the host's own database session.
+
+  A new controller vendor is a new repository, not a change to this one — no PR against the core, no recompile, and no obligation to open your source. In the C# implementations the equivalent change means editing core projects and recompiling.
 - **Multi-protocol streaming ingestion.** Native support for NATS, MQTT, gRPC, HTTP push, TCP/UDP listeners, directory watch, and SOAP — alongside traditional FTP/SFTP/HTTP polling. The C# implementations ingest by file pull.
 - **Database portability.** Runs on PostgreSQL (preferred, with TimescaleDB for compression/partitioning), MS-SQL, Oracle, or MySQL via a dialect abstraction layer. ATSPM 4.x targets MS-SQL; 5.x supports multiple databases.
 - **Modern API surface.** REST (FastAPI) with auto-generated OpenAPI docs, plus GraphQL with introspection. Raw IHR event log access remains available; 5.x does not expose it.
-- **Operational simplicity.** Runs in 1–2 Docker containers vs. ATSPM 5.x's 6+ microservices. Single modular Python codebase vs. 26–77 C# projects (156K–172K lines).
+- **Operational simplicity.** The core runs in 1–2 Docker containers; plugins are child processes the core supervises, so a small install needs no external orchestrator, and larger deployments can scale a plugin family separately (ADR-0019). Single modular Python codebase vs. 26–77 C# projects (156K–172K lines).
 - **Validation pipeline.** Built-in three-layer validation (schema/range, temporal/anomaly, cross-signal corridor) with a plugin SDK and per-deployment configurability. The C# implementations have no equivalent layer.
 
 ---
@@ -139,12 +146,31 @@ curl http://localhost:8080/ready
 ## Core Components
 
 ### Collection Layer
+
+Ingestion methods, decoders, and reports are **gRPC plugins** — every poller and
+every decoder, FTP and HTTP and CSV alike. Each runs out of process and lives in
+its own repository; TSIGMA hosts them and owns the integrity spine
+(decode → validate → persist). A plugin is built against the
+[TSIGMA Contract](https://github.com/OpenPhase-Labs/TSIGMA-Contract), never
+against this repository — anyone can write one, in any gRPC-capable language,
+under any licence. See ADR-0018 and ADR-0082.
+
+**Install only what you run.** An agency deploying Econolite controllers over
+SFTP installs the ASC/3 decoder and the SFTP poller — not the full catalogue.
+Nothing else is present to configure, patch, or audit.
+
+The plugins available today:
+
 - **Ingestion methods:** FTP/FTPS/SFTP, HTTP(S), NATS, MQTT, gRPC, TCP, UDP, directory watch, SOAP
 - **Vendor decoders:** ASC/3 (Econolite), Intelight (MaxTime XML), Siemens, Peek, Wavetronics, OpenPhase Protobuf, CSV, auto-detect
 - Per-signal collection configuration via JSONB metadata
 - Async/parallel processing with semaphore-bounded concurrency
 - Scheduled collection with configurable intervals
 - Checkpoint-based incremental collection (never re-downloads data)
+
+Plugins still in this tree are transition scaffolding and are scheduled for
+extraction; in-process and gRPC registration dispatch per name during the
+migration.
 
 ### Storage Layer
 - **PostgreSQL 18+** with TimescaleDB (preferred) or pg_partman for partition management
