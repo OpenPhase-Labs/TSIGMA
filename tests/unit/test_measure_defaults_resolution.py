@@ -34,7 +34,7 @@ from uuid import uuid4
 
 import pandas as pd
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -334,3 +334,115 @@ class TestDirectResolutionEntrypoint:
         )
         assert validated.green_occ_threshold == ADMIN_DEFAULT_THRESHOLD
         assert validated.signal_id == "S1"
+
+
+class _FakeRemoteReport:
+    """Stands in for RemoteReport: no Report[TParams], a declared schema instead.
+
+    Mirrors tsigma/plugins/remote_report.py - a gRPC report carries the plugin's
+    schema from Describe rather than parameterising its base class.
+    """
+
+    def __init__(self, schema):
+        self.params_schema = schema
+
+
+_REMOTE_SCHEMA = {
+    "properties": {
+        "signal_id": {"name": "signal_id", "required": True},
+        "green_occ_threshold": {"name": "green_occ_threshold"},
+    },
+    "required": ["signal_id"],
+}
+
+
+class TestRemoteReportMeasureDefaults:
+    """Admin defaults must reach gRPC report plugins too.
+
+    report.proto: ParamField.default is the "Optional admin-configurable default
+    (measure-defaults)", and DescribeResponse.params says those "feed the
+    measure-defaults resolution (per-request -> admin default -> code default)".
+    Before this, _resolve_and_validate_params early-returned for any report
+    without a Report[TParams] parameterisation, so the MeasureDefault query never
+    ran and admin rows were silently ignored.
+    """
+
+    @pytest.mark.asyncio
+    async def test_admin_default_reaches_a_remote_report(self):
+        import tsigma.api.v1.reports as reports_mod
+
+        session = _make_defaults_session(
+            [_make_default_row("green_occ_threshold", ADMIN_DEFAULT_THRESHOLD)]
+        )
+        out = await reports_mod._resolve_and_validate_params(
+            _FakeRemoteReport(_REMOTE_SCHEMA), REPORT_NAME,
+            {"signal_id": "S1"}, session,
+        )
+        assert out["green_occ_threshold"] == ADMIN_DEFAULT_THRESHOLD
+        assert out["signal_id"] == "S1"
+
+    @pytest.mark.asyncio
+    async def test_per_request_value_beats_the_admin_default(self):
+        import tsigma.api.v1.reports as reports_mod
+
+        session = _make_defaults_session(
+            [_make_default_row("green_occ_threshold", ADMIN_DEFAULT_THRESHOLD)]
+        )
+        out = await reports_mod._resolve_and_validate_params(
+            _FakeRemoteReport(_REMOTE_SCHEMA), REPORT_NAME,
+            {"signal_id": "S1", "green_occ_threshold": 0.9}, session,
+        )
+        assert out["green_occ_threshold"] == 0.9
+
+    @pytest.mark.asyncio
+    async def test_structural_params_are_never_admin_defaulted(self):
+        import tsigma.api.v1.reports as reports_mod
+
+        session = _make_defaults_session([_make_default_row("signal_id", "SNEAKY")])
+        out = await reports_mod._resolve_and_validate_params(
+            _FakeRemoteReport(_REMOTE_SCHEMA), REPORT_NAME,
+            {"signal_id": "S1"}, session,
+        )
+        assert out["signal_id"] == "S1"
+
+    @pytest.mark.asyncio
+    async def test_missing_required_param_is_rejected_host_side(self):
+        """The contract has the host check required keys before Generate."""
+        import tsigma.api.v1.reports as reports_mod
+
+        session = _make_defaults_session([])
+        with pytest.raises(HTTPException) as exc:
+            await reports_mod._resolve_and_validate_params(
+                _FakeRemoteReport(_REMOTE_SCHEMA), REPORT_NAME, {}, session,
+            )
+        assert exc.value.status_code == reports_mod.HTTP_INVALID_REPORT_PARAMS
+        assert exc.value.detail["failures"][0]["field"] == "signal_id"
+
+    @pytest.mark.asyncio
+    async def test_an_admin_default_can_satisfy_a_required_param(self):
+        import tsigma.api.v1.reports as reports_mod
+
+        session = _make_defaults_session(
+            [_make_default_row("green_occ_threshold", ADMIN_DEFAULT_THRESHOLD)]
+        )
+        out = await reports_mod._resolve_and_validate_params(
+            _FakeRemoteReport(_REMOTE_SCHEMA), REPORT_NAME,
+            {"signal_id": "S1"}, session,
+        )
+        assert out["green_occ_threshold"] == ADMIN_DEFAULT_THRESHOLD
+
+    @pytest.mark.asyncio
+    async def test_untyped_report_still_gets_no_admin_defaults(self):
+        """Regression guard: a report with NO declared params keeps passthrough."""
+        import tsigma.api.v1.reports as reports_mod
+
+        class _Untyped:
+            pass
+
+        session = _make_defaults_session(
+            [_make_default_row("green_occ_threshold", ADMIN_DEFAULT_THRESHOLD)]
+        )
+        out = await reports_mod._resolve_and_validate_params(
+            _Untyped, REPORT_NAME, {"signal_id": "S1"}, session,
+        )
+        assert out == {"signal_id": "S1"}
