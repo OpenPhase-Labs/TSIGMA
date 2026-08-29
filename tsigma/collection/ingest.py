@@ -34,12 +34,13 @@ from ..models.approach import Approach
 from ..models.file_provenance import FileIngestProvenance
 from ..models.ingest_review import IngestReview
 from ..models.signal import Signal
-from ..notifications.registry import notify
+from ..notifications.registry import WARNING, notify
 from ..notifications.suppression import is_suppressed
 from .sdk import (
     check_configured_phases,
     check_controller_replacement,
     check_temporal_integrity,
+    is_backward_poisoned,
     persist_events_with_drift_check,
     resolve_decoder_by_extension,
     resolve_decoder_by_name,
@@ -137,6 +138,7 @@ async def ingest_raw(
     decoder_name: str | None = None,
     filename: str | None = None,
     source_label: str = "signal",
+    last_successful_poll: datetime | None = None,
 ) -> IngestResult:
     """Decode, normalize, and persist one raw payload.
 
@@ -190,13 +192,23 @@ async def ingest_raw(
             await _flag_unresolved_timezone(session_factory, device_id)
         normalize_event_times(events, zone)
 
+    await flag_if_backward_poison(
+        events, device_id, filename or "", last_successful_poll,
+    )
+
     # After normalization on purpose: check_temporal_integrity compares event
     # times to server UTC, so running it on unconverted local timestamps
     # false-trips it - one of the symptoms the timezone bug produces today.
-    await validate_and_record_provenance(
-        session_factory, device_id, result.metadata,
-        getattr(decoder, "name", decoder_name), events,
-    )
+    try:
+        await validate_and_record_provenance(
+            session_factory, device_id, result.metadata,
+            getattr(decoder, "name", decoder_name), events,
+        )
+    except Exception:
+        # never-lose-data outranks provenance: events still get persisted.
+        logger.exception(
+            "%s: validation/provenance step failed - events still ingested", device_id,
+        )
 
     try:
         inserted = await persist_events_with_drift_check(
@@ -385,4 +397,50 @@ async def _flag_unresolved_timezone(session_factory, device_id: str) -> None:
         logger.exception(
             "Could not queue the unresolved-timezone review for %s - events still ingested",
             device_id,
+        )
+
+
+async def flag_if_backward_poison(
+    events,
+    device_id: str,
+    filename: str,
+    last_successful_poll: datetime | None,
+) -> None:
+    """Flag a backward-poisoned batch for review (log + notify).
+
+    Never blocks ingest — callers always persist. A slow/reset controller
+    clock (newest event before the last poll) is flagged, not dropped
+    (spec principle: ingest + flag for review).
+    """
+    if not is_backward_poisoned(events, last_successful_poll):
+        return
+    last_polled_str = (
+        last_successful_poll.isoformat() if last_successful_poll else "n/a"
+    )
+    logger.warning(
+        "Backward-poisoned batch from %s for %s: newest event predates "
+        "last poll (%s) — ingesting and flagging for review",
+        filename, device_id, last_polled_str,
+    )
+    try:
+        await notify(
+            subject=f"Clock backward-poison: {device_id}",
+            message=(
+                f"Device {device_id} file {filename}: the newest event timestamp "
+                f"predates the last successful poll ({last_polled_str}) — a slow "
+                f"or reset controller clock. Events were ingested and flagged "
+                f"for review."
+            ),
+            severity=WARNING,
+            metadata={
+                "signal_id": device_id,
+                "file": filename,
+                "alert_type": "clock_backward_poison",
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Failed to send backward-poison notification for %s (%s) — "
+            "events still ingested",
+            filename, device_id,
         )

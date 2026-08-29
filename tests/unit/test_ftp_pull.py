@@ -5,9 +5,8 @@ Tests configuration, protocol adapters, poll cycle logic,
 and config construction from signal_metadata JSONB dicts.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,8 +15,8 @@ from tests._helpers import make_mock_session
 from tsigma.collection.decoders.base import (
     DecodedEvent,
     DecodeResult,
-    FileMetadata,
 )
+from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.ftp_pull import (
     FTPProtocol,
     FTPPullConfig,
@@ -26,9 +25,6 @@ from tsigma.collection.methods.ftp_pull import (
     _compute_files_hash,
 )
 from tsigma.collection.registry import ExecutionMode, IngestionMethodRegistry
-from tsigma.models.file_provenance import FileIngestProvenance
-from tsigma.models.ingest_review import IngestReview
-from tsigma.notifications.registry import WARNING
 
 # Module path prefix for patching SDK imports used in ftp_pull.py
 _MOD = "tsigma.collection.methods.ftp_pull"
@@ -215,6 +211,10 @@ def _make_mock_target() -> MagicMock:
     target.persist = AsyncMock()
     target.persist_with_drift_check = AsyncMock()
     target.resolve_decoder = MagicMock()
+    # P7c: the method hands bytes to the host via ingest().
+    target.ingest = AsyncMock(
+        return_value=IngestResult(IngestOutcome.SUCCESS, 0, events_decoded=0)
+    )
     return target
 
 
@@ -336,10 +336,13 @@ class TestPollOnce:
             RemoteFile(name="data.dat", size=200, mtime=None),
         ]
         client = _mock_client(files=files)
-        decoder = _mock_decoder()
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 0, events_decoded=0,
+            )
+        )
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
@@ -376,15 +379,18 @@ class TestPollOnce:
         files = [RemoteFile(name="events.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
         client.download.return_value = b"\x00\x01\x02"
-        decoder = _mock_decoder()
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 0, events_decoded=0,
+            )
+        )
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
             await method.poll_once("SIG-001", config, factory, target=target)
-        decoder.decode.assert_called_once_with(b"\x00\x01\x02")
+        assert target.ingest.call_args[0][0] == b"\x00\x01\x02"
 
     @pytest.mark.asyncio
     async def test_persists_decoded_events(self):
@@ -399,22 +405,19 @@ class TestPollOnce:
         ]
         files = [RemoteFile(name="events.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
-        decoder = _mock_decoder(events=events)
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, len(events), events_decoded=len(events),
+            )
+        )
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
             await method.poll_once("SIG-001", config, factory, target=target)
 
-        target.persist_with_drift_check.assert_awaited_once()
-        call_args = target.persist_with_drift_check.call_args
-        persisted_events = call_args[0][0]
-        persisted_signal = call_args[0][1]
-        assert len(persisted_events) == 2
-        assert persisted_signal == "SIG-001"
-        assert persisted_events[0].event_code == 1
-        assert persisted_events[1].event_code == 3
+        target.ingest.assert_awaited_once()
+        assert target.ingest.call_args[0][1] == "SIG-001"
 
     @pytest.mark.asyncio
     async def test_saves_checkpoint_after_ingest(self):
@@ -423,10 +426,13 @@ class TestPollOnce:
         config = _make_config_dict()
         files = [RemoteFile(name="events.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
-        decoder = _mock_decoder()
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 0, events_decoded=0,
+            )
+        )
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
@@ -444,10 +450,13 @@ class TestPollOnce:
         ]
         client = _mock_client(files=files)
         client.download.side_effect = [OSError("download failed"), b"\x00"]
-        decoder = _mock_decoder()
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 0, events_decoded=0,
+            )
+        )
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
@@ -464,11 +473,14 @@ class TestPollOnce:
         files = [RemoteFile(name="corrupt.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
         client.download.return_value = b"\xff"
-        decoder = _mock_decoder()
-        decoder.decode.side_effect = ValueError("corrupt data")
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="decode failed: corrupt data",
+                failed_stage="decode",
+            )
+        )
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
@@ -493,34 +505,40 @@ class TestPollOnce:
         """Test poll_once uses explicitly configured decoder when set."""
         method = FTPPullMethod()
         config = _make_config_dict(decoder="asc3")
-        decoder = _mock_decoder()
         files = [RemoteFile(name="events.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 0, events_decoded=0,
+            )
+        )
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
             await method.poll_once("SIG-001", config, factory, target=target)
-        target.resolve_decoder.assert_called_once_with(decoder_name="asc3")
+        assert target.ingest.call_args[1]["decoder_name"] == "asc3"
 
     @pytest.mark.asyncio
     async def test_auto_detect_decoder(self):
         """Test poll_once auto-detects decoder by file extension."""
         method = FTPPullMethod()
         config = _make_config_dict()  # no explicit decoder
-        decoder = _mock_decoder()
         files = [RemoteFile(name="events.dat", size=100, mtime=None)]
         client = _mock_client(files=files)
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 0, events_decoded=0,
+            )
+        )
         with patch.object(method, "_create_client", return_value=client), \
              patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock):
             await method.poll_once("SIG-001", config, factory, target=target)
-        target.resolve_decoder.assert_called_once_with(filename="events.dat")
+        assert target.ingest.call_args[1]["filename"] == "events.dat"
 
     @pytest.mark.asyncio
     async def test_no_decoder_found_raises(self):
@@ -1276,10 +1294,13 @@ class TestIngestAndDelete:
         events = [
             DecodedEvent(timestamp=now, event_code=1, event_param=0),
         ]
-        decoder = _mock_decoder(events=events)
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, len(events), events_decoded=len(events),
+            )
+        )
 
         with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
@@ -1322,7 +1343,11 @@ class TestIngestAndDelete:
 
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.side_effect = ValueError("bad")
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="decoder: bad", failed_stage="decode",
+            )
+        )
 
         with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
@@ -1340,14 +1365,14 @@ class TestIngestAndDelete:
         client = _mock_client()
         client.download = AsyncMock(return_value=b"\x00")
 
-        decoder = _mock_decoder(events=[
-            DecodedEvent(timestamp=datetime.now(timezone.utc),
-                         event_code=1, event_param=0),
-        ])
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
-        target.persist_with_drift_check.side_effect = RuntimeError("db error")
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="persist failed: db error",
+                failed_stage="persist",
+            )
+        )
 
         with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
@@ -1366,14 +1391,8 @@ class TestIngestAndDelete:
         client.download = AsyncMock(return_value=b"\x00")
         client.delete = AsyncMock(side_effect=OSError("permission denied"))
 
-        decoder = _mock_decoder(events=[
-            DecodedEvent(timestamp=datetime.now(timezone.utc),
-                         event_code=1, event_param=0),
-        ])
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
-
         with patch.object(method, "_save_checkpoint",
                           new_callable=AsyncMock) as mock_save:
             await method._ingest_and_delete(
@@ -1718,15 +1737,12 @@ class TestDownloadAndIngest:
         ]
         client = _mock_client()
         client.download = AsyncMock(return_value=b"\x00")
-        decoder = _mock_decoder(events=[
-            DecodedEvent(timestamp=datetime.now(timezone.utc),
-                         event_code=1, event_param=0),
-        ])
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
         # 1 event per file, all inserted -> 2 inserted total, 0 absorbed
-        target.persist_with_drift_check = AsyncMock(return_value=1)
+        target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1, events_decoded=1)
+        )
 
         total_inserted, total_files, newest_name, newest_mtime, total_absorbed = \
             await method._download_and_ingest(
@@ -1767,18 +1783,16 @@ class TestFtpAbsorbedCount:
         ]
         client = _mock_client(files=files)
         client.download = AsyncMock(return_value=b"\x00")
-        now = datetime.now(timezone.utc)
-        events = [
-            DecodedEvent(timestamp=now, event_code=1, event_param=0),
-            DecodedEvent(timestamp=now, event_code=2, event_param=0),
-            DecodedEvent(timestamp=now, event_code=3, event_param=0),
-        ]
-        decoder = _mock_decoder(events=events)
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
-        # 3 attempted per file; 2 then 1 actually inserted (3 absorbed total)
-        target.persist_with_drift_check = AsyncMock(side_effect=[2, 1])
+        # Two files: 3 decoded / 2 inserted, then 3 decoded / 1 inserted.
+        # 3 ingested, 3 absorbed.
+        target.ingest = AsyncMock(
+            side_effect=[
+                IngestResult(IngestOutcome.SUCCESS, 2, events_decoded=3),
+                IngestResult(IngestOutcome.SUCCESS, 1, events_decoded=3),
+            ]
+        )
 
         # Do NOT patch _save_checkpoint: let it forward to target.save_checkpoint.
         with patch.object(method, "_create_client", return_value=client):
@@ -1827,12 +1841,17 @@ class TestFtpRotateAbsorbedCount:
             DecodedEvent(timestamp=now, event_code=2, event_param=0),
             DecodedEvent(timestamp=now, event_code=3, event_param=0),
         ]
-        decoder = _mock_decoder(events=events)
         factory, _ = _mock_session_factory()
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, len(events), events_decoded=len(events),
+            )
+        )
         # 3 attempted; 2 actually inserted (1 absorbed as duplicate)
-        target.persist_with_drift_check = AsyncMock(return_value=2)
+        target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 2, events_decoded=3)
+        )
 
         # Do NOT patch _ingest_and_delete or _save_checkpoint: let the real
         # rotate ingest path forward the counts to target.save_checkpoint.
@@ -1936,641 +1955,3 @@ class TestBuildConfigSNMPv3:
         assert config.snmp_community == "private"
 
 
-class TestPollOnceBackwardPoison:
-    """poll_once backward-poison policy: ALWAYS ingest, flag for review.
-
-    A slow/reset controller clock is detected (newest event < last poll) but
-    the batch is still persisted; a notify() flag is raised for review. Clean
-    batches and the first poll are ingested with no flag.
-    """
-
-    @pytest.mark.asyncio
-    async def test_poison_is_ingested_and_flagged(self):
-        from tsigma.models.checkpoint import PollingCheckpoint
-
-        method = FTPPullMethod()
-        config = _make_config_dict()
-        now = datetime.now(timezone.utc)
-        checkpoint = MagicMock(spec=PollingCheckpoint)
-        checkpoint.files_hash = None
-        checkpoint.last_file_mtime = None
-        checkpoint.last_successful_poll = now
-        stale = [DecodedEvent(timestamp=now - timedelta(hours=1), event_code=1, event_param=2)]
-        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
-        client = _mock_client(files=files)
-        decoder = _mock_decoder(events=stale)
-        factory, _ = _mock_session_factory()
-        target = _make_mock_target()
-        target.load_checkpoint.return_value = checkpoint
-        target.resolve_decoder.return_value = decoder
-        with patch.object(method, "_create_client", return_value=client), \
-             patch.object(method, "_save_checkpoint",
-                          new_callable=AsyncMock) as mock_save, \
-             patch("tsigma.collection.methods.ftp_pull.notify",
-                   new_callable=AsyncMock) as mock_notify:
-            await method.poll_once("SIG-001", config, factory, target=target)
-        # ALWAYS ingest, even when poisoned — the stale events still reach persist
-        target.persist_with_drift_check.assert_awaited_once()
-        assert target.persist_with_drift_check.call_args[0][0] == stale
-        # ...and flag it for review
-        mock_notify.assert_awaited_once()
-        # ...and the checkpoint advances (file treated as ingested)
-        mock_save.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_clean_overlap_ingested_without_flag(self):
-        from tsigma.models.checkpoint import PollingCheckpoint
-
-        method = FTPPullMethod()
-        config = _make_config_dict()
-        now = datetime.now(timezone.utc)
-        checkpoint = MagicMock(spec=PollingCheckpoint)
-        checkpoint.files_hash = None
-        checkpoint.last_file_mtime = None
-        checkpoint.last_successful_poll = now - timedelta(minutes=5)
-        # old events but a CURRENT newest event = normal overlap, not poison
-        events = [
-            DecodedEvent(timestamp=now - timedelta(hours=2), event_code=1, event_param=2),
-            DecodedEvent(timestamp=now, event_code=3, event_param=4),
-        ]
-        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
-        client = _mock_client(files=files)
-        decoder = _mock_decoder(events=events)
-        factory, _ = _mock_session_factory()
-        target = _make_mock_target()
-        target.load_checkpoint.return_value = checkpoint
-        target.resolve_decoder.return_value = decoder
-        with patch.object(method, "_create_client", return_value=client), \
-             patch.object(method, "_save_checkpoint", new_callable=AsyncMock), \
-             patch("tsigma.collection.methods.ftp_pull.notify",
-                   new_callable=AsyncMock) as mock_notify:
-            await method.poll_once("SIG-001", config, factory, target=target)
-        target.persist_with_drift_check.assert_awaited_once()
-        mock_notify.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_first_poll_ingested_without_flag(self):
-        # no checkpoint yet (first poll) -> no lower bound -> ingest, no flag
-        method = FTPPullMethod()
-        config = _make_config_dict()
-        now = datetime.now(timezone.utc)
-        stale = [DecodedEvent(timestamp=now - timedelta(days=5), event_code=1, event_param=2)]
-        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
-        client = _mock_client(files=files)
-        decoder = _mock_decoder(events=stale)
-        factory, _ = _mock_session_factory()
-        target = _make_mock_target()
-        # load_checkpoint default returns None (first poll)
-        target.resolve_decoder.return_value = decoder
-        with patch.object(method, "_create_client", return_value=client), \
-             patch.object(method, "_save_checkpoint", new_callable=AsyncMock), \
-             patch("tsigma.collection.methods.ftp_pull.notify",
-                   new_callable=AsyncMock) as mock_notify:
-            await method.poll_once("SIG-001", config, factory, target=target)
-        target.persist_with_drift_check.assert_awaited_once()
-        mock_notify.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_poison_ingested_even_if_notify_fails(self):
-        # the flag is best-effort: a notify() failure must NOT block ingest
-        from tsigma.models.checkpoint import PollingCheckpoint
-
-        method = FTPPullMethod()
-        config = _make_config_dict()
-        now = datetime.now(timezone.utc)
-        checkpoint = MagicMock(spec=PollingCheckpoint)
-        checkpoint.files_hash = None
-        checkpoint.last_file_mtime = None
-        checkpoint.last_successful_poll = now
-        stale = [DecodedEvent(timestamp=now - timedelta(hours=1), event_code=1, event_param=2)]
-        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
-        client = _mock_client(files=files)
-        decoder = _mock_decoder(events=stale)
-        factory, _ = _mock_session_factory()
-        target = _make_mock_target()
-        target.load_checkpoint.return_value = checkpoint
-        target.resolve_decoder.return_value = decoder
-        with patch.object(method, "_create_client", return_value=client), \
-             patch.object(method, "_save_checkpoint", new_callable=AsyncMock), \
-             patch("tsigma.collection.methods.ftp_pull.notify",
-                   new_callable=AsyncMock,
-                   side_effect=RuntimeError("notify down")):
-            await method.poll_once("SIG-001", config, factory, target=target)
-        # notify failed, but the events were still ingested
-        target.persist_with_drift_check.assert_awaited_once()
-        assert target.persist_with_drift_check.call_args[0][0] == stale
-
-
-class TestIngestAndDeleteBackwardPoison:
-    """Rotate path (_ingest_and_delete): always ingest + flag for review."""
-
-    @pytest.mark.asyncio
-    async def test_rotate_poison_ingested_flagged_and_deleted(self):
-        method = FTPPullMethod()
-        config = FTPPullMethod._build_config("SIG-001", _make_config_dict(mode="rotate"))
-        now = datetime.now(timezone.utc)
-        stale = [DecodedEvent(timestamp=now - timedelta(hours=1), event_code=1, event_param=2)]
-        client = _mock_client()
-        client.download = AsyncMock(return_value=b"data")
-        client.delete = AsyncMock()
-        decoder = _mock_decoder(events=stale)
-        factory, _ = _mock_session_factory()
-        target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
-        with patch("tsigma.collection.methods.ftp_pull.notify",
-                   new_callable=AsyncMock) as mock_notify:
-            await method._ingest_and_delete(
-                client, "events.dat", config, "SIG-001", factory, target, now,
-            )
-        # always ingest, even when poisoned
-        target.persist_with_drift_check.assert_awaited_once()
-        assert target.persist_with_drift_check.call_args[0][0] == stale
-        # flag for review
-        mock_notify.assert_awaited_once()
-        # still deletes after successful ingest
-        client.delete.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_rotate_clean_batch_ingested_without_flag(self):
-        method = FTPPullMethod()
-        config = FTPPullMethod._build_config("SIG-001", _make_config_dict(mode="rotate"))
-        now = datetime.now(timezone.utc)
-        fresh = [DecodedEvent(timestamp=now, event_code=1, event_param=2)]
-        client = _mock_client()
-        client.download = AsyncMock(return_value=b"data")
-        client.delete = AsyncMock()
-        decoder = _mock_decoder(events=fresh)
-        factory, _ = _mock_session_factory()
-        target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
-        with patch("tsigma.collection.methods.ftp_pull.notify",
-                   new_callable=AsyncMock) as mock_notify:
-            await method._ingest_and_delete(
-                client, "events.dat", config, "SIG-001", factory, target,
-                now - timedelta(minutes=5),
-            )
-        target.persist_with_drift_check.assert_awaited_once()
-        mock_notify.assert_not_awaited()
-        client.delete.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# Inc-2 Task 4: identity / config validation + provenance recording
-# ---------------------------------------------------------------------------
-
-
-def _make_signal(signal_metadata=None):
-    """Build a fake Signal-like object with a mutable signal_metadata attr."""
-    sig = SimpleNamespace()
-    sig.signal_metadata = signal_metadata
-    return sig
-
-
-def _make_validation_session_factory(
-    signal=None,
-    phase_rows=None,
-):
-    """Build a session factory mock for _validate_and_record_provenance.
-
-    Mirrors the async-context-manager session pattern in
-    ``_mock_session_factory`` (tests/unit/test_ftp_pull.py) and
-    ``make_mock_session`` (tests/_helpers.py), but exposes ``get`` and
-    an ``execute(...).all()`` surface for the Signal + Approach loads.
-
-    ``phase_rows`` is the list of row tuples returned by ``.all()`` — e.g.
-    ``[(2, None, None), (4, None, None), (6, None, None), (8, None, None)]``
-    (protected_phase_number, permissive_phase_number, ped_phase_number).
-    """
-    mock_session = make_mock_session()
-    mock_session.get = AsyncMock(return_value=signal)
-    result_mock = MagicMock()
-    result_mock.all = MagicMock(return_value=phase_rows or [])
-    mock_session.execute = AsyncMock(return_value=result_mock)
-    mock_session.add = MagicMock()
-    mock_session.commit = AsyncMock()
-    mock_session_ctx = MagicMock()
-    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
-    factory = MagicMock(return_value=mock_session_ctx)
-    return factory, mock_session
-
-
-def _make_metadata(**overrides):
-    """Build a FileMetadata with sane provenance defaults."""
-    defaults = {
-        "device_ip": "10.0.0.5",
-        "device_mac": "00:04:81:02:15:0d",
-        "log_version": "2.4.4",
-        "source_filename": "events.dat",
-        "phases_in_use": [2, 4, 6, 8],
-        "log_begin": datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
-        "header_anchor": datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
-    }
-    defaults.update(overrides)
-    return FileMetadata(**defaults)
-
-
-_PHASE_ROWS_2468 = [(2, None, None), (4, None, None), (6, None, None), (8, None, None)]
-
-
-class TestIngestIdentityConfigValidation:
-    """Inc-2 Task 4: _validate_and_record_provenance behavior.
-
-    Validation/provenance is best-effort and must NEVER block ingest:
-    findings notify (unless suppressed/seeding), a provenance row is always
-    recorded, and any internal error is swallowed.
-    """
-
-    @pytest.mark.asyncio
-    async def test_metadata_none_no_db_work_no_notify(self):
-        """metadata=None short-circuits: no DB load, no add, no notify."""
-        method = FTPPullMethod()
-        factory, session = _make_validation_session_factory(
-            signal=_make_signal({}), phase_rows=_PHASE_ROWS_2468,
-        )
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", None, "asc3",
-            )
-        session.get.assert_not_called()
-        session.add.assert_not_called()
-        mock_notify.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_seed_on_empty_registered_mac(self):
-        """Empty registered MAC + header MAC -> seed silently, no notify."""
-        method = FTPPullMethod()
-        signal = _make_signal({})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        metadata = _make_metadata(device_mac="00:04:81:02:15:0d")
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3",
-            )
-        # the controller_mac is seeded onto the signal's metadata
-        assert signal.signal_metadata["controller_mac"] == "00:04:81:02:15:0d"
-        # seeding is silent
-        mock_notify.assert_not_awaited()
-        # exactly one provenance row recorded
-        assert session.add.call_count == 1
-        added = session.add.call_args[0][0]
-        assert isinstance(added, FileIngestProvenance)
-        session.commit.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_mac_matches_no_notify(self):
-        """Registered MAC == header MAC -> no replacement finding, no notify."""
-        method = FTPPullMethod()
-        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        # mixed case / separators normalize to equal
-        metadata = _make_metadata(device_mac="00-04-81-02-15-0D")
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3",
-            )
-        mock_notify.assert_not_awaited()
-        assert session.add.call_count == 1
-        assert isinstance(session.add.call_args[0][0], FileIngestProvenance)
-
-    @pytest.mark.asyncio
-    async def test_mac_differs_replacement_notify(self):
-        """Registered MAC != header MAC -> replacement notify + provenance."""
-        method = FTPPullMethod()
-        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3",
-            )
-        mock_notify.assert_awaited()
-        # the alert is WARNING severity and references this device
-        call = mock_notify.await_args_list[0]
-        assert call.kwargs.get("severity") == WARNING
-        haystack = repr(call.args) + repr(call.kwargs)
-        assert "SIG-001" in haystack
-        # provenance still recorded
-        assert session.add.call_count == 1
-        assert isinstance(session.add.call_args[0][0], FileIngestProvenance)
-
-    @pytest.mark.asyncio
-    async def test_phase_drift_notify(self):
-        """Configured phases differ from phases-in-use -> drift notify."""
-        method = FTPPullMethod()
-        # MAC matches so the only finding is phase drift
-        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        # extra phase 5 in the file vs configured {2,4,6,8}
-        metadata = _make_metadata(
-            device_mac="00:04:81:02:15:0d",
-            phases_in_use=[2, 4, 5, 6, 8],
-        )
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3",
-            )
-        mock_notify.assert_awaited()
-        assert session.add.call_count == 1
-        assert isinstance(session.add.call_args[0][0], FileIngestProvenance)
-
-    @pytest.mark.asyncio
-    async def test_finding_suppressed_no_notify_but_provenance(self):
-        """Suppression silences notify but provenance is still recorded."""
-        method = FTPPullMethod()
-        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=True):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3",
-            )
-        mock_notify.assert_not_awaited()
-        # provenance is recorded regardless of suppression
-        assert session.add.call_count == 1
-        assert isinstance(session.add.call_args[0][0], FileIngestProvenance)
-        session.commit.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_notify_raises_swallowed_provenance_and_commit(self):
-        """A notify() failure is swallowed; provenance + commit still happen."""
-        method = FTPPullMethod()
-        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock,
-                   side_effect=RuntimeError("notify down")), \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            # must not raise
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3",
-            )
-        assert session.add.call_count == 1
-        session.commit.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_db_error_swallowed_never_blocks(self):
-        """A DB/provenance error is swallowed — the helper never raises."""
-        method = FTPPullMethod()
-        signal = _make_signal({"controller_mac": "00:04:81:02:15:0d"})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        session.commit.side_effect = RuntimeError("db down")
-        metadata = _make_metadata(device_mac="00:04:81:02:15:0d")
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock), \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            # must not raise despite commit blowing up
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3",
-            )
-
-    @pytest.mark.asyncio
-    async def test_persist_runs_even_if_validation_raises(self):
-        """Passive path: persist ALWAYS runs even if validation raises.
-
-        Mirrors the inc-1 passive-path harness in TestDownloadAndIngest.
-        """
-        method = FTPPullMethod()
-        config = FTPPullConfig(host="h", signal_id="s", remote_dir="/data")
-        files = [RemoteFile(name="events.dat", size=100, mtime=None)]
-        client = _mock_client()
-        client.download = AsyncMock(return_value=b"\x00")
-        now = datetime.now(timezone.utc)
-        events = [DecodedEvent(timestamp=now, event_code=1, event_param=0)]
-        decoder = MagicMock()
-        decoder.decode.return_value = DecodeResult(
-            events=events, metadata=_make_metadata(),
-        )
-        decoder.decode_bytes.return_value = events
-        factory, _ = _mock_session_factory()
-        target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
-        with patch.object(method, "_validate_and_record_provenance",
-                          new_callable=AsyncMock,
-                          side_effect=RuntimeError("validation boom")):
-            await method._download_and_ingest(
-                client, files, config, "SIG-001", factory, None, target,
-            )
-        # validation blew up, but persist still ran
-        target.persist_with_drift_check.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# Inc-3 Task 3: temporal-integrity review during provenance recording
-# ---------------------------------------------------------------------------
-
-
-def _evt(ts):
-    """Build a DecodedEvent at the given tz-aware timestamp."""
-    return DecodedEvent(timestamp=ts, event_code=1, event_param=0)
-
-
-def _added_reviews(session):
-    """All IngestReview instances passed to session.add."""
-    return [
-        call.args[0]
-        for call in session.add.call_args_list
-        if call.args and isinstance(call.args[0], IngestReview)
-    ]
-
-
-def _added_provenance(session):
-    """All FileIngestProvenance instances passed to session.add."""
-    return [
-        call.args[0]
-        for call in session.add.call_args_list
-        if call.args and isinstance(call.args[0], FileIngestProvenance)
-    ]
-
-
-# Deterministic extremes so the clock offset is unambiguous vs real wall-clock.
-_FAR_PAST = datetime(2000, 1, 1, tzinfo=timezone.utc)
-_FAR_FUTURE = datetime(2100, 1, 1, tzinfo=timezone.utc)
-
-
-class TestTemporalIntegrityReview:
-    """Inc-3 Task 3: temporal-integrity finding -> IngestReview + notify.
-
-    When ``events`` are supplied, ``_validate_and_record_provenance`` runs the
-    temporal-integrity check against server-now and, on a finding, appends it to
-    the same suppressible notify loop AND records an ``IngestReview`` row. The
-    provenance row + commit still happen and any failure is swallowed (ingest
-    must never be blocked). Identity + phases are aligned in these tests so the
-    temporal finding is the only one in play.
-    """
-
-    @pytest.mark.asyncio
-    async def test_far_past_adds_review_and_notifies(self):
-        """Far-past events -> temporal IngestReview added + notify awaited."""
-        method = FTPPullMethod()
-        metadata = _make_metadata()
-        signal = _make_signal({"controller_mac": metadata.device_mac})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        events = [_evt(_FAR_PAST)]
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3", events,
-            )
-        reviews = _added_reviews(session)
-        assert len(reviews) == 1
-        review = reviews[0]
-        assert review.reason == "temporal_integrity"
-        assert review.status == "open"
-        assert review.signal_id == "SIG-001"
-        mock_notify.assert_awaited()
-        assert _added_provenance(session)
-        provenances = _added_provenance(session)
-        assert len(provenances) == 1
-        assert reviews[0].provenance_id is not None
-        assert reviews[0].provenance_id == provenances[0].provenance_id
-        session.commit.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_far_future_adds_review_and_notifies(self):
-        """Far-future events -> temporal IngestReview added + notify awaited."""
-        method = FTPPullMethod()
-        metadata = _make_metadata()
-        signal = _make_signal({"controller_mac": metadata.device_mac})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        events = [_evt(_FAR_FUTURE)]
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3", events,
-            )
-        reviews = _added_reviews(session)
-        assert len(reviews) == 1
-        assert reviews[0].reason == "temporal_integrity"
-        mock_notify.assert_awaited()
-        provenances = _added_provenance(session)
-        assert len(provenances) == 1
-        assert reviews[0].provenance_id is not None
-        assert reviews[0].provenance_id == provenances[0].provenance_id
-
-    @pytest.mark.asyncio
-    async def test_within_tolerance_no_review(self):
-        """Events at ~now -> no temporal review, no notify; provenance + commit."""
-        method = FTPPullMethod()
-        metadata = _make_metadata()
-        signal = _make_signal({"controller_mac": metadata.device_mac})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        events = [_evt(datetime.now(timezone.utc))]
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3", events,
-            )
-        assert _added_reviews(session) == []
-        mock_notify.assert_not_awaited()
-        assert _added_provenance(session)
-        session.commit.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_temporal_suppressed_no_notify_but_review_added(self):
-        """Suppression silences notify but the IngestReview is still recorded."""
-        method = FTPPullMethod()
-        metadata = _make_metadata()
-        signal = _make_signal({"controller_mac": metadata.device_mac})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        events = [_evt(_FAR_PAST)]
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=True):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3", events,
-            )
-        mock_notify.assert_not_awaited()
-        reviews = _added_reviews(session)
-        assert len(reviews) == 1
-        assert reviews[0].reason == "temporal_integrity"
-
-    @pytest.mark.asyncio
-    async def test_no_events_no_temporal_review(self):
-        """events=None -> no temporal review; provenance still recorded."""
-        method = FTPPullMethod()
-        metadata = _make_metadata()
-        signal = _make_signal({"controller_mac": metadata.device_mac})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock), \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3", None,
-            )
-        assert _added_reviews(session) == []
-        assert _added_provenance(session)
-        session.commit.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_review_insert_error_swallowed(self):
-        """A commit failure is swallowed — the helper never blocks ingest."""
-        method = FTPPullMethod()
-        metadata = _make_metadata()
-        signal = _make_signal({"controller_mac": metadata.device_mac})
-        factory, session = _make_validation_session_factory(
-            signal=signal, phase_rows=_PHASE_ROWS_2468,
-        )
-        session.commit.side_effect = RuntimeError("db down")
-        events = [_evt(_FAR_PAST)]
-        with patch("tsigma.collection.ingest.notify",
-                   new_callable=AsyncMock), \
-             patch("tsigma.collection.ingest.is_suppressed",
-                   new_callable=AsyncMock, return_value=False):
-            # must not raise despite commit blowing up
-            await method._validate_and_record_provenance(
-                factory, "SIG-001", metadata, "asc3", events,
-            )
