@@ -22,7 +22,7 @@ if _PROTO_DIR not in sys.path:
 
 from openphase.v1 import common_pb2, ihr_events_pb2  # noqa: E402
 
-from tsigma.collection.decoders.base import DecodedEvent  # noqa: E402
+from tsigma.collection.ingest import IngestOutcome, IngestResult  # noqa: E402
 from tsigma.collection.methods.grpc_server import (  # noqa: E402
     GRPCServerConfig,
     GRPCServerMethod,
@@ -36,14 +36,14 @@ from tsigma.collection.targets import (  # noqa: E402
 
 
 def _make_servicer(
-    decoder=None,
+    decoder_name="openphase",
     target=None,
     registered=None,
     session_factory=None,
 ):
     """Build an _IngestionServicer with sensible defaults for tests."""
     return _IngestionServicer(
-        decoder=decoder if decoder is not None else MagicMock(),
+        decoder_name=decoder_name,
         session_factory=(
             session_factory if session_factory is not None else AsyncMock()
         ),
@@ -94,14 +94,12 @@ class TestGRPCServerConfig:
 class TestIngestionServicerPublishBatch:
     @pytest.mark.asyncio
     async def test_publish_batch_persists_via_target(self):
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = [
-            DecodedEvent(timestamp=None, event_code=82, event_param=5),
-        ]
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock()
+        target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1, events_decoded=1)
+        )
         servicer = _make_servicer(
-            decoder=decoder, target=target, registered={"INT-001"},
+            target=target, registered={"INT-001"},
         )
 
         batch = common_pb2.CompactEventBatch(
@@ -116,16 +114,17 @@ class TestIngestionServicerPublishBatch:
         ack = await servicer.PublishBatch(batch, MagicMock())
         assert ack.events_accepted == 1
         assert ack.error == ""
-        target.persist_with_drift_check.assert_awaited_once()
-        assert target.persist_with_drift_check.call_args[0][1] == "INT-001"
+        target.ingest.assert_awaited_once()
+        assert target.ingest.call_args[0][1] == "INT-001"
 
     @pytest.mark.asyncio
     async def test_publish_batch_rejects_unregistered_device(self):
-        decoder = MagicMock()
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock()
+        target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1, events_decoded=1)
+        )
         servicer = _make_servicer(
-            decoder=decoder, target=target, registered={"INT-001"},
+            target=target, registered={"INT-001"},
         )
 
         batch = common_pb2.CompactEventBatch(intersection_id="UNKNOWN-002")
@@ -133,14 +132,18 @@ class TestIngestionServicerPublishBatch:
 
         assert ack.events_accepted == 0
         assert "unregistered" in ack.error
-        target.persist_with_drift_check.assert_not_called()
-        decoder.decode_bytes.assert_not_called()
+        target.ingest.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_publish_batch_decode_failure_returns_error(self):
-        decoder = MagicMock()
-        decoder.decode_bytes.side_effect = ValueError("bad bytes")
-        servicer = _make_servicer(decoder=decoder, registered={"INT-002"})
+        target = ControllerTarget()
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="decode failed: bad bytes",
+                failed_stage="decode",
+            )
+        )
+        servicer = _make_servicer(target=target, registered={"INT-002"})
 
         batch = common_pb2.CompactEventBatch(intersection_id="INT-002")
         ack = await servicer.PublishBatch(batch, MagicMock())
@@ -150,16 +153,15 @@ class TestIngestionServicerPublishBatch:
 
     @pytest.mark.asyncio
     async def test_publish_batch_persist_failure_returns_error(self):
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = [
-            DecodedEvent(timestamp=None, event_code=82, event_param=5),
-        ]
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock(
-            side_effect=RuntimeError("db down"),
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="persist failed: db down",
+                failed_stage="persist",
+            )
         )
         servicer = _make_servicer(
-            decoder=decoder, target=target, registered={"INT-003"},
+            target=target, registered={"INT-003"},
         )
 
         batch = common_pb2.CompactEventBatch(intersection_id="INT-003")
@@ -172,14 +174,12 @@ class TestIngestionServicerPublishBatch:
 class TestIngestionServicerPublishUpdate:
     @pytest.mark.asyncio
     async def test_publish_update_persists_via_target(self):
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = [
-            DecodedEvent(timestamp=None, event_code=1, event_param=2),
-        ]
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock()
+        target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1, events_decoded=1)
+        )
         servicer = _make_servicer(
-            decoder=decoder, target=target, registered={"INT-042"},
+            target=target, registered={"INT-042"},
         )
 
         atspm = ihr_events_pb2.AtspmEvent(
@@ -192,13 +192,15 @@ class TestIngestionServicerPublishUpdate:
         ack = await servicer.PublishUpdate(update, MagicMock())
         assert ack.events_accepted == 1
         assert ack.error == ""
-        target.persist_with_drift_check.assert_awaited_once()
-        assert target.persist_with_drift_check.call_args[0][1] == "INT-042"
+        target.ingest.assert_awaited_once()
+        assert target.ingest.call_args[0][1] == "INT-042"
 
     @pytest.mark.asyncio
     async def test_publish_update_rejects_unregistered(self):
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock()
+        target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1, events_decoded=1)
+        )
         servicer = _make_servicer(target=target, registered={"INT-042"})
 
         update = common_pb2.IntersectionUpdate(intersection_id="UNKNOWN")
@@ -206,40 +208,37 @@ class TestIngestionServicerPublishUpdate:
 
         assert ack.events_accepted == 0
         assert "unregistered" in ack.error
-        target.persist_with_drift_check.assert_not_called()
+        target.ingest.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_publish_update_no_events_returns_zero(self):
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = []
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock()
+        target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 0, events_decoded=0)
+        )
         servicer = _make_servicer(
-            decoder=decoder, target=target, registered={"INT-empty"},
+            target=target, registered={"INT-empty"},
         )
 
         update = common_pb2.IntersectionUpdate(intersection_id="INT-empty")
         ack = await servicer.PublishUpdate(update, MagicMock())
 
         assert ack.events_accepted == 0
-        target.persist_with_drift_check.assert_not_called()
+        target.ingest.assert_awaited_once()
 
 
 class TestIngestionServicerStreamBatches:
     @pytest.mark.asyncio
     async def test_stream_batches_sums_accepted_events(self):
-        decoder = MagicMock()
-        decoder.decode_bytes.side_effect = [
-            [DecodedEvent(timestamp=None, event_code=82, event_param=1),
-             DecodedEvent(timestamp=None, event_code=82, event_param=2)],
-            [DecodedEvent(timestamp=None, event_code=82, event_param=3),
-             DecodedEvent(timestamp=None, event_code=82, event_param=4),
-             DecodedEvent(timestamp=None, event_code=82, event_param=5)],
-        ]
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock()
+        target.ingest = AsyncMock(
+            side_effect=[
+                IngestResult(IngestOutcome.SUCCESS, 3, events_decoded=3),
+                IngestResult(IngestOutcome.SUCCESS, 2, events_decoded=2),
+            ]
+        )
         servicer = _make_servicer(
-            decoder=decoder, target=target, registered={"INT-A", "INT-B"},
+            target=target, registered={"INT-A", "INT-B"},
         )
 
         b1 = common_pb2.CompactEventBatch(intersection_id="INT-A")
@@ -253,20 +252,22 @@ class TestIngestionServicerStreamBatches:
 
         assert ack.events_accepted == 5
         assert ack.error == ""
-        assert target.persist_with_drift_check.await_count == 2
+        assert target.ingest.await_count == 2
 
     @pytest.mark.asyncio
     async def test_stream_batches_continues_after_per_batch_failure(self):
-        decoder = MagicMock()
-        decoder.decode_bytes.side_effect = [
-            [DecodedEvent(timestamp=None, event_code=82, event_param=1)],
-            ValueError("bad batch"),
-            [DecodedEvent(timestamp=None, event_code=82, event_param=2)],
-        ]
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock()
+        target.ingest = AsyncMock(
+            side_effect=[
+                IngestResult(
+                    IngestOutcome.FAILURE, 0, error="persist failed: db down",
+                    failed_stage="persist",
+                ),
+                IngestResult(IngestOutcome.SUCCESS, 2, events_decoded=2),
+            ]
+        )
         servicer = _make_servicer(
-            decoder=decoder, target=target,
+            target=target,
             registered={"INT-A", "INT-B", "INT-C"},
         )
 
@@ -284,14 +285,12 @@ class TestIngestionServicerStreamBatches:
 
     @pytest.mark.asyncio
     async def test_stream_batches_skips_unregistered(self):
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = [
-            DecodedEvent(timestamp=None, event_code=82, event_param=1),
-        ]
         target = ControllerTarget()
-        target.persist_with_drift_check = AsyncMock()
+        target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 1, events_decoded=1)
+        )
         servicer = _make_servicer(
-            decoder=decoder, target=target, registered={"INT-A"},
+            target=target, registered={"INT-A"},
         )
 
         b1 = common_pb2.CompactEventBatch(intersection_id="INT-A")
