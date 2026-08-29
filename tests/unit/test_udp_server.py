@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.udp_server import (
     UDPServerConfig,
     UDPServerMethod,
@@ -105,32 +106,27 @@ class TestUDPServerProcessDatagram:
         method._target.persist.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_mapped_ip_decodes_and_persists_via_target(self):
+    async def test_mapped_ip_hands_bytes_to_the_target(self):
+        """Transport-only: the method hands over bytes + a decoder name (P7c)."""
         method = UDPServerMethod()
         method._config = UDPServerConfig()
         method._device_map = {
             "10.0.0.1": ("SIG-001", {"decoder": "asc3"}),
         }
         method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 2)
+        )
         method._session_factory = AsyncMock()
 
         payload = b"\x01\x02\x03\x04"
-        mock_decoder = MagicMock()
-        fake_events = [MagicMock(), MagicMock()]
-        mock_decoder.decode_bytes.return_value = fake_events
+        await method._process_datagram(payload, ("10.0.0.1", 5000))
 
-        with patch(
-            "tsigma.collection.methods.udp_server.resolve_decoder_by_name",
-            return_value=mock_decoder,
-        ) as mock_resolve:
-            await method._process_datagram(payload, ("10.0.0.1", 5000))
-
-        mock_resolve.assert_called_once_with("asc3")
-        mock_decoder.decode_bytes.assert_called_once_with(payload)
-        method._target.persist.assert_awaited_once_with(
-            fake_events, "SIG-001", method._session_factory,
-        )
+        method._target.ingest.assert_awaited_once()
+        args, kwargs = method._target.ingest.call_args
+        assert args[0] == payload
+        assert args[1] == "SIG-001"
+        assert kwargs["decoder_name"] == "asc3"
 
     @pytest.mark.asyncio
     async def test_empty_datagram_short_circuits(self):
