@@ -6,12 +6,13 @@ controller-local sources, and conversion happens HERE, once, for every method.
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tsigma.collection.decoders.base import DecodedEvent, DecodeResult
 from tsigma.collection.ingest import (
+    UNRESOLVED_TIMEZONE_REASON,
     IngestOutcome,
     IngestResult,
     has_naive_timestamps,
@@ -155,6 +156,8 @@ class TestIngestRaw:
         with patch("tsigma.collection.ingest.resolve_decoder_by_name", return_value=local), \
              patch("tsigma.collection.ingest.resolve_source_timezone",
                    new_callable=AsyncMock, return_value=None), \
+             patch("tsigma.collection.ingest._flag_unresolved_timezone",
+                   new_callable=AsyncMock), \
              patch("tsigma.collection.ingest.persist_events_with_drift_check",
                    new_callable=AsyncMock, return_value=1) as persist, \
              patch("tsigma.collection.ingest.logger") as log:
@@ -173,6 +176,8 @@ class TestIngestRaw:
         with patch("tsigma.collection.ingest.resolve_decoder_by_name", return_value=local), \
              patch("tsigma.collection.ingest.resolve_source_timezone",
                    new_callable=AsyncMock, return_value=None), \
+             patch("tsigma.collection.ingest._flag_unresolved_timezone",
+                   new_callable=AsyncMock), \
              patch("tsigma.collection.ingest.persist_events_with_drift_check",
                    new_callable=AsyncMock, return_value=1) as persist:
             await ingest_raw(b"x", device_id="S", decoder_name="d",
@@ -206,3 +211,78 @@ class TestIngestResult:
     def test_partial_advances_to_the_high_water_mark(self):
         r = IngestResult(IngestOutcome.PARTIAL, 5, datetime(2026, 8, 1, tzinfo=timezone.utc))
         assert r.advanced is True
+
+
+class TestUnresolvedTimezoneFlag:
+    """ADR-0034: ingest + FLAG + needs-review. Logging alone is not flagging."""
+
+    @staticmethod
+    def _local_decoder():
+        return SimpleNamespace(
+            decode=lambda raw: DecodeResult(events=[_ev(datetime(2026, 8, 1, 12, 0))])
+        )
+
+    @staticmethod
+    def _session_capture(existing=None):
+        """Session factory whose added rows are inspectable.
+
+        `execute` is async and its RESULT is sync - a MagicMock, not an
+        AsyncMock, so `.first()` returns a value rather than an unawaited
+        coroutine.
+        """
+        added = []
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = False
+        session.add = MagicMock(side_effect=lambda row: added.append(row))
+        result = MagicMock()
+        result.first = MagicMock(return_value=existing)
+        session.execute = AsyncMock(return_value=result)
+        return (lambda: session), added, session
+
+    @pytest.mark.asyncio
+    async def test_queues_a_review_when_no_zone_resolves(self):
+        factory, added, session = self._session_capture()
+        with patch("tsigma.collection.ingest.resolve_decoder_by_name",
+                   return_value=self._local_decoder()), \
+             patch("tsigma.collection.ingest.resolve_source_timezone",
+                   new_callable=AsyncMock, return_value=None), \
+             patch("tsigma.collection.ingest.validate_and_record_provenance",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.ingest.persist_events_with_drift_check",
+                   new_callable=AsyncMock, return_value=1):
+            out = await ingest_raw(b"x", device_id="SIG-1", decoder_name="d",
+                                   session_factory=factory)
+        assert out.outcome is IngestOutcome.SUCCESS      # still ingested
+        review = next(r for r in added if getattr(r, "reason", None))
+        assert review.reason == UNRESOLVED_TIMEZONE_REASON
+        assert review.signal_id == "SIG-1"
+        assert review.status == "open"
+        assert review.detail["assumed_zone"] == "UTC"
+        session.commit.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_does_not_duplicate_an_open_review(self):
+        """A deployment-wide misconfiguration recurs every poll; one row is enough."""
+        factory, added, _ = self._session_capture(existing=("some-review-id",))
+        with patch("tsigma.collection.ingest.resolve_decoder_by_name",
+                   return_value=self._local_decoder()), \
+             patch("tsigma.collection.ingest.resolve_source_timezone",
+                   new_callable=AsyncMock, return_value=None), \
+             patch("tsigma.collection.ingest.validate_and_record_provenance",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.ingest.persist_events_with_drift_check",
+                   new_callable=AsyncMock, return_value=1):
+            await ingest_raw(b"x", device_id="SIG-1", decoder_name="d",
+                             session_factory=factory)
+        assert added == []
+
+    @pytest.mark.asyncio
+    async def test_flagging_swallows_db_failures(self):
+        """never-lose-data outranks flagging: the flag must not raise."""
+        from tsigma.collection.ingest import _flag_unresolved_timezone
+
+        broken = AsyncMock()
+        broken.__aenter__.side_effect = RuntimeError("db down")
+        # Must return normally, not raise - ingest continues either way.
+        await _flag_unresolved_timezone(lambda: broken, "SIG-1")

@@ -2188,9 +2188,9 @@ class TestIngestIdentityConfigValidation:
         factory, session = _make_validation_session_factory(
             signal=_make_signal({}), phase_rows=_PHASE_ROWS_2468,
         )
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", None, "asc3",
@@ -2208,9 +2208,9 @@ class TestIngestIdentityConfigValidation:
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
         metadata = _make_metadata(device_mac="00:04:81:02:15:0d")
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3",
@@ -2235,9 +2235,9 @@ class TestIngestIdentityConfigValidation:
         )
         # mixed case / separators normalize to equal
         metadata = _make_metadata(device_mac="00-04-81-02-15-0D")
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3",
@@ -2255,9 +2255,9 @@ class TestIngestIdentityConfigValidation:
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
         metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3",
@@ -2286,9 +2286,9 @@ class TestIngestIdentityConfigValidation:
             device_mac="00:04:81:02:15:0d",
             phases_in_use=[2, 4, 5, 6, 8],
         )
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3",
@@ -2306,9 +2306,9 @@ class TestIngestIdentityConfigValidation:
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
         metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=True):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3",
@@ -2328,10 +2328,10 @@ class TestIngestIdentityConfigValidation:
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
         metadata = _make_metadata(device_mac="AA:BB:CC:DD:EE:FF")
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock,
                    side_effect=RuntimeError("notify down")), \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             # must not raise
             await method._validate_and_record_provenance(
@@ -2350,9 +2350,9 @@ class TestIngestIdentityConfigValidation:
         )
         session.commit.side_effect = RuntimeError("db down")
         metadata = _make_metadata(device_mac="00:04:81:02:15:0d")
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock), \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             # must not raise despite commit blowing up
             await method._validate_and_record_provenance(
@@ -2444,9 +2444,9 @@ class TestTemporalIntegrityReview:
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
         events = [_evt(_FAR_PAST)]
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3", events,
@@ -2475,9 +2475,9 @@ class TestTemporalIntegrityReview:
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
         events = [_evt(_FAR_FUTURE)]
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3", events,
@@ -2501,9 +2501,9 @@ class TestTemporalIntegrityReview:
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
         events = [_evt(datetime.now(timezone.utc))]
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3", events,
@@ -2523,9 +2523,9 @@ class TestTemporalIntegrityReview:
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
         events = [_evt(_FAR_PAST)]
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock) as mock_notify, \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=True):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3", events,
@@ -2544,9 +2544,9 @@ class TestTemporalIntegrityReview:
         factory, session = _make_validation_session_factory(
             signal=signal, phase_rows=_PHASE_ROWS_2468,
         )
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock), \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             await method._validate_and_record_provenance(
                 factory, "SIG-001", metadata, "asc3", None,
@@ -2566,9 +2566,9 @@ class TestTemporalIntegrityReview:
         )
         session.commit.side_effect = RuntimeError("db down")
         events = [_evt(_FAR_PAST)]
-        with patch("tsigma.collection.methods.ftp_pull.notify",
+        with patch("tsigma.collection.ingest.notify",
                    new_callable=AsyncMock), \
-             patch("tsigma.collection.methods.ftp_pull.is_suppressed",
+             patch("tsigma.collection.ingest.is_suppressed",
                    new_callable=AsyncMock, return_value=False):
             # must not raise despite commit blowing up
             await method._validate_and_record_provenance(

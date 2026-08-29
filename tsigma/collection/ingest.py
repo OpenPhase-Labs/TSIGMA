@@ -24,9 +24,22 @@ import enum
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import select
+
+from ..config import settings
+from ..models.approach import Approach
+from ..models.file_provenance import FileIngestProvenance
+from ..models.ingest_review import IngestReview
+from ..models.signal import Signal
+from ..notifications.registry import notify
+from ..notifications.suppression import is_suppressed
 from .sdk import (
+    check_configured_phases,
+    check_controller_replacement,
+    check_temporal_integrity,
     persist_events_with_drift_check,
     resolve_decoder_by_name,
     resolve_source_timezone,
@@ -63,6 +76,11 @@ class IngestResult:
 # the timestamp: a misconfigured deployment gets today's behaviour plus a flag,
 # never a new and different wrongness.
 LAST_RESORT_ZONE = "UTC"
+
+# Review reason for the missing-zone finding. A deployment-wide misconfiguration
+# recurs on every poll, so the row is deduplicated on (signal_id, reason) while
+# it is still open - one worklist item per signal, not one per file.
+UNRESOLVED_TIMEZONE_REASON = "unresolved_source_timezone"
 
 
 def normalize_event_times(events: list, zone: str) -> list:
@@ -142,11 +160,15 @@ async def ingest_raw(
                 "Set Signal.source_timezone or collection.default_timezone.",
                 device_id, LAST_RESORT_ZONE,
             )
-            # TODO(P7b): ADR-0034 requires ingest + FLAG + needs-review, and a
-            # missing deployment zone is operator-actionable, so it belongs in the
-            # review queue - not only the log. Write an IngestReview finding once
-            # the integrity block moves here from ftp_pull.
+            await _flag_unresolved_timezone(session_factory, device_id)
         normalize_event_times(events, zone)
+
+    # After normalization on purpose: check_temporal_integrity compares event
+    # times to server UTC, so running it on unconverted local timestamps
+    # false-trips it - one of the symptoms the timezone bug produces today.
+    await validate_and_record_provenance(
+        session_factory, device_id, result.metadata, decoder_name, events
+    )
 
     inserted = await persist_events_with_drift_check(
         events, device_id, session_factory, source_label=source_label
@@ -156,3 +178,171 @@ async def ingest_raw(
         inserted or 0,
         max_event_time=max(e.timestamp for e in events),
     )
+
+
+async def validate_and_record_provenance(
+    session_factory,
+    device_id: str,
+    metadata,
+    decoder_name,
+    events=None,
+) -> None:
+    """Validate header identity/config and record file provenance.
+
+    Best-effort and NON-BLOCKING: any failure is logged and swallowed so
+    ingest always proceeds. Detects controller replacement (MAC change at a
+    reused IP) and config-phase drift, flags them (suppressible, best-effort
+    notify), seeds an absent registered MAC on first sight, and writes one
+    provenance row per ingested file.
+    """
+    if metadata is None:
+        return
+    provenance_id = uuid4()
+    try:
+        async with session_factory() as session:
+            signal = await session.get(Signal, device_id)
+            findings = []
+            if signal is not None:
+                registered_mac = (signal.signal_metadata or {}).get(
+                    "controller_mac",
+                )
+                if not registered_mac and metadata.device_mac:
+                    # First sight: silently seed the registered MAC
+                    # (reassign dict — JSONB is not MutableDict, in-place
+                    # edits aren't tracked).
+                    signal.signal_metadata = {
+                        **(signal.signal_metadata or {}),
+                        "controller_mac": metadata.device_mac,
+                    }
+                else:
+                    replacement = check_controller_replacement(
+                        metadata, registered_mac,
+                    )
+                    if replacement is not None:
+                        findings.append(replacement)
+                rows = (
+                    await session.execute(
+                        select(
+                            Approach.protected_phase_number,
+                            Approach.permissive_phase_number,
+                            Approach.ped_phase_number,
+                        ).where(Approach.signal_id == device_id)
+                    )
+                ).all()
+                configured = {p for row in rows for p in row if p is not None}
+                drift = check_configured_phases(metadata, configured)
+                if drift is not None:
+                    findings.append(drift)
+            if events:
+                server_now = datetime.now(timezone.utc)
+                temporal = check_temporal_integrity(
+                    events, server_now,
+                    settings.checkpoint_future_tolerance_seconds,
+                )
+                if temporal is not None:
+                    findings.append(temporal)
+                    session.add(
+                        IngestReview(
+                            provenance_id=provenance_id,
+                            signal_id=device_id,
+                            reason=temporal.check_name,
+                            source_filename=metadata.source_filename,
+                            severity=temporal.severity,
+                            summary=temporal.summary,
+                            detail=temporal.detail,
+                            status="open",
+                        )
+                    )
+            for finding in findings:
+                if await is_suppressed(session, device_id, finding.check_name):
+                    continue
+                logger.warning(
+                    "Integrity finding %s for %s: %s",
+                    finding.check_name, device_id, finding.summary,
+                )
+                try:
+                    await notify(
+                        subject=f"{finding.summary}: {device_id}",
+                        message=(
+                            f"Device {device_id} file "
+                            f"{metadata.source_filename}: {finding.summary}."
+                        ),
+                        severity=finding.severity,
+                        metadata={
+                            "signal_id": device_id,
+                            "alert_type": finding.check_name,
+                            **finding.detail,
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to notify integrity finding %s for %s — "
+                        "events still ingested",
+                        finding.check_name, device_id,
+                    )
+            session.add(
+                FileIngestProvenance(
+                    provenance_id=provenance_id,
+                    signal_id=device_id,
+                    source_filename=metadata.source_filename,
+                    device_ip=metadata.device_ip,
+                    device_mac=metadata.device_mac,
+                    log_version=metadata.log_version,
+                    phases_in_use=metadata.phases_in_use,
+                    log_begin=metadata.log_begin,
+                    header_anchor=metadata.header_anchor,
+                    decoder_name=decoder_name,
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Identity/provenance validation failed for %s (%s) — "
+            "events still ingested",
+            getattr(metadata, "source_filename", None), device_id,
+        )
+
+
+async def _flag_unresolved_timezone(session_factory, device_id: str) -> None:
+    """Queue an operator-actionable review for a signal with no resolvable zone.
+
+    ADR-0034 requires ingest + flag + needs-review; a missing
+    `collection.default_timezone` is operator-actionable, so it belongs in the
+    worklist rather than only the log. Best-effort: a failure here must never
+    block ingest, which is the whole point of never-lose-data.
+    """
+    try:
+        async with session_factory() as session:
+            existing = (
+                await session.execute(
+                    select(IngestReview.review_id).where(
+                        IngestReview.signal_id == device_id,
+                        IngestReview.reason == UNRESOLVED_TIMEZONE_REASON,
+                        IngestReview.status == "open",
+                    )
+                )
+            ).first()
+            if existing is not None:
+                return
+            session.add(
+                IngestReview(
+                    signal_id=device_id,
+                    reason=UNRESOLVED_TIMEZONE_REASON,
+                    severity="warning",
+                    summary="No source timezone resolved; local timestamps ingested as UTC",
+                    detail={
+                        "assumed_zone": LAST_RESORT_ZONE,
+                        "fix": (
+                            "Set Signal.source_timezone for this signal, or the "
+                            "collection.default_timezone deployment setting."
+                        ),
+                    },
+                    status="open",
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Could not queue the unresolved-timezone review for %s - events still ingested",
+            device_id,
+        )
