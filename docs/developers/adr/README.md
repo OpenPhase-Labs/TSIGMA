@@ -91,6 +91,7 @@ ADRs that genuinely span areas are listed under more than one heading. The
 - [0019](0019-plugin-process-model.md) — Plugin process model: core-managed + cron + external
 - [0020](0020-plugin-manifest-and-registration.md) — Plugin declaration: manifest + runtime gRPC Register
 - [0021](0021-plugin-installation-mechanisms.md) — Plugin installation: filesystem + OCI + HTTP registry
+- [0082](0082-plugins-live-in-their-own-repositories.md) — gRPC plugins live in their own repositories, not in the core
 - [0022](0022-plugin-versioning-semver-capabilities.md) — Plugin versioning: semver + capability flags
 - [0032](0032-pluggable-storage-backend.md) — Pluggable file storage backend (filesystem + S3) *(also: Storage)*
 
@@ -271,6 +272,7 @@ here and filed into an [Index by topic](#index-by-topic) heading.
 | [0079](0079-database-access-in-process-not-plugin.md) | The database access layer is in-process, not a gRPC plugin | Accepted | 2026-07-16 |
 | [0080](0080-decode-scales-as-format-pool.md) | Decoding scales as a format-keyed pool, not by shard | Accepted | 2026-07-16 |
 | [0081](0081-pin-dependency-versions-exactly.md) | Dependency versions are pinned exactly | Accepted | 2026-08-22 |
+| [0082](0082-plugins-live-in-their-own-repositories.md) | gRPC plugins live in their own repositories, not in the core | Accepted | 2026-08-29 |
 
 ---
 
