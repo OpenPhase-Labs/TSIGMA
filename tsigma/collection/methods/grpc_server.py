@@ -28,8 +28,8 @@ import grpc
 from grpc import aio
 from pydantic import BaseModel
 
+from ..ingest import IngestOutcome
 from ..registry import IngestionMethodRegistry, ListenerIngestionMethod
-from ..sdk import resolve_decoder_by_name
 from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
@@ -77,12 +77,13 @@ class _IngestionServicer(ingestion_pb2_grpc.IngestionServiceServicer):
 
     def __init__(
         self,
-        decoder,
+        decoder_name: str,
         session_factory,
         target: IngestionTarget,
         registered_device_ids: set[str],
     ) -> None:
-        self._decoder = decoder
+        # The NAME, not an instance: the host resolves and instantiates.
+        self._decoder_name = decoder_name
         self._session_factory = session_factory
         self._target = target
         self._registered = registered_device_ids
@@ -105,34 +106,22 @@ class _IngestionServicer(ingestion_pb2_grpc.IngestionServiceServicer):
             logger.warning("gRPC PublishUpdate rejected: %s", rejection)
             return ingestion_pb2.PublishAck(events_accepted=0, error=rejection)
 
-        try:
-            data = request.SerializeToString()
-            events = self._decoder.decode_bytes(data)
-        except Exception as exc:
-            logger.exception(
-                "gRPC PublishUpdate decode failed for %s %s",
-                self._target.device_type, device_id,
+        # Transport-only: the host decodes, normalizes, and persists.
+        result = await self._target.ingest(
+            request.SerializeToString(), device_id, self._session_factory,
+            decoder_name=self._decoder_name,
+            source_label=self._target.device_type,
+        )
+        if result.outcome is IngestOutcome.FAILURE:
+            logger.error(
+                "gRPC PublishUpdate ingest failed for %s %s: %s",
+                self._target.device_type, device_id, result.error,
             )
-            return ingestion_pb2.PublishAck(events_accepted=0, error=str(exc))
+            return ingestion_pb2.PublishAck(
+                events_accepted=0, error=result.error,
+            )
 
-        accepted = 0
-        if events:
-            try:
-                await self._target.persist_with_drift_check(
-                    events, device_id, self._session_factory,
-                    source_label=self._target.device_type,
-                )
-                accepted = len(events)
-            except Exception as exc:
-                logger.exception(
-                    "gRPC PublishUpdate persist failed for %s %s",
-                    self._target.device_type, device_id,
-                )
-                return ingestion_pb2.PublishAck(
-                    events_accepted=0, error=f"persist: {exc}",
-                )
-
-        return ingestion_pb2.PublishAck(events_accepted=accepted)
+        return ingestion_pb2.PublishAck(events_accepted=result.events_decoded)
 
     async def PublishBatch(self, request, context):
         device_id = request.intersection_id
@@ -141,34 +130,22 @@ class _IngestionServicer(ingestion_pb2_grpc.IngestionServiceServicer):
             logger.warning("gRPC PublishBatch rejected: %s", rejection)
             return ingestion_pb2.PublishAck(events_accepted=0, error=rejection)
 
-        try:
-            data = request.SerializeToString()
-            events = self._decoder.decode_bytes(data)
-        except Exception as exc:
-            logger.exception(
-                "gRPC PublishBatch decode failed for %s %s",
-                self._target.device_type, device_id,
+        # Transport-only: the host decodes, normalizes, and persists.
+        result = await self._target.ingest(
+            request.SerializeToString(), device_id, self._session_factory,
+            decoder_name=self._decoder_name,
+            source_label=self._target.device_type,
+        )
+        if result.outcome is IngestOutcome.FAILURE:
+            logger.error(
+                "gRPC PublishBatch ingest failed for %s %s: %s",
+                self._target.device_type, device_id, result.error,
             )
-            return ingestion_pb2.PublishAck(events_accepted=0, error=str(exc))
+            return ingestion_pb2.PublishAck(
+                events_accepted=0, error=result.error,
+            )
 
-        accepted = 0
-        if events:
-            try:
-                await self._target.persist_with_drift_check(
-                    events, device_id, self._session_factory,
-                    source_label=self._target.device_type,
-                )
-                accepted = len(events)
-            except Exception as exc:
-                logger.exception(
-                    "gRPC PublishBatch persist failed for %s %s",
-                    self._target.device_type, device_id,
-                )
-                return ingestion_pb2.PublishAck(
-                    events_accepted=0, error=f"persist: {exc}",
-                )
-
-        return ingestion_pb2.PublishAck(events_accepted=accepted)
+        return ingestion_pb2.PublishAck(events_accepted=result.events_decoded)
 
     async def StreamBatches(self, request_iterator, context):
         total_accepted = 0
@@ -182,29 +159,18 @@ class _IngestionServicer(ingestion_pb2_grpc.IngestionServiceServicer):
                     )
                     continue
 
-                try:
-                    data = batch.SerializeToString()
-                    events = self._decoder.decode_bytes(data)
-                except Exception:
-                    logger.exception(
-                        "gRPC StreamBatches decode failed for %s %s",
-                        self._target.device_type, device_id,
+                result = await self._target.ingest(
+                    batch.SerializeToString(), device_id, self._session_factory,
+                    decoder_name=self._decoder_name,
+                    source_label=self._target.device_type,
+                )
+                if result.outcome is IngestOutcome.FAILURE:
+                    logger.error(
+                        "gRPC StreamBatches ingest failed for %s %s: %s",
+                        self._target.device_type, device_id, result.error,
                     )
-                    continue
-
-                if events:
-                    try:
-                        await self._target.persist_with_drift_check(
-                            events, device_id, self._session_factory,
-                            source_label=self._target.device_type,
-                        )
-                        total_accepted += len(events)
-                    except Exception:
-                        logger.exception(
-                            "gRPC StreamBatches persist failed for %s %s",
-                            self._target.device_type, device_id,
-                        )
-                        # Continue accepting subsequent batches.
+                    continue   # keep accepting subsequent batches
+                total_accepted += result.events_decoded
         except Exception as exc:
             logger.exception("gRPC StreamBatches stream error")
             return ingestion_pb2.PublishAck(
@@ -251,9 +217,8 @@ class GRPCServerMethod(ListenerIngestionMethod):
                 target.device_type,
             )
 
-        decoder = resolve_decoder_by_name(cfg.decoder or _DEFAULT_DECODER)
         servicer = _IngestionServicer(
-            decoder, session_factory, target, registered,
+            cfg.decoder or _DEFAULT_DECODER, session_factory, target, registered,
         )
 
         options = [
