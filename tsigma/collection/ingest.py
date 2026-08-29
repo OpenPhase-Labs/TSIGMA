@@ -50,8 +50,10 @@ class IngestResult:
         return self.outcome is not IngestOutcome.FAILURE
 
 
-class UnresolvedTimezoneError(RuntimeError):
-    """A decoder emitted naive timestamps and no source zone could be resolved."""
+# Last-resort zone when even the deployment default is missing. The spec makes
+# collection.default_timezone a REQUIRED fallback so resolution always succeeds
+# (no quarantine); this guards the misconfigured case without withholding data.
+LAST_RESORT_ZONE = "UTC"
 
 
 def normalize_event_times(events: list, zone: str) -> list:
@@ -121,16 +123,15 @@ async def ingest_raw(
         async with session_factory() as session:
             zone = await resolve_source_timezone(device_id, session)
         if zone is None:
-            # Never guess a zone: storing an unconverted local time as UTC is the
-            # bug this exists to prevent.
-            return IngestResult(
-                IngestOutcome.FAILURE,
-                0,
-                error=(
-                    f"{device_id}: decoder emitted local timestamps and no source "
-                    "timezone resolved (Signal.source_timezone / "
-                    "collection.default_timezone)"
-                ),
+            # Ingest and flag, never withhold (ADR-0034 never-lose-data; spec
+            # sec.3 rules out an "unresolvable zone" quarantine). Reaching here
+            # means collection.default_timezone is missing, which is a
+            # misconfiguration to surface - not a reason to drop the file.
+            zone = LAST_RESORT_ZONE
+            logger.warning(
+                "%s: no source timezone resolved; ingesting local timestamps as %s. "
+                "Set Signal.source_timezone or collection.default_timezone.",
+                device_id, LAST_RESORT_ZONE,
             )
         normalize_event_times(events, zone)
 
