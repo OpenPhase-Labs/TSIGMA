@@ -51,12 +51,8 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from ...models.checkpoint import PollingCheckpoint
-from ...notifications.registry import WARNING, notify
-from ..ingest import validate_and_record_provenance
+from ..ingest import IngestOutcome
 from ..registry import IngestionMethodRegistry, PollingIngestionMethod
-from ..sdk import (
-    is_backward_poisoned,
-)
 from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
@@ -736,69 +732,6 @@ class FTPPullMethod(PollingIngestionMethod):
         new_files.sort(key=lambda rf: rf.mtime or datetime.min)
         return new_files
 
-    async def _flag_if_backward_poison(
-        self,
-        events,
-        device_id: str,
-        filename: str,
-        last_successful_poll: Optional[datetime],
-    ) -> None:
-        """Flag a backward-poisoned batch for review (log + notify).
-
-        Never blocks ingest — callers always persist. A slow/reset controller
-        clock (newest event before the last poll) is flagged, not dropped
-        (spec principle: ingest + flag for review).
-        """
-        if not is_backward_poisoned(events, last_successful_poll):
-            return
-        last_polled_str = (
-            last_successful_poll.isoformat() if last_successful_poll else "n/a"
-        )
-        logger.warning(
-            "Backward-poisoned batch from %s for %s: newest event predates "
-            "last poll (%s) — ingesting and flagging for review",
-            filename, device_id, last_polled_str,
-        )
-        try:
-            await notify(
-                subject=f"Clock backward-poison: {device_id}",
-                message=(
-                    f"Device {device_id} file {filename}: the newest event timestamp "
-                    f"predates the last successful poll ({last_polled_str}) — a slow "
-                    f"or reset controller clock. Events were ingested and flagged "
-                    f"for review."
-                ),
-                severity=WARNING,
-                metadata={
-                    "signal_id": device_id,
-                    "file": filename,
-                    "alert_type": "clock_backward_poison",
-                },
-            )
-        except Exception:
-            logger.exception(
-                "Failed to send backward-poison notification for %s (%s) — "
-                "events still ingested",
-                filename, device_id,
-            )
-
-    async def _validate_and_record_provenance(
-        self,
-        session_factory,
-        device_id: str,
-        metadata,
-        decoder_name,
-        events=None,
-    ) -> None:
-        """Delegate to the host-owned implementation (ADR-0034 integrity spine).
-
-        Kept as a thin wrapper while methods still orchestrate their own ingest;
-        it goes away when this method becomes transport-only (plan P7c).
-        """
-        await validate_and_record_provenance(
-            session_factory, device_id, metadata, decoder_name, events,
-        )
-
     async def _download_and_ingest(
         self,
         client: _FileTransferClient,
@@ -828,33 +761,23 @@ class FTPPullMethod(PollingIngestionMethod):
             file_path = PurePosixPath(ftp_config.remote_dir) / rf.name
             try:
                 data = await client.download(str(file_path))
-                decoder = target.resolve_decoder(
-                    decoder_name=ftp_config.decoder,
-                ) if ftp_config.decoder else target.resolve_decoder(
-                    filename=rf.name,
+                # Transport-only: the host decodes, normalizes, runs the
+                # integrity spine, and persists.
+                ingest = await target.ingest(
+                    data, device_id, session_factory,
+                    decoder_name=ftp_config.decoder or None,
+                    filename=None if ftp_config.decoder else rf.name,
+                    last_successful_poll=last_successful_poll,
                 )
-                result = decoder.decode(data)
-                events = result.events
-                await self._flag_if_backward_poison(
-                    events, device_id, rf.name, last_successful_poll,
-                )
-                try:
-                    await self._validate_and_record_provenance(
-                        session_factory, device_id, result.metadata,
-                        getattr(decoder, "name", None), events,
+                if ingest.outcome is IngestOutcome.FAILURE:
+                    logger.error(
+                        "Failed to ingest %s for %s: %s",
+                        rf.name, device_id, ingest.error,
                     )
-                except Exception:
-                    logger.exception(
-                        "Validation/provenance step failed for %s (%s) — "
-                        "events still ingested",
-                        rf.name, device_id,
-                    )
-                inserted = await target.persist_with_drift_check(
-                    events, device_id, session_factory,
-                )
+                    continue
 
-                total_inserted += inserted
-                total_absorbed += (len(events) - inserted)
+                total_inserted += ingest.events_inserted
+                total_absorbed += ingest.duplicates_absorbed
                 total_files += 1
                 newest_filename = rf.name
                 if rf.mtime and (newest_mtime is None or rf.mtime > newest_mtime):
@@ -862,7 +785,7 @@ class FTPPullMethod(PollingIngestionMethod):
 
                 logger.info(
                     "Processed %s: %d events for %s",
-                    rf.name, len(events), device_id,
+                    rf.name, ingest.events_decoded, device_id,
                 )
             except Exception:
                 logger.exception("Failed to process %s for %s", rf.name, device_id)
@@ -1120,44 +1043,24 @@ class FTPPullMethod(PollingIngestionMethod):
             return
 
         try:
-            decoder = target.resolve_decoder(
-                decoder_name=ftp_config.decoder,
-            ) if ftp_config.decoder else target.resolve_decoder(
-                filename=original_name,
+            # Transport-only: the host owns decode -> spine -> persist.
+            ingest = await target.ingest(
+                data, device_id, session_factory,
+                decoder_name=ftp_config.decoder or None,
+                filename=None if ftp_config.decoder else original_name,
+                last_successful_poll=last_successful_poll,
             )
-            result = decoder.decode(data)
-            events = result.events
         except Exception:
             logger.exception(
-                "Failed to decode %s for device %s", filename, device_id,
+                "Failed to ingest %s for device %s", filename, device_id,
             )
             return
 
-        await self._flag_if_backward_poison(
-            events, device_id, original_name, last_successful_poll,
-        )
-
-        try:
-            await self._validate_and_record_provenance(
-                session_factory, device_id, result.metadata,
-                getattr(decoder, "name", None), events,
-            )
-        except Exception:
-            logger.exception(
-                "Validation/provenance step failed for %s (%s) — "
-                "events still ingested",
-                original_name, device_id,
-            )
-
-        try:
-            inserted = await target.persist_with_drift_check(
-                events, device_id, session_factory,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to persist events from %s for device %s — "
-                "file NOT deleted, will retry next cycle",
-                filename, device_id,
+        if ingest.outcome is IngestOutcome.FAILURE:
+            logger.error(
+                "Failed to ingest %s for device %s — file NOT deleted, "
+                "will retry next cycle: %s",
+                filename, device_id, ingest.error,
             )
             return
 
@@ -1173,7 +1076,7 @@ class FTPPullMethod(PollingIngestionMethod):
 
         logger.info(
             "Rotate ingested %s: %d events for device %s",
-            filename, len(events), device_id,
+            filename, ingest.events_decoded, device_id,
         )
 
         await self._save_checkpoint(
@@ -1181,8 +1084,8 @@ class FTPPullMethod(PollingIngestionMethod):
             device_id,
             session_factory,
             last_filename=original_name,
-            new_events=inserted,
-            new_absorbed=len(events) - inserted,
+            new_events=ingest.events_inserted,
+            new_absorbed=ingest.duplicates_absorbed,
             new_files=1,
         )
 
