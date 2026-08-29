@@ -70,21 +70,64 @@ def _validate_params(report_cls: type, params):
         ) from exc
 
 
+def _remote_params_schema(report_cls) -> dict | None:
+    """The plugin-declared param schema for a remote report, else ``None``.
+
+    A gRPC report does not parameterise ``Report[TParams]`` - it carries the
+    plugin's schema from ``Describe``. Duck-typed rather than imported so this
+    module keeps no dependency on the plugin host.
+    """
+    schema = getattr(report_cls, "params_schema", None)
+    return schema if isinstance(schema, dict) and schema else None
+
+
+def _validate_remote_params(schema: dict, params, report_name: str):
+    """Check required keys against the plugin's declared schema.
+
+    The contract has the host check required keys before ``Generate``
+    (report.proto, ``DescribeResponse.params``). Type and range checking stay
+    with the plugin, which owns its typed params struct.
+    """
+    missing = [
+        name for name in schema.get("required", ())
+        if name not in params or params[name] is None
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=HTTP_INVALID_REPORT_PARAMS,
+            detail={
+                "error": "invalid_report_params",
+                "failures": [
+                    {"field": name, "message": "field required"} for name in missing
+                ],
+            },
+        )
+    return params
+
+
 async def _resolve_and_validate_params(report_cls, report_name, params, session):
     """Resolve admin defaults then validate at the report chokepoint.
 
     Precedence is ``per-request value -> admin default -> code default``:
     admin ``measure_default`` rows (keyed by ``report_name``) are merged
-    UNDER the per-request ``params``, then validated into the report's
-    Pydantic model so the model's field defaults supply anything neither
-    layer set. Structural params (see ``STRUCTURAL_PARAMS``) are never
-    admin-defaulted. Untyped/legacy reports keep raw-dict passthrough and
-    read no admin defaults. Validation failures raise ``HTTPException(463)``
-    via the shared ``_validate_params``.
+    UNDER the per-request ``params``, then validated. Structural params (see
+    ``STRUCTURAL_PARAMS``) are never admin-defaulted.
+
+    Three report shapes, one precedence rule:
+
+    * typed in-process (``Report[TParams]``) - validated into the Pydantic
+      model, whose field defaults supply the code-default layer;
+    * remote gRPC (``params_schema`` from ``Describe``) - required keys checked
+      host-side; the plugin's own struct supplies the code-default layer;
+    * untyped/legacy - raw-dict passthrough, and NO admin defaults, since there
+      is no declared param surface to key them against.
+
+    Validation failures raise ``HTTPException(463)``.
     """
     params_cls = _params_cls_for(report_cls)
-    if params_cls is None:
-        return params  # untyped/legacy report: no admin defaults to resolve
+    remote_schema = _remote_params_schema(report_cls)
+    if params_cls is None and remote_schema is None:
+        return params  # untyped/legacy report: no declared params to default
 
     rows = (
         await session.execute(
@@ -97,6 +140,8 @@ async def _resolve_and_validate_params(report_cls, report_name, params, session)
         if row.param_name not in STRUCTURAL_PARAMS
     }
     merged = {**admin_defaults, **params}
+    if remote_schema is not None:
+        return _validate_remote_params(remote_schema, merged, report_name)
     return _validate_params(report_cls, merged)
 
 
