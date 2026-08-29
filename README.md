@@ -454,10 +454,10 @@ TSIGMA is developed by OpenPhase Labs as an open source ATSPM replacement.
 
 ## Licensing
 
-- **TSIGMA Application:** This software is licensed under the [Mozilla Public License 2.0](LICENSE).
-- **Protocol Definitions:** The underlying Protobuf definitions (located in `/proto`) are also licensed under the [Mozilla Public License 2.0](proto/v1/LICENSE) and are subject to the patent grants defined therein.
+- **TSIGMA Application:** This software is licensed under the [Mozilla Public License 2.0](LICENSE). Copyright (c) 2026 OpenPhase Labs, LLC.
+- **Protocol Definitions:** The plugin wire contract lives in its own repository, [TSIGMA-Contract](https://github.com/OpenPhase-Labs/TSIGMA-Contract), also licensed under the Mozilla Public License 2.0. A plugin author depends on that contract, not on this repository.
 
-MPL 2.0 allows DOTs and integrators to use and modify TSIGMA freely. Modifications to MPL-licensed files must be shared; proprietary code that merely links to TSIGMA stays proprietary. This balances open source accessibility with Heritage Grid IP protection.
+MPL 2.0 allows DOTs and integrators to use and modify TSIGMA freely. Modifications to MPL-licensed files must be shared; proprietary code that merely links to TSIGMA stays proprietary — which is what lets a vendor ship a closed plugin against an open core.
 
 ---
 
