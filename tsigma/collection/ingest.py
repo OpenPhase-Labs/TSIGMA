@@ -64,11 +64,18 @@ class IngestResult:
     outcome: IngestOutcome
     events_inserted: int
     max_event_time: datetime | None = None
+    # Rows the decoder produced, before ON CONFLICT DO NOTHING. Callers need it
+    # for checkpoint bookkeeping: duplicates_absorbed = decoded - inserted.
+    events_decoded: int = 0
     error: str = ""
     # Which step failed - "decode", "persist", or "" when nothing did. Methods
     # used to distinguish these by having separate try/except blocks; the
     # boundary took that away, so the result carries it instead.
     failed_stage: str = ""
+
+    @property
+    def duplicates_absorbed(self) -> int:
+        return max(self.events_decoded - self.events_inserted, 0)
 
     @property
     def advanced(self) -> bool:
@@ -164,7 +171,7 @@ async def ingest_raw(
     events = list(result.events or [])
     if not events:
         # Nothing decoded is not a failure - an empty poll is normal.
-        return IngestResult(IngestOutcome.SUCCESS, 0)
+        return IngestResult(IngestOutcome.SUCCESS, 0, events_decoded=0)
 
     if has_naive_timestamps(events):
         async with session_factory() as session:
@@ -209,6 +216,7 @@ async def ingest_raw(
         IngestOutcome.SUCCESS,
         inserted or 0,
         max_event_time=max(e.timestamp for e in events),
+        events_decoded=len(events),
     )
 
 

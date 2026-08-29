@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tests._helpers import make_mock_session
-from tsigma.collection.decoders.base import DecodedEvent
+from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.http_pull import (
     HTTPPullConfig,
     HTTPPullMethod,
@@ -107,6 +107,10 @@ def _make_mock_target() -> MagicMock:
     target.persist = AsyncMock()
     target.persist_with_drift_check = AsyncMock()
     target.resolve_decoder = MagicMock()
+    # P7c: the method hands bytes to the host via ingest().
+    target.ingest = AsyncMock(
+        return_value=IngestResult(IngestOutcome.SUCCESS, 0, events_decoded=0)
+    )
     return target
 
 
@@ -268,10 +272,7 @@ class TestPollOnce:
         factory, _ = _mock_session_factory()
 
         mock_ctx, mock_http_session = _mock_aiohttp_session()
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = []
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
@@ -299,17 +300,15 @@ class TestPollOnce:
         response = _mock_aiohttp_response(body=xml_body)
         mock_ctx, _ = _mock_aiohttp_session(response)
 
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = []
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
             await method.poll_once("SIG-001", config, factory, target=target)
 
-        decoder.decode_bytes.assert_called_once_with(xml_body)
+        target.ingest.assert_awaited_once()
+        assert target.ingest.call_args[0][0] == xml_body
 
     @pytest.mark.asyncio
     async def test_persists_decoded_events(self):
@@ -319,27 +318,24 @@ class TestPollOnce:
         factory, _ = _mock_session_factory()
 
         now = datetime.now(timezone.utc)
-        events = [
-            DecodedEvent(timestamp=now, event_code=1, event_param=2),
-            DecodedEvent(timestamp=now, event_code=82, event_param=5),
-        ]
 
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
 
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = events
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 2, max_event_time=now, events_decoded=2,
+            )
+        )
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
             await method.poll_once("SIG-001", config, factory, target=target)
 
-        target.persist_with_drift_check.assert_awaited_once_with(
-            events, "SIG-001", factory,
-        )
+        target.ingest.assert_awaited_once()
+        assert target.ingest.call_args[0][1] == "SIG-001"
 
     @pytest.mark.asyncio
     async def test_saves_checkpoint_on_success(self):
@@ -349,17 +345,17 @@ class TestPollOnce:
         factory, _ = _mock_session_factory()
 
         now = datetime(2024, 3, 15, 14, 30, 45, tzinfo=timezone.utc)
-        events = [DecodedEvent(timestamp=now, event_code=1, event_param=2)]
 
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
 
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = events
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
-        # 1 event attempted, 1 actually inserted (none absorbed as duplicate)
-        target.persist_with_drift_check = AsyncMock(return_value=1)
+        # 1 decoded, 1 inserted (none absorbed as duplicate)
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 1, max_event_time=now, events_decoded=1
+            )
+        )
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
@@ -386,10 +382,7 @@ class TestPollOnce:
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, mock_http_session = _mock_aiohttp_session(response)
 
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = []
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
         target.load_checkpoint.return_value = checkpoint
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
@@ -410,10 +403,7 @@ class TestPollOnce:
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, mock_http_session = _mock_aiohttp_session(response)
 
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = []
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
@@ -452,10 +442,7 @@ class TestPollOnce:
         response = _mock_aiohttp_response(body=b"<EventResponses/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
 
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = []
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
@@ -491,20 +478,16 @@ class TestPollOnce:
         config = _make_config_dict(decoder="custom_xml")
         factory, _ = _mock_session_factory()
 
-        mock_decoder_inst = MagicMock()
-        mock_decoder_inst.decode_bytes.return_value = []
-
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
         target = _make_mock_target()
-        target.resolve_decoder.return_value = mock_decoder_inst
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
             mock_aiohttp.ClientTimeout = MagicMock()
             await method.poll_once("SIG-001", config, factory, target=target)
 
-        target.resolve_decoder.assert_called_once_with(decoder_name="custom_xml")
+        assert target.ingest.call_args[1]["decoder_name"] == "custom_xml"
 
     @pytest.mark.asyncio
     async def test_default_decoder_is_maxtime(self):
@@ -526,7 +509,7 @@ class TestPollOnce:
             mock_aiohttp.ClientTimeout = MagicMock()
             await method.poll_once("SIG-001", config, factory, target=target)
 
-        target.resolve_decoder.assert_called_once_with(decoder_name="maxtime")
+        assert target.ingest.call_args[1]["decoder_name"] == "maxtime"
 
 
 # ---------------------------------------------------------------------------
@@ -662,7 +645,7 @@ class TestPollOnceDecodeError:
 
     @pytest.mark.asyncio
     async def test_poll_once_decode_error(self):
-        """Decoder raises, error recorded via target.record_error."""
+        """Host reports FAILURE; the method records the error (P7c)."""
         method = HTTPPullMethod()
         config = _make_config_dict()
         factory, _ = _mock_session_factory()
@@ -670,10 +653,13 @@ class TestPollOnceDecodeError:
         response = _mock_aiohttp_response(body=b"<garbage/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
 
-        mock_decoder = MagicMock()
-        mock_decoder.decode_bytes.side_effect = ValueError("bad XML")
         target = _make_mock_target()
-        target.resolve_decoder.return_value = mock_decoder
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="decode failed: bad XML",
+                failed_stage="decode",
+            )
+        )
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
@@ -681,7 +667,7 @@ class TestPollOnceDecodeError:
             await method.poll_once("SIG-001", config, factory, target=target)
 
         target.record_error.assert_awaited_once()
-        target.persist_with_drift_check.assert_not_awaited()
+        target.save_checkpoint.assert_not_awaited()
 
 
 class TestPollOncePersistError:
@@ -694,17 +680,16 @@ class TestPollOncePersistError:
         config = _make_config_dict()
         factory, _ = _mock_session_factory()
 
-        now = datetime.now(timezone.utc)
-        events = [DecodedEvent(timestamp=now, event_code=1, event_param=2)]
-
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
 
-        mock_decoder = MagicMock()
-        mock_decoder.decode_bytes.return_value = events
         target = _make_mock_target()
-        target.resolve_decoder.return_value = mock_decoder
-        target.persist_with_drift_check.side_effect = RuntimeError("db down")
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="persist failed: db down",
+                failed_stage="persist",
+            )
+        )
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx
@@ -731,21 +716,17 @@ class TestPollOnceAbsorbedCount:
         factory, _ = _mock_session_factory()
 
         now = datetime(2024, 3, 15, 14, 30, 45, tzinfo=timezone.utc)
-        events = [
-            DecodedEvent(timestamp=now, event_code=1, event_param=2),
-            DecodedEvent(timestamp=now, event_code=82, event_param=5),
-            DecodedEvent(timestamp=now, event_code=7, event_param=0),
-        ]
 
         response = _mock_aiohttp_response(body=b"<xml/>")
         mock_ctx, _ = _mock_aiohttp_session(response)
 
-        decoder = MagicMock()
-        decoder.decode_bytes.return_value = events
         target = _make_mock_target()
-        target.resolve_decoder.return_value = decoder
-        # 3 attempted, only 2 actually inserted (1 was a duplicate)
-        target.persist_with_drift_check = AsyncMock(return_value=2)
+        target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.SUCCESS, 2, max_event_time=now, events_decoded=3
+            )
+        )
+        # 3 decoded, only 2 actually inserted (1 was a duplicate)
 
         with patch("tsigma.collection.methods.http_pull.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession.return_value = mock_ctx

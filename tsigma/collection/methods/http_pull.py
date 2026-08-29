@@ -26,6 +26,7 @@ from typing import Any, Optional
 import aiohttp
 from pydantic import BaseModel
 
+from ..ingest import IngestOutcome
 from ..registry import IngestionMethodRegistry, PollingIngestionMethod
 from ..targets import ControllerTarget, IngestionTarget
 
@@ -191,50 +192,33 @@ class HTTPPullMethod(PollingIngestionMethod):
             )
             return
 
-        try:
-            decoder = target.resolve_decoder(
-                decoder_name=http_config.decoder or _DEFAULT_DECODER,
-            )
-            events = decoder.decode_bytes(data)
-        except Exception as exc:
-            logger.exception(
-                "Failed to decode response from %s for device %s",
-                http_config.host,
-                device_id,
+        # Transport-only: the host decodes, normalizes, and persists.
+        result = await target.ingest(
+            data, device_id, session_factory,
+            decoder_name=http_config.decoder or _DEFAULT_DECODER,
+        )
+        if result.outcome is IngestOutcome.FAILURE:
+            logger.error(
+                "Failed to ingest response from %s for device %s: %s",
+                http_config.host, device_id, result.error,
             )
             await target.record_error(
-                self.name, device_id, session_factory, str(exc),
+                self.name, device_id, session_factory, result.error,
             )
             return
 
-        try:
-            inserted = await target.persist_with_drift_check(
-                events, device_id, session_factory,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Failed to persist events from %s for device %s",
-                http_config.host,
-                device_id,
-            )
-            await target.record_error(
-                self.name, device_id, session_factory, str(exc),
-            )
-            return
-
-        if events:
-            latest = max(e.timestamp for e in events)
+        if result.events_decoded:
             await target.save_checkpoint(
                 self.name,
                 device_id,
                 session_factory,
-                last_event_timestamp=latest,
-                events_ingested=inserted,
-                duplicates_absorbed=len(events) - inserted,
+                last_event_timestamp=result.max_event_time,
+                events_ingested=result.events_inserted,
+                duplicates_absorbed=result.duplicates_absorbed,
             )
             logger.info(
                 "Collected %d events from %s for device %s",
-                len(events),
+                result.events_decoded,
                 http_config.host,
                 device_id,
             )
