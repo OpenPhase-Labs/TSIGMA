@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.mqtt_listener import (
     MQTTListenerMethod,
     MQTTServerConfig,
@@ -116,11 +117,14 @@ class TestMQTTBuildSubscriptions:
 
 class TestMQTTHandleMessage:
     @pytest.mark.asyncio
-    async def test_decodes_and_persists_via_target(self):
+    async def test_hands_bytes_to_the_target(self):
+        """Transport-only: bytes + decoder name go to the host (P7c)."""
         method = MQTTListenerMethod()
         method._session_factory = AsyncMock()
         method._target = ControllerTarget()
-        method._target.persist_with_drift_check = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 2)
+        )
 
         sub = MQTTSubscription(
             device_id="SIG-100",
@@ -128,45 +132,32 @@ class TestMQTTHandleMessage:
             decoder="asc3",
         )
 
-        fake_events = [MagicMock(), MagicMock()]
-        mock_decoder = MagicMock()
-        mock_decoder.decode_bytes.return_value = fake_events
+        await method._handle_message(sub, b"\x01\x02\x03")
 
-        with patch(
-            "tsigma.collection.methods.mqtt_listener.resolve_decoder_by_name",
-            return_value=mock_decoder,
-        ) as mock_resolve:
-            await method._handle_message(sub, b"\x01\x02\x03")
-
-        mock_resolve.assert_called_once_with("asc3")
-        mock_decoder.decode_bytes.assert_called_once_with(b"\x01\x02\x03")
-        method._target.persist_with_drift_check.assert_awaited_once()
-        # device_id arg
-        assert (
-            method._target.persist_with_drift_check.call_args[0][1] == "SIG-100"
-        )
+        method._target.ingest.assert_awaited_once()
+        args, kwargs = method._target.ingest.call_args
+        assert args[0] == b"\x01\x02\x03"
+        assert args[1] == "SIG-100"
+        assert kwargs["decoder_name"] == "asc3"
 
     @pytest.mark.asyncio
-    async def test_decode_error_is_swallowed(self):
+    async def test_ingest_failure_is_logged_not_raised(self):
         method = MQTTListenerMethod()
         method._session_factory = AsyncMock()
         method._target = ControllerTarget()
-        method._target.persist_with_drift_check = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="decode failed: bad",
+                failed_stage="decode",
+            )
+        )
 
         sub = MQTTSubscription(
             device_id="SIG-200", topic="atspm/200", decoder="broken",
         )
 
-        with patch(
-            "tsigma.collection.methods.mqtt_listener.resolve_decoder_by_name",
-            side_effect=RuntimeError("bad decoder"),
-        ):
-            await method._handle_message(sub, b"\xff")
+        await method._handle_message(sub, b"\xff")   # must not raise
 
-        method._target.persist_with_drift_check.assert_not_called()
-
-
-class TestMQTTSubscriberLoop:
     @pytest.mark.asyncio
     async def test_subscriber_loop_subscribes_and_handles_message(self):
         method = MQTTListenerMethod()

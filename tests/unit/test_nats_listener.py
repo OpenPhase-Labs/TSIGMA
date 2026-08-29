@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.nats_listener import (
     NATSListenerMethod,
     NATSServerConfig,
@@ -105,72 +106,53 @@ class TestNATSBuildSubscriptions:
 
 class TestNATSHandleMessage:
     @pytest.mark.asyncio
-    async def test_decodes_and_persists_via_target(self):
+    async def test_hands_bytes_to_the_target(self):
+        """Transport-only: bytes + decoder name go to the host (P7c)."""
         method = NATSListenerMethod()
         method._session_factory = AsyncMock()
         method._target = ControllerTarget()
-        method._target.persist_with_drift_check = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(IngestOutcome.SUCCESS, 2)
+        )
 
         sub = NATSSubscription(
             device_id="SIG-100",
             subject="signals.100.events",
             decoder="asc3",
         )
-
-        fake_events = [MagicMock(), MagicMock()]
-        mock_decoder = MagicMock()
-        mock_decoder.decode_bytes.return_value = fake_events
-
         mock_msg = MagicMock()
         mock_msg.data = b"\x01\x02\x03"
 
-        with patch(
-            "tsigma.collection.methods.nats_listener.resolve_decoder_by_name",
-            return_value=mock_decoder,
-        ) as mock_resolve:
-            await method._handle_message(sub, mock_msg)
+        await method._handle_message(sub, mock_msg)
 
-        mock_resolve.assert_called_once_with("asc3")
-        mock_decoder.decode_bytes.assert_called_once_with(b"\x01\x02\x03")
-        method._target.persist_with_drift_check.assert_awaited_once()
-        assert (
-            method._target.persist_with_drift_check.call_args[0][1]
-            == "SIG-100"
-        )
+        method._target.ingest.assert_awaited_once()
+        args, kwargs = method._target.ingest.call_args
+        assert args[0] == b"\x01\x02\x03"
+        assert args[1] == "SIG-100"
+        assert kwargs["decoder_name"] == "asc3"
 
     @pytest.mark.asyncio
-    async def test_decode_error_is_swallowed(self, caplog):
+    async def test_ingest_failure_is_logged_not_raised(self):
         method = NATSListenerMethod()
         method._session_factory = AsyncMock()
         method._target = ControllerTarget()
-        method._target.persist_with_drift_check = AsyncMock()
+        method._target.ingest = AsyncMock(
+            return_value=IngestResult(
+                IngestOutcome.FAILURE, 0, error="decode failed: bad",
+                failed_stage="decode",
+            )
+        )
 
         sub = NATSSubscription(
             device_id="SIG-200",
             subject="signals.200.events",
             decoder="bad",
         )
-
         mock_msg = MagicMock()
         mock_msg.data = b"\xff\xff"
 
-        with (
-            caplog.at_level(
-                logging.ERROR,
-                logger="tsigma.collection.methods.nats_listener",
-            ),
-            patch(
-                "tsigma.collection.methods.nats_listener.resolve_decoder_by_name",
-                side_effect=RuntimeError("decode exploded"),
-            ),
-        ):
-            await method._handle_message(sub, mock_msg)
+        await method._handle_message(sub, mock_msg)   # must not raise
 
-        method._target.persist_with_drift_check.assert_not_called()
-        assert "failed to decode" in caplog.text.lower()
-
-
-class TestNATSSubscribe:
     @pytest.mark.asyncio
     async def test_subscribe_no_queue(self):
         method = NATSListenerMethod()

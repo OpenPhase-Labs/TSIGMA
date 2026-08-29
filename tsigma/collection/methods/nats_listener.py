@@ -28,8 +28,8 @@ from nats.aio.client import Client as NATSClient
 from nats.aio.subscription import Subscription
 from pydantic import BaseModel
 
+from ..ingest import IngestOutcome
 from ..registry import IngestionMethodRegistry, ListenerIngestionMethod
-from ..sdk import resolve_decoder_by_name
 from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
@@ -202,26 +202,24 @@ class NATSListenerMethod(ListenerIngestionMethod):
     async def _handle_message(
         self, sub_cfg: NATSSubscription, msg,
     ) -> None:
-        try:
-            decoder = resolve_decoder_by_name(
-                sub_cfg.decoder or _DEFAULT_DECODER,
-            )
-            events = decoder.decode_bytes(msg.data)
-        except Exception:
-            logger.exception(
-                "Failed to decode NATS message for %s %s on %s",
-                self._target.device_type, sub_cfg.device_id, sub_cfg.subject,
+        # Transport-only: the host decodes, normalizes, and persists.
+        result = await self._target.ingest(
+            msg.data, sub_cfg.device_id, self._session_factory,
+            decoder_name=sub_cfg.decoder or _DEFAULT_DECODER,
+            source_label=self._target.device_type,
+        )
+        if result.outcome is IngestOutcome.FAILURE:
+            logger.error(
+                "Failed to ingest NATS message for %s %s on %s: %s",
+                self._target.device_type, sub_cfg.device_id,
+                sub_cfg.subject, result.error,
             )
             return
 
-        if events:
-            await self._target.persist_with_drift_check(
-                events, sub_cfg.device_id, self._session_factory,
-                source_label=self._target.device_type,
-            )
+        if result.events_inserted:
             logger.debug(
                 "NATS: %d events from %s %s on %s",
-                len(events),
+                result.events_inserted,
                 self._target.device_type,
                 sub_cfg.device_id, sub_cfg.subject,
             )

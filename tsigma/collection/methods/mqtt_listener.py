@@ -29,8 +29,8 @@ from urllib.parse import urlparse
 import aiomqtt
 from pydantic import BaseModel
 
+from ..ingest import IngestOutcome
 from ..registry import IngestionMethodRegistry, ListenerIngestionMethod
-from ..sdk import resolve_decoder_by_name
 from ..targets import ControllerTarget, IngestionTarget
 
 logger = logging.getLogger(__name__)
@@ -232,24 +232,23 @@ class MQTTListenerMethod(ListenerIngestionMethod):
     async def _handle_message(
         self, sub: MQTTSubscription, payload: bytes,
     ) -> None:
-        try:
-            decoder = resolve_decoder_by_name(sub.decoder or _DEFAULT_DECODER)
-            events = decoder.decode_bytes(payload)
-        except Exception:
-            logger.exception(
-                "Failed to decode MQTT message for %s %s on %s",
-                self._target.device_type, sub.device_id, sub.topic,
+        # Transport-only: the host decodes, normalizes, and persists.
+        result = await self._target.ingest(
+            payload, sub.device_id, self._session_factory,
+            decoder_name=sub.decoder or _DEFAULT_DECODER,
+            source_label=self._target.device_type,
+        )
+        if result.outcome is IngestOutcome.FAILURE:
+            logger.error(
+                "Failed to ingest MQTT message for %s %s on %s: %s",
+                self._target.device_type, sub.device_id, sub.topic, result.error,
             )
             return
 
-        if events:
-            await self._target.persist_with_drift_check(
-                events, sub.device_id, self._session_factory,
-                source_label=self._target.device_type,
-            )
+        if result.events_inserted:
             logger.debug(
                 "MQTT: %d events from %s %s on %s",
-                len(events),
+                result.events_inserted,
                 self._target.device_type, sub.device_id, sub.topic,
             )
 
