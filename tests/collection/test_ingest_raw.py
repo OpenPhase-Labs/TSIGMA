@@ -147,8 +147,8 @@ class TestIngestRaw:
         assert out.max_event_time == datetime(2026, 8, 1, 16, 0, tzinfo=timezone.utc)
 
     @pytest.mark.asyncio
-    async def test_unresolvable_timezone_fails_rather_than_guessing(self):
-        """Storing unconverted local time as UTC is the bug this prevents."""
+    async def test_unresolvable_timezone_still_ingests_and_warns(self):
+        """Never withhold (ADR-0034); spec sec.3 rules out an unresolvable-zone quarantine."""
         local = SimpleNamespace(
             decode=lambda raw: DecodeResult(events=[_ev(datetime(2026, 8, 1, 12, 0))])
         )
@@ -156,13 +156,31 @@ class TestIngestRaw:
              patch("tsigma.collection.ingest.resolve_source_timezone",
                    new_callable=AsyncMock, return_value=None), \
              patch("tsigma.collection.ingest.persist_events_with_drift_check",
-                   new_callable=AsyncMock) as persist:
+                   new_callable=AsyncMock, return_value=1) as persist, \
+             patch("tsigma.collection.ingest.logger") as log:
             out = await ingest_raw(b"x", device_id="S", decoder_name="d",
                                    session_factory=_factory())
-        assert out.outcome is IngestOutcome.FAILURE
-        assert out.advanced is False
-        persist.assert_not_awaited()
-        assert "timezone" in out.error
+        assert out.outcome is IngestOutcome.SUCCESS
+        assert out.advanced is True
+        persist.assert_awaited_once()
+        log.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_last_resort_zone_is_utc(self):
+        local = SimpleNamespace(
+            decode=lambda raw: DecodeResult(events=[_ev(datetime(2026, 8, 1, 12, 0))])
+        )
+        with patch("tsigma.collection.ingest.resolve_decoder_by_name", return_value=local), \
+             patch("tsigma.collection.ingest.resolve_source_timezone",
+                   new_callable=AsyncMock, return_value=None), \
+             patch("tsigma.collection.ingest.persist_events_with_drift_check",
+                   new_callable=AsyncMock, return_value=1) as persist:
+            await ingest_raw(b"x", device_id="S", decoder_name="d",
+                             session_factory=_factory())
+        # 12:00 naive interpreted as UTC stays 12:00Z - no silent shift.
+        assert persist.call_args[0][0][0].timestamp == datetime(
+            2026, 8, 1, 12, 0, tzinfo=timezone.utc
+        )
 
     @pytest.mark.asyncio
     async def test_returns_the_insert_count_and_high_water_mark(self):
