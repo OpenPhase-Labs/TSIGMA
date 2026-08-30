@@ -324,3 +324,132 @@ class TestPersistFailure:
             out = await ingest_raw(b"x", device_id="S", decoder_name="d",
                                    session_factory=_factory())
         assert out.failed_stage == ""
+
+
+class TestRemoteDecoderPath:
+    """P6b/P6c: a gRPC decoder plugin, and its 3-state terminal status.
+
+    Dispatch is per NAME (ADR-0018 coexistence): a name registered over gRPC
+    resolves to a plugin, everything else to the in-process registry.
+    """
+
+    @staticmethod
+    def _remote(outcome, events=(), error="", dropped=0):
+        """A stand-in RemoteDecoder returning a given terminal status."""
+        from tsigma.collection.decoders.base import DecodeResult as DR
+        from tsigma.plugins.remote_decoder import RemoteDecodeResult
+
+        out = RemoteDecodeResult(
+            result=DR(events=list(events)),
+            outcome=outcome,
+            events_emitted=len(events),
+            error=error,
+            segments_dropped=dropped,
+        )
+        return SimpleNamespace(
+            name="vendor-decoder",
+            decode_remote=AsyncMock(return_value=out),
+        )
+
+    @staticmethod
+    def _register(decoder):
+        from tsigma.collection.decoders.base import DecoderRegistry
+
+        DecoderRegistry.register_grpc(
+            "vendor-decoder", SimpleNamespace(decoder=decoder)
+        )
+        return DecoderRegistry
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from tsigma.collection.decoders.base import DecoderRegistry
+
+        yield
+        DecoderRegistry._grpc_plugins.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_grpc_registered_name_dispatches_to_the_plugin(self):
+        now = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        decoder = self._remote(1, [_ev(now)])          # DECODE_OUTCOME_SUCCESS
+        self._register(decoder)
+        with patch("tsigma.collection.ingest.validate_and_record_provenance",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.ingest.persist_events_with_drift_check",
+                   new_callable=AsyncMock, return_value=1):
+            out = await ingest_raw(b"x", device_id="S", decoder_name="vendor-decoder",
+                                   session_factory=_factory())
+        decoder.decode_remote.assert_awaited_once_with(b"x")
+        assert out.outcome is IngestOutcome.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_partial_persists_the_decodable_rows_and_flags(self):
+        now = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        decoder = self._remote(2, [_ev(now)], error="truncated", dropped=3)
+        self._register(decoder)
+        with patch("tsigma.collection.ingest.validate_and_record_provenance",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.ingest.persist_events_with_drift_check",
+                   new_callable=AsyncMock, return_value=1) as persist, \
+             patch("tsigma.collection.ingest._flag_decode_outcome",
+                   new_callable=AsyncMock) as flag:
+            out = await ingest_raw(b"x", device_id="S", decoder_name="vendor-decoder",
+                                   session_factory=_factory())
+        assert out.outcome is IngestOutcome.PARTIAL
+        assert out.events_inserted == 1        # what survived went in
+        assert out.advanced is True            # PARTIAL advances to the high-water mark
+        persist.assert_awaited_once()
+        flag.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failure_persists_nothing_and_flags(self):
+        decoder = self._remote(3, [], error="unreadable header")
+        self._register(decoder)
+        with patch("tsigma.collection.ingest.persist_events_with_drift_check",
+                   new_callable=AsyncMock) as persist, \
+             patch("tsigma.collection.ingest._flag_decode_outcome",
+                   new_callable=AsyncMock) as flag:
+            out = await ingest_raw(b"x", device_id="S", decoder_name="vendor-decoder",
+                                   session_factory=_factory())
+        assert out.outcome is IngestOutcome.FAILURE
+        assert out.advanced is False
+        assert "unreadable header" in out.error
+        persist.assert_not_awaited()
+        flag.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unspecified_outcome_is_treated_as_failure(self):
+        """A decoder that reports nothing has not reported success."""
+        decoder = self._remote(0, [])
+        self._register(decoder)
+        with patch("tsigma.collection.ingest._flag_decode_outcome",
+                   new_callable=AsyncMock):
+            out = await ingest_raw(b"x", device_id="S", decoder_name="vendor-decoder",
+                                   session_factory=_factory())
+        assert out.outcome is IngestOutcome.FAILURE
+
+    @pytest.mark.asyncio
+    async def test_remote_naive_timestamps_are_converted_host_side(self):
+        """P6b: the same naive->UTC rule applies whatever decoded the bytes."""
+        decoder = self._remote(1, [_ev(datetime(2026, 8, 1, 12, 0))])   # naive
+        self._register(decoder)
+        with patch("tsigma.collection.ingest.resolve_source_timezone",
+                   new_callable=AsyncMock, return_value=NY), \
+             patch("tsigma.collection.ingest.validate_and_record_provenance",
+                   new_callable=AsyncMock), \
+             patch("tsigma.collection.ingest.persist_events_with_drift_check",
+                   new_callable=AsyncMock, return_value=1) as persist:
+            await ingest_raw(b"x", device_id="S", decoder_name="vendor-decoder",
+                             session_factory=_factory())
+        persisted = persist.call_args[0][0]
+        assert persisted[0].timestamp == datetime(2026, 8, 1, 16, 0, tzinfo=timezone.utc)
+
+    @pytest.mark.asyncio
+    async def test_an_unregistered_name_still_uses_the_in_process_registry(self):
+        """Regression guard: coexistence, not replacement."""
+        dec = SimpleNamespace(decode=lambda raw: DecodeResult(events=[]))
+        with patch("tsigma.collection.ingest.resolve_decoder_by_name",
+                   return_value=dec) as resolve:
+            out = await ingest_raw(b"x", device_id="S", decoder_name="asc3",
+                                   session_factory=_factory())
+        resolve.assert_called_once_with("asc3")
+        assert out.outcome is IngestOutcome.SUCCESS
