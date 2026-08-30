@@ -2,6 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-28
+- **Amended**: 2026-08-30 - never-lose-data scopes to data the host holds; a plugin's declared outcome is evidence
 - **Deciders**: jsloan@celldara.com
 
 ## Context and Problem Statement
@@ -10,6 +11,23 @@ Controllers routinely have wrong clocks, stale configs, and get replaced / re-IP
 without ceremony. Conventional practice treats the controller's clock/config as
 ground truth; TSIGMA treats the controller as **untrusted**. How does TSIGMA keep
 ingestion correct without losing data?
+
+Since ADR-0018 and ADR-0082 there is a second untrusted party: the plugin author.
+Decoders ship from third-party repositories, so an integrity claim can now arrive
+from someone OpenPhase Labs does not vet and cannot bind (contract ADR-0007,
+contract ADR-0016). Never-lose-data is a stance TSIGMA writes its own code to; it is not
+enforceable on a vendor. It therefore scopes to what the host controls: **once
+bytes or rows have reached the host, the host does not discard them.** What a
+vendor's plugin chooses to emit or drop is outside that boundary.
+
+This scoping also settles what a terminal decode status is. "A decoder never
+supplies identity or integrity" (below) and the contract's SUCCESS / PARTIAL /
+FAILURE `DecodeStatus` are not in conflict: a status is **evidence the host
+records and flags**, never an instruction to destroy data already in hand. A
+FAILURE arriving with rows persists those rows and flags; the declared status and
+the author's own emitted / dropped counts go on the review row as their claim, and
+a mismatch between that claim and what arrived is itself an operator-actionable
+finding.
 
 ## Decision Drivers
 
@@ -76,3 +94,5 @@ operator-actionable items; the push plane uses JetStream durable/acked/replay.
 ## More Information
 
 - ADR-0033 (two planes / per-plane delivery), ADR-0009 (canonical events), ADR-0018 (decoder is a pure-transform plugin), ADR-0005 (audit); validation-layer timing in the forthcoming validation ADR
+- ADR-0082 (plugins live in third-party repositories); contract ADR-0007 (trust tiers) and contract ADR-0016 (the trust anchor is the deploying operator's, never OpenPhase Labs)
+- Amendment note (2026-08-30): the decision is unchanged. As first written, this ADR's only untrusted party was the controller, because decoders were in-process TSIGMA code. Plugins now ship from third-party repositories, so the amendment names who never-lose-data binds - the host - and classifies a plugin's declared outcome as evidence rather than integrity. Both stances, the flag-never-block rule, and the Confirmation criteria stand as written.
