@@ -77,9 +77,11 @@ key's history.
 GET /api/v1/settings/access-policy
 ```
 
-Returns the six `access_policy.*` rows as a single object. This is a
-convenience endpoint for the access-control middleware UI and does not
-cover the typed tuning knobs listed above.
+Returns a hand-enumerated subset of the `access_policy.*` fields as a
+single object — not every seeded row. This is a convenience endpoint for
+the access-control middleware UI and does not cover the typed tuning
+knobs listed above. For the complete set, use
+`GET /api/v1/settings/?category=access_policy`.
 
 ### Get the audit trail for a single key
 
