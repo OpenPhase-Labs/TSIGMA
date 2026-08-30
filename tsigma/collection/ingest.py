@@ -36,6 +36,7 @@ from ..models.ingest_review import IngestReview
 from ..models.signal import Signal
 from ..notifications.registry import WARNING, notify
 from ..notifications.suppression import is_suppressed
+from .decoders.base import DecoderRegistry
 from .sdk import (
     check_configured_phases,
     check_controller_replacement,
@@ -130,6 +131,95 @@ def has_naive_timestamps(events: list) -> bool:
     return any(e.timestamp.tzinfo is None for e in events)
 
 
+@dataclass
+class _Decoded:
+    """One decode, whatever produced it.
+
+    Normalizes the in-process and remote paths onto one shape so `ingest_raw`
+    has a single downstream flow: a `DecodeResult`, a 3-state outcome, and the
+    decoder object (for its name and declared time semantics).
+    """
+
+    result: object
+    outcome: IngestOutcome
+    error: str
+    segments_dropped: int
+    decoder: object
+
+
+# DecodeOutcome (contract) -> IngestOutcome (host). UNSPECIFIED is treated as
+# FAILURE: a decoder that reports nothing has not reported success.
+_DECODE_TO_INGEST = {
+    1: IngestOutcome.SUCCESS,
+    2: IngestOutcome.PARTIAL,
+    3: IngestOutcome.FAILURE,
+    0: IngestOutcome.FAILURE,
+}
+
+DECODE_REVIEW_REASON = "decode_incomplete"
+
+
+async def _decode_remote(decoder_name: str, raw: bytes, device_id: str) -> "_Decoded":
+    """Decode through a gRPC decoder plugin and map its terminal status.
+
+    The plugin streams Arrow batches and closes with exactly one DecodeStatus;
+    a stream that ends without one is FAILURE, never success.
+    """
+    from ..plugins.remote_decoder import RemoteDecodeError
+
+    connection = DecoderRegistry.get_connection(decoder_name)
+    decoder = getattr(connection, "decoder", None) or connection
+    try:
+        out = await decoder.decode_remote(raw)
+    except RemoteDecodeError as exc:
+        logger.error("%s: remote decode failed for %s: %s", decoder_name, device_id, exc)
+        return _Decoded(None, IngestOutcome.FAILURE, str(exc), 0, decoder)
+
+    return _Decoded(
+        out.result,
+        _DECODE_TO_INGEST.get(out.outcome, IngestOutcome.FAILURE),
+        out.error,
+        out.segments_dropped,
+        decoder,
+    )
+
+
+async def _flag_decode_outcome(session_factory, device_id: str, decoded: "_Decoded",
+                               source: str | None) -> None:
+    """Queue a review for a PARTIAL or FAILED decode (ADR-0034 ingest + flag).
+
+    PARTIAL means the decodable rows were persisted and the corrupt remainder
+    was not - an operator needs to know a file was only partly read. FAILURE
+    means nothing was persisted. Best-effort: never blocks ingest.
+    """
+    try:
+        async with session_factory() as session:
+            session.add(
+                IngestReview(
+                    signal_id=device_id,
+                    reason=DECODE_REVIEW_REASON,
+                    source_filename=source or None,
+                    severity="warning" if decoded.outcome is IngestOutcome.PARTIAL else "error",
+                    summary=(
+                        "Partial decode: some records unreadable"
+                        if decoded.outcome is IngestOutcome.PARTIAL
+                        else "Decode failed: no records ingested"
+                    ),
+                    detail={
+                        "outcome": decoded.outcome.value,
+                        "error": decoded.error,
+                        "segments_dropped": decoded.segments_dropped,
+                    },
+                    status="open",
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Could not queue the decode review for %s - ingest unaffected", device_id,
+        )
+
+
 async def ingest_raw(
     raw: bytes,
     *,
@@ -149,27 +239,42 @@ async def ingest_raw(
     advancement policy can distinguish "nothing to do" from "do not advance".
     """
     hint = decoder_name or filename
-    try:
-        decoder = (
-            resolve_decoder_by_name(decoder_name)
-            if decoder_name
-            else resolve_decoder_by_extension(filename)
-        )
-    except (ValueError, KeyError) as exc:
+
+    # A name registered over gRPC resolves to a plugin; otherwise the in-process
+    # registry. Dispatch is per name (ADR-0018 coexistence), so both kinds run
+    # side by side and callers above never learn which answered.
+    if decoder_name and DecoderRegistry.is_remote(decoder_name):
+        decoded = await _decode_remote(decoder_name, raw, device_id)
+    else:
+        try:
+            decoder = (
+                resolve_decoder_by_name(decoder_name)
+                if decoder_name
+                else resolve_decoder_by_extension(filename)
+            )
+        except (ValueError, KeyError) as exc:
+            return IngestResult(
+                IngestOutcome.FAILURE, 0,
+                error=f"decoder {hint!r}: {exc}", failed_stage="decode",
+            )
+        try:
+            decoded = _Decoded(decoder.decode(raw), IngestOutcome.SUCCESS, "", 0, decoder)
+        except Exception as exc:  # a bad file must not take the poller down
+            logger.exception("%s: decode failed for %s", decoder_name, device_id)
+            return IngestResult(
+                IngestOutcome.FAILURE, 0,
+                error=f"decode failed: {exc}", failed_stage="decode",
+            )
+
+    if decoded.outcome is IngestOutcome.FAILURE:
+        # FAILURE persists nothing and is surfaced - never a silent skip.
+        await _flag_decode_outcome(session_factory, device_id, decoded, hint)
         return IngestResult(
-            IngestOutcome.FAILURE, 0,
-            error=f"decoder {hint!r}: {exc}", failed_stage="decode",
+            IngestOutcome.FAILURE, 0, error=decoded.error, failed_stage="decode",
         )
 
-    try:
-        result = decoder.decode(raw)
-    except Exception as exc:  # a bad file must not take the poller down
-        logger.exception("%s: decode failed for %s", decoder_name, device_id)
-        return IngestResult(
-            IngestOutcome.FAILURE, 0,
-            error=f"decode failed: {exc}", failed_stage="decode",
-        )
-
+    result = decoded.result
+    decoder = decoded.decoder
     events = list(result.events or [])
     if not events:
         # Nothing decoded is not a failure - an empty poll is normal.
@@ -224,11 +329,16 @@ async def ingest_raw(
             error=f"persist failed: {exc}", failed_stage="persist",
         )
 
+    if decoded.outcome is IngestOutcome.PARTIAL:
+        # Decodable rows are in; the corrupt remainder is flagged for review.
+        await _flag_decode_outcome(session_factory, device_id, decoded, hint)
+
     return IngestResult(
-        IngestOutcome.SUCCESS,
+        decoded.outcome,
         inserted or 0,
         max_event_time=max(e.timestamp for e in events),
         events_decoded=len(events),
+        error=decoded.error,
     )
 
 
