@@ -5,12 +5,13 @@ and the boundary is where an untrusted plugin must not be able to overreach.
 """
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import tsigma.plugins  # noqa: F401  - puts the generated stubs on sys.path
 from tsigma.collection.ingest import IngestOutcome, IngestResult
+from tsigma.method.v1 import method_pb2
 from tsigma.plugins.method_broker import (
     ERROR_MSG_MAX,
     CheckpointService,
@@ -19,7 +20,6 @@ from tsigma.plugins.method_broker import (
     device_type_of,
     to_persist_response,
 )
-from tsigma.method.v1 import method_pb2
 
 NOW = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
 
