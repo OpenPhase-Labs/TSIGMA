@@ -46,8 +46,12 @@ HANDSHAKE_FIELDS = 5
 VALID_NETWORKS = ("tcp", "unix")
 VALID_PROTOCOL = "grpc"
 
-# Handshake line must arrive promptly; a plugin that never prints one is hung.
-HANDSHAKE_TIMEOUT_SECONDS = 10.0
+# How long a plugin gets to print its handshake line. Measured: a Python plugin
+# needs ~5s on an idle machine just to import grpc, grpc_health, and pyarrow
+# before it can serve, so a 10s budget left no headroom under load. 30s matches
+# collector_poll_timeout_seconds, the house number for "an operation that talks
+# to a device". A plugin that never prints one is hung and is killed.
+HANDSHAKE_TIMEOUT_SECONDS = 30.0
 SHUTDOWN_GRACE_SECONDS = 5.0
 
 
