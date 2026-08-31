@@ -173,13 +173,13 @@ class EventQueryServiceStub:
     to these host-served services over the go-plugin broker (PROTOCOL.md s4).
     The plugin gets NO DB credentials; the host answers each call from its own
     session under the request's tenant context. Each service mirrors one
-    tsigma/reports/sdk helper (the in-process Python data access), traced
+    in-process data-access helper, traced
     inline. Row-returning results are server-streamed as Arrow batches
     (TYPES.md): the Python helpers return pd.DataFrame; Arrow is the
     language-neutral wire form of those same rows.
     ===========================================================================
 
-    EventQueryService mirrors tsigma/reports/sdk/queries.py - the tier-aware
+    EventQueryService mirrors the in-process event-query helpers - the tier-aware
     ControllerEventLog access every report uses. The host owns hot/cold tier
     routing (cold_tier.query_enabled / cold_tier.threshold_days); the plugin
     never sees the tiers.
@@ -209,33 +209,34 @@ class EventQueryServiceServicer:
     to these host-served services over the go-plugin broker (PROTOCOL.md s4).
     The plugin gets NO DB credentials; the host answers each call from its own
     session under the request's tenant context. Each service mirrors one
-    tsigma/reports/sdk helper (the in-process Python data access), traced
+    in-process data-access helper, traced
     inline. Row-returning results are server-streamed as Arrow batches
     (TYPES.md): the Python helpers return pd.DataFrame; Arrow is the
     language-neutral wire form of those same rows.
     ===========================================================================
 
-    EventQueryService mirrors tsigma/reports/sdk/queries.py - the tier-aware
+    EventQueryService mirrors the in-process event-query helpers - the tier-aware
     ControllerEventLog access every report uses. The host owns hot/cold tier
     routing (cold_tier.query_enabled / cold_tier.threshold_days); the plugin
     never sees the tiers.
     """
 
     def FetchEvents(self, request, context):
-        """FetchEvents mirrors queries.py:fetch_events. Tier-aware fetch of
+        """FetchEvents mirrors fetch_events. Tier-aware fetch of
         controller_event_log rows for one signal in a window, filtered by event
         code (IN-list mode) or returning all rows (no-filter mode). Columns:
         event_code, event_param, event_time; ordered by event_time.
         NOTE: the Python fragment mode (where_sql_fragment) is SDK-INTERNAL and
         trust-sensitive (raw SQL from controlled constants); it is deliberately
-        NOT exposed across the untrusted plugin boundary. See DESIGN-CHECK below.
+        NOT exposed across the untrusted plugin boundary. See FetchEventsRequest
+        and AggSpec.filter below.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def FetchEventsSplit(self, request, context):
-        """FetchEventsSplit mirrors queries.py:fetch_events_split. One query for
+        """FetchEventsSplit mirrors fetch_events_split. One query for
         phase events OR (detector codes AND event_param IN det_channels). Same
         tier routing. Columns: event_code, event_param, event_time.
         """
@@ -270,13 +271,13 @@ class EventQueryService:
     to these host-served services over the go-plugin broker (PROTOCOL.md s4).
     The plugin gets NO DB credentials; the host answers each call from its own
     session under the request's tenant context. Each service mirrors one
-    tsigma/reports/sdk helper (the in-process Python data access), traced
+    in-process data-access helper, traced
     inline. Row-returning results are server-streamed as Arrow batches
     (TYPES.md): the Python helpers return pd.DataFrame; Arrow is the
     language-neutral wire form of those same rows.
     ===========================================================================
 
-    EventQueryService mirrors tsigma/reports/sdk/queries.py - the tier-aware
+    EventQueryService mirrors the in-process event-query helpers - the tier-aware
     ControllerEventLog access every report uses. The host owns hot/cold tier
     routing (cold_tier.query_enabled / cold_tier.threshold_days); the plugin
     never sees the tiers.
@@ -338,7 +339,7 @@ class EventQueryService:
 
 
 class AggregateQueryServiceStub:
-    """AggregateQueryService mirrors tsigma/reports/sdk/aggregates.py:
+    """AggregateQueryService mirrors the in-process aggregate helper:
     aggregate_events - tier-aware aggregation over controller_event_log.
     """
 
@@ -356,12 +357,12 @@ class AggregateQueryServiceStub:
 
 
 class AggregateQueryServiceServicer:
-    """AggregateQueryService mirrors tsigma/reports/sdk/aggregates.py:
+    """AggregateQueryService mirrors the in-process aggregate helper:
     aggregate_events - tier-aware aggregation over controller_event_log.
     """
 
     def AggregateEvents(self, request, context):
-        """AggregateEvents mirrors aggregates.py:aggregate_events. Signal selection
+        """AggregateEvents mirrors aggregate_events. Signal selection
         has four modes (none/[]=empty, "All"=fleet-wide, single, subset). The
         host applies the per-spec cross-tier combinator on spanning windows.
         Result columns: group_by columns first (preserved order), then one agg_i
@@ -388,7 +389,7 @@ def add_AggregateQueryServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class AggregateQueryService:
-    """AggregateQueryService mirrors tsigma/reports/sdk/aggregates.py:
+    """AggregateQueryService mirrors the in-process aggregate helper:
     aggregate_events - tier-aware aggregation over controller_event_log.
     """
 
@@ -421,7 +422,7 @@ class AggregateQueryService:
 
 
 class CycleAggregateServiceStub:
-    """CycleAggregateService mirrors tsigma/reports/sdk/cycles.py - the
+    """CycleAggregateService mirrors the in-process cycle helpers - the
     pre-computed cycle_boundary / cycle_detector_arrival / cycle_summary_15min
     tables reports read instead of reprocessing raw events.
     """
@@ -450,27 +451,27 @@ class CycleAggregateServiceStub:
 
 
 class CycleAggregateServiceServicer:
-    """CycleAggregateService mirrors tsigma/reports/sdk/cycles.py - the
+    """CycleAggregateService mirrors the in-process cycle helpers - the
     pre-computed cycle_boundary / cycle_detector_arrival / cycle_summary_15min
     tables reports read instead of reprocessing raw events.
     """
 
     def FetchCycleBoundaries(self, request, context):
-        """FetchCycleBoundaries mirrors cycles.py:fetch_cycle_boundaries.
+        """FetchCycleBoundaries mirrors fetch_cycle_boundaries.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def FetchCycleArrivals(self, request, context):
-        """FetchCycleArrivals mirrors cycles.py:fetch_cycle_arrivals.
+        """FetchCycleArrivals mirrors fetch_cycle_arrivals.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def FetchCycleSummary(self, request, context):
-        """FetchCycleSummary mirrors cycles.py:fetch_cycle_summary.
+        """FetchCycleSummary mirrors fetch_cycle_summary.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -503,7 +504,7 @@ def add_CycleAggregateServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class CycleAggregateService:
-    """CycleAggregateService mirrors tsigma/reports/sdk/cycles.py - the
+    """CycleAggregateService mirrors the in-process cycle helpers - the
     pre-computed cycle_boundary / cycle_detector_arrival / cycle_summary_15min
     tables reports read instead of reprocessing raw events.
     """
@@ -591,9 +592,9 @@ class CycleAggregateService:
 
 
 class ConfigServiceStub:
-    """ConfigService mirrors tsigma/reports/sdk/config.py (the channel-mapping
+    """ConfigService mirrors the in-process config helpers (the channel-mapping
     wrappers over config_resolver.get_config_at) and
-    tsigma/reports/sdk/plans.py (SignalPlan lookups). Historical config is
+    the plan helpers (SignalPlan lookups). Historical config is
     small/structured, so these return protobuf, not Arrow.
     """
 
@@ -631,42 +632,42 @@ class ConfigServiceStub:
 
 
 class ConfigServiceServicer:
-    """ConfigService mirrors tsigma/reports/sdk/config.py (the channel-mapping
+    """ConfigService mirrors the in-process config helpers (the channel-mapping
     wrappers over config_resolver.get_config_at) and
-    tsigma/reports/sdk/plans.py (SignalPlan lookups). Historical config is
+    the plan helpers (SignalPlan lookups). Historical config is
     small/structured, so these return protobuf, not Arrow.
     """
 
     def LoadChannelToPhase(self, request, context):
-        """LoadChannelToPhase mirrors config.py:load_channel_to_phase.
+        """LoadChannelToPhase mirrors load_channel_to_phase.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def LoadChannelsForPhase(self, request, context):
-        """LoadChannelsForPhase mirrors config.py:load_channels_for_phase.
+        """LoadChannelsForPhase mirrors load_channels_for_phase.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def LoadChannelToPedPhase(self, request, context):
-        """LoadChannelToPedPhase mirrors config.py:load_channel_to_ped_phase.
+        """LoadChannelToPedPhase mirrors load_channel_to_ped_phase.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def LoadChannelToApproach(self, request, context):
-        """LoadChannelToApproach mirrors config.py:load_channel_to_approach.
+        """LoadChannelToApproach mirrors load_channel_to_approach.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def FetchPlans(self, request, context):
-        """FetchPlans mirrors plans.py:fetch_plans - all SignalPlans overlapping
+        """FetchPlans mirrors fetch_plans - all SignalPlans overlapping
         [start, end], ordered by effective_from. The plan_at / programmed_split
         helpers are PURE functions over this list (no I/O), so they stay
         plugin-side and are not broker RPCs.
@@ -712,9 +713,9 @@ def add_ConfigServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class ConfigService:
-    """ConfigService mirrors tsigma/reports/sdk/config.py (the channel-mapping
+    """ConfigService mirrors the in-process config helpers (the channel-mapping
     wrappers over config_resolver.get_config_at) and
-    tsigma/reports/sdk/plans.py (SignalPlan lookups). Historical config is
+    the plan helpers (SignalPlan lookups). Historical config is
     small/structured, so these return protobuf, not Arrow.
     """
 
