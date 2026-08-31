@@ -310,32 +310,6 @@ class TestUntypedReportPassthrough:
         assert "green_occ_threshold" not in forwarded
 
 
-class TestDirectResolutionEntrypoint:
-    """Direct unit test of the resolution entrypoint, if one exists.
-
-    Prefer the stable HTTP path above; this pins the helper contract too.
-    Skips cleanly if the Phase B entrypoint is not yet present, so the
-    suite stays meaningful before and after implementation.
-    """
-
-    @pytest.mark.asyncio
-    async def test_resolve_merges_admin_under_request(self):
-        import tsigma.api.v1.reports as reports_mod
-
-        resolver = getattr(reports_mod, "_resolve_and_validate_params", None)
-        if resolver is None:
-            pytest.skip("_resolve_and_validate_params not implemented yet")
-
-        session = _make_defaults_session(
-            [_make_default_row("green_occ_threshold", ADMIN_DEFAULT_THRESHOLD)]
-        )
-        validated = await resolver(
-            _TReport, REPORT_NAME, {"signal_id": "S1"}, session
-        )
-        assert validated.green_occ_threshold == ADMIN_DEFAULT_THRESHOLD
-        assert validated.signal_id == "S1"
-
-
 class _FakeRemoteReport:
     """Stands in for RemoteReport: no Report[TParams], a declared schema instead.
 

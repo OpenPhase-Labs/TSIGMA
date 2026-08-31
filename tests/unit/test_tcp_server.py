@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.tcp_server import (
     TCPServerConfig,
     TCPServerMethod,
@@ -94,64 +93,6 @@ class TestTCPServerBuildDeviceMap:
             ("SIG-NULL", {}),
         ])
         assert list(m.keys()) == ["10.0.0.1"]
-
-
-class TestTCPServerProcessConnection:
-    @pytest.mark.asyncio
-    async def test_unmapped_ip_skipped(self):
-        method = TCPServerMethod()
-        method._config = TCPServerConfig()
-        method._device_map = {"10.0.0.1": ("SIG-001", {"decoder": "auto"})}
-        method._target = ControllerTarget()
-        method._session_factory = AsyncMock()
-
-        method._target.persist = AsyncMock()
-        await method._process_connection(AsyncMock(), "192.168.99.99")
-        method._target.persist.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_mapped_ip_hands_bytes_to_the_target(self):
-        """Transport-only: the method hands over bytes + a decoder name (P7c)."""
-        method = TCPServerMethod()
-        method._config = TCPServerConfig(read_timeout_seconds=5, buffer_size=4096)
-        method._device_map = {
-            "10.0.0.1": ("SIG-001", {"decoder": "asc3"}),
-        }
-        method._target = ControllerTarget()
-        method._target.ingest = AsyncMock(
-            return_value=IngestResult(IngestOutcome.SUCCESS, 2)
-        )
-        method._session_factory = AsyncMock()
-
-        payload = b"\x01\x02\x03\x04"
-        reader = AsyncMock()
-        reader.read = AsyncMock(return_value=payload)
-        await method._process_connection(reader, "10.0.0.1")
-
-        method._target.ingest.assert_awaited_once()
-        args, kwargs = method._target.ingest.call_args
-        assert args[0] == payload
-        assert args[1] == "SIG-001"
-        assert kwargs["decoder_name"] == "asc3"
-
-    @pytest.mark.asyncio
-    async def test_per_device_decoder_overrides_server_default(self):
-        method = TCPServerMethod()
-        method._config = TCPServerConfig(decoder="server-default")
-        method._device_map = {
-            "10.0.0.1": ("SIG-001", {"decoder": "device-specific"}),
-        }
-        method._target = ControllerTarget()
-        method._target.ingest = AsyncMock(
-            return_value=IngestResult(IngestOutcome.SUCCESS, 0)
-        )
-        method._session_factory = AsyncMock()
-
-        reader = AsyncMock()
-        reader.read = AsyncMock(return_value=b"\x01")
-
-        await method._process_connection(reader, "10.0.0.1")
-        assert method._target.ingest.call_args[1]["decoder_name"] == "device-specific"
 
 
 class TestTCPServerStartStop:

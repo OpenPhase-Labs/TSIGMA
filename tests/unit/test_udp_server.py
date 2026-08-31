@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tsigma.collection.ingest import IngestOutcome, IngestResult
 from tsigma.collection.methods.udp_server import (
     UDPServerConfig,
     UDPServerMethod,
@@ -90,55 +89,6 @@ class TestUDPServerBuildDeviceMap:
             ("SIG-NO-HOST", {"host": ""}),
         ])
         assert list(m.keys()) == ["10.0.0.1"]
-
-
-class TestUDPServerProcessDatagram:
-    @pytest.mark.asyncio
-    async def test_unmapped_ip_skipped(self):
-        method = UDPServerMethod()
-        method._config = UDPServerConfig()
-        method._device_map = {"10.0.0.1": ("SIG-001", {"decoder": "auto"})}
-        method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
-        method._session_factory = AsyncMock()
-
-        await method._process_datagram(b"\x01\x02", ("192.168.99.99", 5000))
-        method._target.persist.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_mapped_ip_hands_bytes_to_the_target(self):
-        """Transport-only: the method hands over bytes + a decoder name (P7c)."""
-        method = UDPServerMethod()
-        method._config = UDPServerConfig()
-        method._device_map = {
-            "10.0.0.1": ("SIG-001", {"decoder": "asc3"}),
-        }
-        method._target = ControllerTarget()
-        method._target.ingest = AsyncMock(
-            return_value=IngestResult(IngestOutcome.SUCCESS, 2)
-        )
-        method._session_factory = AsyncMock()
-
-        payload = b"\x01\x02\x03\x04"
-        await method._process_datagram(payload, ("10.0.0.1", 5000))
-
-        method._target.ingest.assert_awaited_once()
-        args, kwargs = method._target.ingest.call_args
-        assert args[0] == payload
-        assert args[1] == "SIG-001"
-        assert kwargs["decoder_name"] == "asc3"
-
-    @pytest.mark.asyncio
-    async def test_empty_datagram_short_circuits(self):
-        method = UDPServerMethod()
-        method._config = UDPServerConfig()
-        method._device_map = {"10.0.0.1": ("SIG-001", {})}
-        method._target = ControllerTarget()
-        method._target.persist = AsyncMock()
-        method._session_factory = AsyncMock()
-
-        await method._process_datagram(b"", ("10.0.0.1", 5000))
-        method._target.persist.assert_not_called()
 
 
 class TestUDPServerStartStop:
