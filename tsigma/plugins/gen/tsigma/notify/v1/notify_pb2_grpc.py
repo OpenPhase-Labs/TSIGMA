@@ -65,7 +65,7 @@ class NotifyServicer:
         (its registry key and the minimum severity it accepts). The host uses
         MinSeverity to fan out: notifications below this level are never sent to
         this provider. Mirrors the Python provider's `name` / `min_severity` class
-        attributes (tsigma/notifications/registry.py BaseNotificationProvider).
+        attributes.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

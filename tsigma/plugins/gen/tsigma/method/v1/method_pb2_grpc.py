@@ -79,8 +79,7 @@ class MethodServicer:
         """Describe returns the method's identity and static execution mode, so the
         host can register it into the right orchestrator (CollectorService for
         POLLING; ListenerService for LISTENER / EVENT_DRIVEN) at load time.
-        Mirrors the ClassVar `name` / `execution_mode` on BaseIngestionMethod
-        (tsigma/collection/registry.py).
+        Mirrors the ClassVar `name` / `execution_mode` on BaseIngestionMethod.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -95,8 +94,7 @@ class MethodServicer:
         whether the bound socket / broker subscription / watcher is live. Mirrors
         IngestionMethod.HealthCheck / BaseIngestionMethod.health_check
         (nil/healthy=true). The host aggregates results behind
-        GET /api/v1/collection/health (HIGH_CONCURRENCY_POLLING.md, LISTENERS.md
-        "Health Checks").
+        GET /api/v1/collection/health.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -111,8 +109,7 @@ class MethodServicer:
         complete the cycle. RAW fetched bytes are handed to the host via the
         EventSink.DecodeAndPersist broker path (host decodes); the method does not
         decode. Mirrors PollingIngestionMethod.poll_once(device_id, config,
-        session_factory, target) (tsigma/collection/registry.py,
-        tsigma/collection/methods/{ftp_pull,http_pull}.py).
+        session_factory, target).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -129,9 +126,7 @@ class MethodServicer:
         separate poll. Inbound device payloads are NOT returned on this stream; the
         plugin pushes each received payload into the host via the EventSink broker
         path as it arrives. Mirrors ListenerIngestionMethod.start(...) /
-        EventDrivenIngestionMethod.start(...) + stop() (tsigma/collection/registry.py,
-        tsigma/collection/methods/{tcp_server,udp_server,grpc_server,mqtt_listener,
-        nats_listener,directory_watch}.py).
+        EventDrivenIngestionMethod.start(...) + stop().
 
         [DESIGN-CHECK: Listen lifecycle framing. The Python design is a plain
         long-lived start()/stop() pair with no return channel - the listener pushes
@@ -319,9 +314,9 @@ class CheckpointServiceStub:
     (host applies the future-cap on last_event_timestamp and
     resets consecutive_errors / consecutive_silent_cycles)
     RecordError     <- sdk.record_error / IngestionTarget.record_error
-    (tsigma/collection/sdk/__init__.py; tsigma/collection/targets/base.py). The
+    . The
     checkpoint is keyed (device_type, device_id, method) - the PollingCheckpoint
-    composite PK (tsigma/models/checkpoint.py).
+    composite PK.
     """
 
     def __init__(self, channel):
@@ -366,9 +361,9 @@ class CheckpointServiceServicer:
     (host applies the future-cap on last_event_timestamp and
     resets consecutive_errors / consecutive_silent_cycles)
     RecordError     <- sdk.record_error / IngestionTarget.record_error
-    (tsigma/collection/sdk/__init__.py; tsigma/collection/targets/base.py). The
+    . The
     checkpoint is keyed (device_type, device_id, method) - the PollingCheckpoint
-    composite PK (tsigma/models/checkpoint.py).
+    composite PK.
     """
 
     def LoadCheckpoint(self, request, context):
@@ -383,8 +378,8 @@ class CheckpointServiceServicer:
     def SaveCheckpoint(self, request, context):
         """SaveCheckpoint creates/updates the checkpoint after a successful ingest
         cycle. The host future-caps last_event_timestamp at server_now + tolerance
-        and resets consecutive_errors + consecutive_silent_cycles (INGESTION.md
-        "Checkpoint Cap"; save_checkpoint). Counter fields are ADDITIVE (added to the
+        and resets consecutive_errors + consecutive_silent_cycles (the checkpoint
+        cap; save_checkpoint). Counter fields are ADDITIVE (added to the
         running total), matching the Python kwargs / Go CheckpointFields semantics.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -445,9 +440,9 @@ class CheckpointService:
     (host applies the future-cap on last_event_timestamp and
     resets consecutive_errors / consecutive_silent_cycles)
     RecordError     <- sdk.record_error / IngestionTarget.record_error
-    (tsigma/collection/sdk/__init__.py; tsigma/collection/targets/base.py). The
+    . The
     checkpoint is keyed (device_type, device_id, method) - the PollingCheckpoint
-    composite PK (tsigma/models/checkpoint.py).
+    composite PK.
     """
 
     @staticmethod
@@ -536,10 +531,9 @@ class EventSinkStub:
     """EventSink is the host-served persistence path. The method NEVER writes the DB
     and NEVER decodes; it forwards RAW received/fetched bytes and the host decodes
     + validates + persists through its CORE integrity spine. Mirrors
-    sdk.decode_and_persist_message reached through IngestionTarget
-    (tsigma/collection/sdk/__init__.py; tsigma/collection/targets/base.py).
+    sdk.decode_and_persist_message reached through IngestionTarget.
 
-    DECIDED (James, 2026-06-27): the untrusted method contract exposes ONLY the
+    The untrusted method contract exposes ONLY the
     raw-bytes path (DecodeAndPersist). The method never supplies decoded events;
     the host always decodes. The earlier decoded-events-in RPC (over already-
     decoded Arrow) is host-internal (CORE) and is NOT a method broker RPC - it is
@@ -566,10 +560,9 @@ class EventSinkServicer:
     """EventSink is the host-served persistence path. The method NEVER writes the DB
     and NEVER decodes; it forwards RAW received/fetched bytes and the host decodes
     + validates + persists through its CORE integrity spine. Mirrors
-    sdk.decode_and_persist_message reached through IngestionTarget
-    (tsigma/collection/sdk/__init__.py; tsigma/collection/targets/base.py).
+    sdk.decode_and_persist_message reached through IngestionTarget.
 
-    DECIDED (James, 2026-06-27): the untrusted method contract exposes ONLY the
+    The untrusted method contract exposes ONLY the
     raw-bytes path (DecodeAndPersist). The method never supplies decoded events;
     the host always decodes. The earlier decoded-events-in RPC (over already-
     decoded Arrow) is host-internal (CORE) and is NOT a method broker RPC - it is
@@ -615,10 +608,9 @@ class EventSink:
     """EventSink is the host-served persistence path. The method NEVER writes the DB
     and NEVER decodes; it forwards RAW received/fetched bytes and the host decodes
     + validates + persists through its CORE integrity spine. Mirrors
-    sdk.decode_and_persist_message reached through IngestionTarget
-    (tsigma/collection/sdk/__init__.py; tsigma/collection/targets/base.py).
+    sdk.decode_and_persist_message reached through IngestionTarget.
 
-    DECIDED (James, 2026-06-27): the untrusted method contract exposes ONLY the
+    The untrusted method contract exposes ONLY the
     raw-bytes path (DecodeAndPersist). The method never supplies decoded events;
     the host always decodes. The earlier decoded-events-in RPC (over already-
     decoded Arrow) is host-internal (CORE) and is NOT a method broker RPC - it is
@@ -662,8 +654,7 @@ class DecoderResolverStub:
     resolved decoder's registry name, not a decoder handle - the method does not
     decode; it forwards the name on the EventSink path so the HOST decodes. Mirrors
     sdk.resolve_decoder_by_name / sdk.resolve_decoder_by_extension and
-    IngestionTarget.resolve_decoder (tsigma/collection/sdk/__init__.py;
-    tsigma/collection/targets/base.py). The Python poller passes
+    IngestionTarget.resolve_decoder. In-process the poller passes
     `decoder_name=config.decoder` or `filename=name` and gets a decoder instance;
     here the method only needs the resolved NAME to hand to EventSink.
 
@@ -702,8 +693,7 @@ class DecoderResolverServicer:
     resolved decoder's registry name, not a decoder handle - the method does not
     decode; it forwards the name on the EventSink path so the HOST decodes. Mirrors
     sdk.resolve_decoder_by_name / sdk.resolve_decoder_by_extension and
-    IngestionTarget.resolve_decoder (tsigma/collection/sdk/__init__.py;
-    tsigma/collection/targets/base.py). The Python poller passes
+    IngestionTarget.resolve_decoder. In-process the poller passes
     `decoder_name=config.decoder` or `filename=name` and gets a decoder instance;
     here the method only needs the resolved NAME to hand to EventSink.
 
@@ -762,8 +752,7 @@ class DecoderResolver:
     resolved decoder's registry name, not a decoder handle - the method does not
     decode; it forwards the name on the EventSink path so the HOST decodes. Mirrors
     sdk.resolve_decoder_by_name / sdk.resolve_decoder_by_extension and
-    IngestionTarget.resolve_decoder (tsigma/collection/sdk/__init__.py;
-    tsigma/collection/targets/base.py). The Python poller passes
+    IngestionTarget.resolve_decoder. In-process the poller passes
     `decoder_name=config.decoder` or `filename=name` and gets a decoder instance;
     here the method only needs the resolved NAME to hand to EventSink.
 
@@ -839,12 +828,12 @@ class ConfigServiceStub:
     identity/config references the host's integrity checks compare against -
     without the method touching the DB or the signal/sensor tables. Mirrors:
     ListDevicesForMethod  <- DeviceSource.list_devices_for_method
-    (tsigma/collection/sources/signal.py) - returns
+    - returns
     (device_id, decrypted-config) pairs filtered by
     collection.method (+ instance for MQTT/NATS).
     The poller's in-process identity lookups - signal.controller_mac and the
     Approach configured-phase set that ftp_pull._validate_and_record_provenance
-    reads (tsigma/collection/methods/ftp_pull.py) - are CORE host concerns in the
+    reads - are CORE host concerns in the
     untrusted model: the host runs check_controller_replacement /
     check_configured_phases / check_temporal_integrity and writes provenance /
     ingest_review itself during its decode+validate+persist (PROTOCOL.md section 6
@@ -881,12 +870,12 @@ class ConfigServiceServicer:
     identity/config references the host's integrity checks compare against -
     without the method touching the DB or the signal/sensor tables. Mirrors:
     ListDevicesForMethod  <- DeviceSource.list_devices_for_method
-    (tsigma/collection/sources/signal.py) - returns
+    - returns
     (device_id, decrypted-config) pairs filtered by
     collection.method (+ instance for MQTT/NATS).
     The poller's in-process identity lookups - signal.controller_mac and the
     Approach configured-phase set that ftp_pull._validate_and_record_provenance
-    reads (tsigma/collection/methods/ftp_pull.py) - are CORE host concerns in the
+    reads - are CORE host concerns in the
     untrusted model: the host runs check_controller_replacement /
     check_configured_phases / check_temporal_integrity and writes provenance /
     ingest_review itself during its decode+validate+persist (PROTOCOL.md section 6
@@ -908,7 +897,7 @@ class ConfigServiceServicer:
         """ListDevicesForMethod returns the (device_id, per-device-config) pairs
         eligible for this method (host decrypts credentials before returning).
         SERVER-STREAMING one DevicePair per message so a 9,000-signal fleet listing
-        never approaches the gRPC cap (HIGH_CONCURRENCY_POLLING.md scale). Mirrors
+        never approaches the gRPC cap. Mirrors
         list_devices_for_method -> list[(device_id, config)].
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -937,12 +926,12 @@ class ConfigService:
     identity/config references the host's integrity checks compare against -
     without the method touching the DB or the signal/sensor tables. Mirrors:
     ListDevicesForMethod  <- DeviceSource.list_devices_for_method
-    (tsigma/collection/sources/signal.py) - returns
+    - returns
     (device_id, decrypted-config) pairs filtered by
     collection.method (+ instance for MQTT/NATS).
     The poller's in-process identity lookups - signal.controller_mac and the
     Approach configured-phase set that ftp_pull._validate_and_record_provenance
-    reads (tsigma/collection/methods/ftp_pull.py) - are CORE host concerns in the
+    reads - are CORE host concerns in the
     untrusted model: the host runs check_controller_replacement /
     check_configured_phases / check_temporal_integrity and writes provenance /
     ingest_review itself during its decode+validate+persist (PROTOCOL.md section 6

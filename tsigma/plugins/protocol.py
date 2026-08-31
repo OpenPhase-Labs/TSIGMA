@@ -21,7 +21,7 @@ import grpc_stdio_pb2_grpc
 from grpc import aio
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
-from . import constants  # side effect: puts gen/ on sys.path
+from . import constants
 
 logger = logging.getLogger(__name__)
 
