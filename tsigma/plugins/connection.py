@@ -14,11 +14,9 @@ import logging
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
-import grpc
 from grpc import aio
-from grpc_health.v1 import health_pb2, health_pb2_grpc
 
-from .protocol import HandshakeConfig, PluginProcess
+from .protocol import HandshakeConfig, PluginProcess, check_health
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +48,6 @@ class PluginConnection(Protocol):
     def host_owns_lifecycle(self) -> bool:
         """True when this host may start, restart, and stop the plugin."""
         ...
-
-
-async def _check_health(channel: aio.Channel | None, name: str, timeout: float) -> bool:
-    """Shared health poll. Unreachable counts as unhealthy; never raises."""
-    if channel is None:
-        return False
-    stub = health_pb2_grpc.HealthStub(channel)
-    try:
-        response = await stub.Check(health_pb2.HealthCheckRequest(service=""), timeout=timeout)
-    except grpc.RpcError as exc:
-        logger.debug("%s: health check failed: %s", name, exc)
-        return False
-    return response.status == health_pb2.HealthCheckResponse.SERVING
 
 
 class LaunchedConnection:
@@ -123,7 +108,7 @@ class DiscoveredConnection:
         return self.handshake
 
     async def is_healthy(self, timeout: float = 2.0) -> bool:
-        return await _check_health(self.channel, self.name, timeout)
+        return await check_health(self.channel, self.name, timeout)
 
     async def shutdown(self) -> None:
         # Closes our channel; the plugin keeps running under its orchestrator.
