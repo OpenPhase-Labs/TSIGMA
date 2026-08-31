@@ -56,6 +56,7 @@ dependencies = [
     "nats-py==2.15.0",
     "aiomqtt==2.5.1",
     "grpcio==1.83.0",
+    "grpcio-health-checking==1.83.0",   # host health-polls plugins at runtime (ADR-0019)
 
     # Protobuf decoding (OpenPhase protocol)
     "protobuf==7.35.1",
@@ -82,7 +83,6 @@ dev = [
     "httpx==0.28.1",
     "ruff==0.16.2",
     "grpcio-tools==1.83.0",
-    "grpcio-health-checking==1.83.0",
     "moto[s3,server]==5.2.2",
     "pysnmp==7.1.28",
     "aiobotocore==3.9.0",
@@ -131,11 +131,17 @@ explicit-preview-rules = true
 extend-select = ["E302", "E303", "E305", "RUF100"]
 
 [tool.ruff.lint.isort]
-# The generated stub tree exposes tsigma.<subsystem>.v1, which isort would
-# otherwise treat as third-party and sort ABOVE tsigma.plugins - whose import
-# performs the sys.path insert those stubs need. Declaring the namespace
-# first-party keeps tsigma.plugins ahead of tsigma.report/decoder/method/notify.
+# The generated stub tree exposes tsigma.<subsystem>.v1. Alphabetically decoder,
+# method and notify sort BEFORE plugins, so first-party alone puts them above the
+# tsigma.plugins import that performs the sys.path insert they need. The
+# plugin-host section below is what enforces the order.
 known-first-party = ["tsigma"]
+section-order = ["future", "standard-library", "third-party", "plugin-host", "first-party", "local-folder"]
+
+[tool.ruff.lint.isort.sections]
+# tsigma.plugins must be imported before any tsigma.<subsystem>.v1 stub: its
+# __init__ performs the sys.path insert those stubs need.
+plugin-host = ["tsigma.plugins"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
