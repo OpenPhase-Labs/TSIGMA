@@ -65,6 +65,30 @@ POST   /api/v1/metric-types/                         # admin; 422 if key not in 
 PUT    /api/v1/metric-types/{key}                    # admin
 DELETE /api/v1/metric-types/{key}                    # admin
 
+# Metric comments (chart annotations) - reads require_access("comments"); writes author-or-admin
+GET    /api/v1/metric-comments/                      # oldest first
+GET    /api/v1/metric-comments/{comment_id}
+POST   /api/v1/metric-comments/                      # body: {signal_id, text, anchor_start?, anchor_end?}; author taken from the session
+PUT    /api/v1/metric-comments/{comment_id}
+DELETE /api/v1/metric-comments/{comment_id}
+GET    /api/v1/metric-comments/{comment_id}/metric-types
+POST   /api/v1/metric-comments/{comment_id}/metric-types   # body: {metric_type_key}
+DELETE /api/v1/metric-comments/{comment_id}/metric-types/{metric_type_key}
+
+# Chart overlay: side fetch, never embedded in a report response
+GET    /api/v1/signals/{signal_id}/metric-comments   # ?metric_type=&metric_type=&start=&end= - require_access("comments")
+
+# Overlay matching rules:
+#   404           unknown signal_id
+#   metric_type   repeatable, ANY-of: a comment matches when any of its metric types is
+#                 requested. Omit it for no metric-type filtering at all - a comment with
+#                 no metric types attached is still returned
+#   start / end   the chart window, inclusive; omit both to return every comment on the signal
+#   unanchored    a comment with no anchor_start ALWAYS matches, whatever the window
+#   point anchor  matches when anchor_start falls inside the window
+#   range anchor  matches when [anchor_start, anchor_end] overlaps the window
+#   order         oldest first (created_at)
+
 # Routes
 /api/v1/routes/
 /api/v1/routes/{route_id}/signals
