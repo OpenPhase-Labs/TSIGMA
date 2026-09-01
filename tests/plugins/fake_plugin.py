@@ -47,6 +47,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--bulk-bytes", type=int, default=0)
     parser.add_argument("--serve-port", type=int, default=0)
     parser.add_argument("--controller", choices=("none", "graceful"), default="none")
+    parser.add_argument("--exit-after-handshake", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -108,6 +109,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.serve_port:
         _serve(args.serve_port, args.controller)
+        return 0
+
+    if args.exit_after_handshake:
+        # A cron run that did its work and ended. The host still opened a channel
+        # to it during launch, so this is the only shape that exposes what a
+        # finished scheduled run leaves behind.
         return 0
 
     # Nothing else to do, but stay alive: a host that fails the handshake has to
