@@ -16,7 +16,7 @@ from typing import Protocol, runtime_checkable
 
 from grpc import aio
 
-from .protocol import HandshakeConfig, PluginProcess, check_health
+from .protocol import HandshakeConfig, PluginProcess, check_health, validate_handshake
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,16 @@ class PluginConnection(Protocol):
         """True when this host may start, restart, and stop the plugin."""
         ...
 
+    @property
+    def idle(self) -> bool:
+        """True when the plugin is resting between runs rather than failing.
+
+        Idle and unhealthy both read as "not serving", so health alone cannot
+        separate a cron plugin that finished its work from one that died. Every
+        mode answers this so a supervisor never has to special-case mode 3.
+        """
+        ...
+
 
 class LaunchedConnection:
     """Mode 1 - core-managed child. Wraps the Phase 2 subprocess shim."""
@@ -72,6 +82,15 @@ class LaunchedConnection:
     def host_owns_lifecycle(self) -> bool:
         return True
 
+    @property
+    def idle(self) -> bool:
+        """Never. A long-lived child is serving or it is not; there are no runs.
+
+        Reporting idle here would tell the supervisor to leave a crashed child
+        alone instead of restarting it.
+        """
+        return False
+
     async def connect(self) -> HandshakeConfig:
         return await self._proc.launch()
 
@@ -86,26 +105,37 @@ class DiscoveredConnection:
     """Mode 2 - externally orchestrated.
 
     There is no subprocess and no stdout, so the handshake is not read - it comes
-    from the manifest/registry entry and is verified by dialling. The host does
-    not launch, restart, or stop this plugin; that belongs to systemd or k8s.
-    ``shutdown`` closes this host's channel only.
+    from the manifest/registry entry (ADR-0020). A manifest on disk can drift or
+    lie, so those fields go through the same gate a stdout line does, at
+    construction: a refused claim never becomes a connection something can dial.
+    The host does not launch, restart, or stop this plugin; that belongs to
+    systemd or k8s. ``shutdown`` closes this host's channel only.
     """
 
     process_model = ProcessModel.EXTERNAL
 
     def __init__(self, name: str, handshake: HandshakeConfig):
         self.name = name
-        self.handshake = handshake
+        self._handshake = validate_handshake(handshake)
         self.channel: aio.Channel | None = None
+
+    @property
+    def handshake(self) -> HandshakeConfig | None:
+        return self._handshake
 
     @property
     def host_owns_lifecycle(self) -> bool:
         return False
 
+    @property
+    def idle(self) -> bool:
+        """Never. An external plugin has no runs, so it is up or it is down."""
+        return False
+
     async def connect(self) -> HandshakeConfig:
         if self.channel is None:
-            self.channel = aio.insecure_channel(self.handshake.target)
-        return self.handshake
+            self.channel = aio.insecure_channel(self._handshake.target)
+        return self._handshake
 
     async def is_healthy(self, timeout: float = 2.0) -> bool:
         return await check_health(self.channel, self.name, timeout)
@@ -144,8 +174,20 @@ class ScheduledConnection:
         return True
 
     @property
+    def idle(self) -> bool:
+        """True between runs: none has started yet, or the last one has ended.
+
+        A run that exited - cleanly or not - leaves its ``PluginProcess`` object
+        behind, so the object's existence is not the state. The subprocess's
+        return code is.
+        """
+        if self._proc is None or self._proc.process is None:
+            return True
+        return self._proc.process.returncode is not None
+
+    @property
     def running(self) -> bool:
-        return self._proc is not None
+        return not self.idle
 
     async def connect(self) -> HandshakeConfig:
         """Start one run."""
