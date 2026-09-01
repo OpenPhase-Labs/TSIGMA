@@ -381,6 +381,45 @@ def test_update_metric_comment_422_when_body_empty():
     assert UPDATE_REQUIRED_MSG in res.text
 
 
+def test_update_metric_comment_422_when_clearing_start_leaves_a_dangling_end():
+    """A partial update must not be able to reach the fourth anchor state.
+
+    Decision 1 allows three states only. Clearing ``anchor_start`` on a row that
+    already carries an ``anchor_end`` produces end-without-start, and neither
+    anchor field need appear in the payload for it to happen - so the schema
+    validator cannot see it and the merged row must be re-checked.
+    """
+    mock_session = make_mock_session()
+    mock_session.flush = AsyncMock()
+    comment = _comment_obj(
+        anchor_start=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
+        anchor_end=datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc),
+    )
+    mock_session.execute = _by_table([('metric_comment', _comment_result(comment))])
+    res = _client(mock_session, _author()).put(
+        f'{PREFIX}/{comment.id}', json={'anchor_start': None},
+    )
+    assert res.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert 'anchor_end requires anchor_start' in res.text
+
+
+def test_update_metric_comment_422_when_inverting_the_range():
+    """An update may not leave ``anchor_end`` earlier than ``anchor_start``."""
+    mock_session = make_mock_session()
+    mock_session.flush = AsyncMock()
+    comment = _comment_obj(
+        anchor_start=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
+        anchor_end=datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc),
+    )
+    mock_session.execute = _by_table([('metric_comment', _comment_result(comment))])
+    res = _client(mock_session, _author()).put(
+        f'{PREFIX}/{comment.id}',
+        json={'anchor_start': '2026-06-01T14:00:00+00:00'},
+    )
+    assert res.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert 'anchor_end must not precede anchor_start' in res.text
+
+
 # ---------------------------------------------------------------------------
 # Delete - author or admin
 # ---------------------------------------------------------------------------
