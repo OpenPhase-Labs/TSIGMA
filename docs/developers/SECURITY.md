@@ -243,6 +243,15 @@ Dependencies are defined in `tsigma/auth/dependencies.py`:
 - `require_admin` — wraps `get_current_user`, raises 403 if role is not `admin`.
 - `require_access(category)` — factory that returns a dependency enforcing the access policy for the given category. If the category policy is `"public"`, the request passes without authentication.
 
+Categories are seeded by `DEFAULT_ACCESS_POLICY` in `tsigma/settings_service.py` as `access_policy.<category>` settings rows, each `"public"` or `"authenticated"` and operator-configurable at runtime. Most seed `"public"`. Two do not:
+
+| Category | Seeded | Editable | Covers |
+|----------|--------|----------|--------|
+| `management` | `"authenticated"` | no | Management / configuration endpoints |
+| `comments` | `"authenticated"` | yes | Metric-comment reads, including the `GET /api/v1/signals/{signal_id}/metric-comments` chart overlay |
+
+Gate metric-comment reads on `comments`, never on `reports` (seeds `"public"`) or `signal_detail` (seeds `"public"`).
+
 **General access rules:**
 
 | Operation | Required Role |

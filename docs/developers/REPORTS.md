@@ -420,6 +420,22 @@ async def export_report(
     )
 ```
 
+### Chart annotations are a side fetch
+
+Metric comments (user-authored chart annotations) are never embedded in a report
+response. The client runs the report, then fetches the annotations for the same
+window separately:
+
+```
+GET /api/v1/signals/{signal_id}/metric-comments?metric_type=...&start=...&end=...
+```
+
+Reports stay untouched by the annotation surface: reports are becoming gRPC
+plugins, and embedding would need a broker RPC or an envelope outside the
+published contract. Annotations in exports are out of scope for v1; adding them
+later is a host-side merge at the export endpoint, which stays within the
+contract. See `API.md` for the route and its matching rules.
+
 ---
 
 ## Adding Custom Reports

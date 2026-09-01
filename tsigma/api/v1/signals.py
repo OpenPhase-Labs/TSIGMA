@@ -2,8 +2,9 @@
 Signals API endpoints.
 
 CRUD operations for traffic signals/intersections plus raw IHR event-log
-reads.  GET endpoints respect the 'signal_detail' access policy.
-POST/PUT/DELETE require admin role.
+reads.  GET endpoints respect the 'signal_detail' access policy, except
+the metric-comment overlay, which respects 'comments' like the rest of
+the metric-comment surface.  POST/PUT/DELETE require admin role.
 """
 
 from datetime import datetime
@@ -11,14 +12,21 @@ from typing import List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.dependencies import require_access, require_admin
 from ...auth.sessions import SessionData
 from ...crypto import encrypt_sensitive_fields, has_encryption_key, redact_metadata
 from ...dependencies import get_audited_session, get_session
-from ...models import Area, Signal, SignalArea, SignalAudit
+from ...models import (
+    Area,
+    MetricComment,
+    MetricCommentMetricType,
+    Signal,
+    SignalArea,
+    SignalAudit,
+)
 from ...reports.sdk.limits import (
     require_max_aggregation_days,
     require_max_lookback,
@@ -26,6 +34,7 @@ from ...reports.sdk.limits import (
 from ...reports.sdk.pagination import paginated_event_list
 from ...reports.sdk.queries import fetch_events
 from .helpers import get_or_404
+from .metric_comments import MetricCommentResponse
 from .schemas import AreaResponse, SignalCreate, SignalUpdate
 
 router = APIRouter()
@@ -336,6 +345,111 @@ async def list_signal_areas(
         .join(SignalArea, SignalArea.area_id == Area.area_id)
         .where(SignalArea.signal_id == signal_id)
     )
+    return result.scalars().all()
+
+
+@router.get(
+    "/{signal_id}/metric-comments",
+    response_model=list[MetricCommentResponse],
+)
+async def list_signal_metric_comments(
+    signal_id: str,
+    metric_type: Optional[List[str]] = Query(
+        None,
+        description=(
+            "Repeatable metric-type key (e.g. ``?metric_type=a&metric_type=b``). "
+            "A comment matches when ANY of its metric types is requested.  Omit "
+            "for no metric-type filtering at all, in which case a comment with "
+            "no metric-type associations is still returned."
+        ),
+    ),
+    start: Optional[datetime] = Query(
+        None,
+        description=(
+            "Inclusive lower bound of the chart window (ISO-8601 datetime).  "
+            "Omit ``start`` and ``end`` to return every comment on the signal."
+        ),
+    ),
+    end: Optional[datetime] = Query(
+        None,
+        description=(
+            "Inclusive upper bound of the chart window (ISO-8601 datetime)."
+        ),
+    ),
+    session: AsyncSession = Depends(get_session),
+    _access=Depends(require_access("comments")),
+):
+    """
+    Metric comments to overlay on a signal's charts.
+
+    This is a **side fetch**: the client asks for the chart window it is
+    drawing and gets back the annotations for it.  Comments are never
+    embedded in a report response -- reports are becoming gRPC plugins, and
+    embedding would need either a broker RPC or an envelope outside the
+    published contract.
+
+    Reads are gated on the ``comments`` access policy, the same category the
+    rest of the metric-comment surface uses -- not ``signal_detail``.
+
+    A comment has exactly one of three anchor states, and matching follows
+    from the state:
+
+    - **unanchored** (both bounds NULL) -- always matches.  The note annotates
+      the chart, not a moment on it.
+    - **point** (``anchor_start`` only) -- matches when ``anchor_start`` falls
+      within the window.
+    - **range** (both bounds) -- matches when ``[anchor_start, anchor_end]``
+      overlaps the window.
+
+    A row with ``anchor_end`` and no ``anchor_start`` is rejected by a
+    CheckConstraint and by the create/update validators, so no branch here
+    accounts for it.  Point and range share one predicate by reading a NULL
+    ``anchor_end`` as "ends where it starts" -- note this is the opposite of
+    ``SignalPlan.effective_to``, where NULL means open-ended.
+
+    Args:
+        signal_id: Signal identifier.
+        metric_type: Repeatable metric-type key; ANY-of semantics.
+        start: Inclusive lower bound of the chart window.
+        end: Inclusive upper bound of the chart window.
+        session: Database session (injected).
+
+    Returns:
+        The signal's matching comments, oldest first.
+
+    Raises:
+        HTTPException: 404 if the signal does not exist.
+    """
+    await get_or_404(session, Signal, Signal.signal_id, signal_id, "Signal")
+
+    stmt = select(MetricComment).where(MetricComment.signal_id == signal_id)
+
+    # ANY-of over a many-to-many.  A subquery rather than a JOIN: joining
+    # duplicates the comment row once per matching metric type.
+    if metric_type:
+        annotated = (
+            select(MetricCommentMetricType.comment_id)
+            .where(MetricCommentMetricType.metric_type_key.in_(metric_type))
+            .scalar_subquery()
+        )
+        stmt = stmt.where(MetricComment.id.in_(annotated))
+
+    if start is not None or end is not None:
+        anchored = []
+        if end is not None:
+            anchored.append(MetricComment.anchor_start <= end)
+        if start is not None:
+            anchored.append(
+                func.coalesce(
+                    MetricComment.anchor_end, MetricComment.anchor_start
+                )
+                >= start
+            )
+        stmt = stmt.where(
+            or_(MetricComment.anchor_start.is_(None), and_(*anchored))
+        )
+
+    result = await session.execute(stmt.order_by(MetricComment.created_at))
     return result.scalars().all()
 
 
