@@ -30,9 +30,7 @@ The contract-derived assertions skip when the sibling contract repo is absent.
 
 import asyncio
 import contextlib
-import itertools
 import os
-import signal
 import socket
 import sys
 import time
@@ -44,14 +42,10 @@ from grpc import aio
 from tsigma.plugins import constants, protocol
 
 from tests.plugins import _contract
-
-FAKE_PLUGIN = Path(__file__).resolve().parent / "fake_plugin.py"
+from tests.plugins._spawn import KILL_SIGNAL
 
 CORE = constants.CORE_PROTOCOL_VERSION
 APP = constants.PLUGIN_PROTOCOL_VERSION
-
-# SIGKILL everywhere it exists; the fallback keeps the teardown importable.
-KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 # Eight times a 64 KiB pipe buffer, on each of stdout and stderr: far past the
 # point where an undrained plugin blocks in write() and stops serving.
@@ -101,38 +95,6 @@ def _free_tcp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
-
-
-def _plugin_command(
-    pidfile: Path,
-    *,
-    line: str | None = None,
-    raw_bytes: int = 0,
-    bulk_bytes: int = 0,
-    serve_port: int = 0,
-    controller: str = "none",
-) -> list[str]:
-    command = [
-        sys.executable,
-        str(FAKE_PLUGIN),
-        "--pidfile",
-        str(pidfile),
-        "--cookie-key",
-        constants.MAGIC_COOKIE_KEY,
-        "--cookie-value",
-        constants.MAGIC_COOKIE_VALUE,
-    ]
-    if line is not None:
-        command += ["--emit-line", line]
-    if raw_bytes:
-        command += ["--emit-raw-bytes", str(raw_bytes)]
-    if bulk_bytes:
-        command += ["--bulk-bytes", str(bulk_bytes)]
-    if serve_port:
-        command += ["--serve-port", str(serve_port)]
-    if controller != "none":
-        command += ["--controller", controller]
-    return command
 
 
 def _liveness_is_observable() -> bool:
@@ -223,27 +185,6 @@ async def _force_stop(plugin: protocol.PluginProcess) -> None:
                 await asyncio.wait_for(stream.read(), timeout=10.0)
     with contextlib.suppress(Exception):
         await asyncio.wait_for(process.wait(), timeout=10.0)
-
-
-@pytest.fixture
-def spawn(tmp_path):
-    """Build PluginProcess handles; guarantee no fake plugin outlives the test."""
-    counter = itertools.count()
-
-    def _make(**kwargs) -> tuple[protocol.PluginProcess, Path]:
-        pidfile = tmp_path / f"plugin-{next(counter)}.pid"
-        command = _plugin_command(pidfile, **kwargs)
-        return protocol.PluginProcess(f"fake-{pidfile.stem}", command), pidfile
-
-    yield _make
-
-    for pidfile in sorted(tmp_path.glob("plugin-*.pid")):
-        try:
-            pid = int(pidfile.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):  # pragma: no cover - nothing was spawned
-            continue
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.kill(pid, KILL_SIGNAL)
 
 
 class TestContractPermittedValues:
