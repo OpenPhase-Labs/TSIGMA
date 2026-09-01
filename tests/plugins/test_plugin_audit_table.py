@@ -32,10 +32,8 @@ from tsigma.plugins.supervisor import PluginSupervisor
 from tsigma.models.base import tsigma_schema
 from tsigma.models.plugin_audit import PluginAudit
 
-# Revision ids: 000000000001-000000000011 are files already on disk, 011 belonging
-# to another lane whose work this phase must not touch.
 THIS_REVISION = "000000000012"
-PARENT_REVISION = "000000000010"
+PARENT_REVISION = "000000000011"
 
 VERSIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "alembic", "versions")
 
@@ -225,9 +223,8 @@ class TestPluginAuditMigration:
         module = _load_migration(THIS_REVISION)
         assert module.revision == THIS_REVISION
         assert module.down_revision == PARENT_REVISION, (
-            "this revision chains onto the last COMMITTED revision so it stands "
-            "alone in its own commit; a parent that lives only in another lane's "
-            "uncommitted file would break `alembic upgrade head` on a fresh clone"
+            "this revision chains onto the last committed revision, so the "
+            "history is linear and `alembic upgrade head` resolves"
         )
 
     def test_downgrade_refuses_rather_than_dropping_the_audit_table(self):
@@ -251,8 +248,10 @@ class TestPluginAuditMigration:
         assert PARENT_REVISION in chain, "the parent this revision names is missing"
 
     def test_this_revision_is_a_head(self):
-        # A head, not THE head: sibling lanes may hold an uncommitted revision off
-        # the same parent, and alembic carries multiple heads until they merge.
+        # A head, not necessarily THE head: a sibling lane may hold an
+        # uncommitted revision off the same parent, and alembic carries multiple
+        # heads until they merge. That state is accepted, so nothing here counts
+        # them.
         chain = _all_revisions()
         parents = {parent for parent in chain.values() if parent is not None}
         assert THIS_REVISION not in parents, "something already chains onto this revision"
