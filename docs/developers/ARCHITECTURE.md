@@ -548,6 +548,60 @@ class SomeRegistry:
         return list(cls._items.keys())
 ```
 
+### gRPC Coexistence
+
+Four of the seven -- `IngestionMethodRegistry`, `DecoderRegistry`, `ReportRegistry`,
+`NotificationRegistry` -- additionally mix in `GrpcCoexistenceMixin`
+(`tsigma/plugins/coexistence.py`), so a name may be served either by the in-process decorator or by
+an out-of-process gRPC plugin (ADR-0018). Dispatch is per name: `asc3` can stay an in-process
+decoder while a vendor decoder runs out-of-process in the same host. Validators, auth providers and
+storage backends keep the plain pattern above.
+
+```python
+class SomeRegistry(GrpcCoexistenceMixin):
+    _items: dict[str, type[BaseClass]] = {}
+
+    @classmethod
+    def register(cls, name: str):
+        def wrapper(item_class):
+            cls._guard_in_process(name)      # RegistryConflictError if served over gRPC
+            cls._items[name] = item_class
+            return item_class
+        return wrapper
+
+    @classmethod
+    def get(cls, name: str) -> type[BaseClass]:
+        cls._guard_remote_lookup(name)       # RemoteRegistrationError if served over gRPC
+        if name not in cls._items:
+            raise ValueError(f"Unknown: {name}")
+        return cls._items[name]
+
+    @classmethod
+    def list_available(cls) -> list[str]:
+        return list(cls.list_names())        # both paths
+
+    @classmethod
+    def _in_process_names(cls) -> set[str]:  # the mixin's one hook
+        return set(cls._items)
+```
+
+| Rule | Surface |
+|------|---------|
+| A name resolves one way only. The conflict guard is bidirectional -- `register_grpc` refuses a name the in-process store holds, and the in-process decorator refuses a name registered over gRPC | `RegistryConflictError` |
+| A class-typed lookup of a gRPC-served name names the GRPC origin instead of reporting the name unregistered | `get()` raises `RemoteRegistrationError` (a `ValueError` subclass, so existing `except ValueError` callers keep working) |
+| Complete view of both paths, name -> `Origin.IN_PROCESS` / `Origin.GRPC` | `list_names()`; `list_available()` (methods, notifications) is that view |
+| In-process entries only, because gRPC names have no class to return | `list_all()` (decoders, reports), `get_for_extension()`, the execution-mode filters |
+| Where a name resolves, and the connection serving it | `origin()`, `is_remote()`, `get_connection()`, `list_grpc()` |
+| Removal drops the name from every one of those accessors | `unregister_grpc()` |
+
+Store inheritance: a subclass of a registry inherits that registry's gRPC store exactly as it
+inherits the in-process dict, so both halves of the registry's state answer the same way about a
+name. A direct subclass of `GrpcCoexistenceMixin` is a new registry and starts empty.
+
+The mixin is transition scaffolding, to be deleted once in-process registration is demoted to a
+dev/test harness. It is confined to `tsigma/plugins/coexistence.py` plus one base class per
+registry; nothing above the registries knows it is there.
+
 ### Auto-Discovery
 
 Plugins are discovered at import time. Each subsystem's `__init__.py` imports all modules in its directory, triggering `@register` decorators:

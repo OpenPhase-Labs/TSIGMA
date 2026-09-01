@@ -213,7 +213,11 @@ class DecoderRegistry(GrpcCoexistenceMixin):
 
         Returns:
             The decoder class (unchanged, for decorator chaining).
+
+        Raises:
+            RegistryConflictError: If the name is already registered over gRPC.
         """
+        cls._guard_in_process(decoder_cls.name)
         cls._decoders[decoder_cls.name] = decoder_cls
         return decoder_cls
 
@@ -229,8 +233,10 @@ class DecoderRegistry(GrpcCoexistenceMixin):
             Decoder class.
 
         Raises:
+            RemoteRegistrationError: If the name is served over gRPC.
             ValueError: If decoder not found.
         """
+        cls._guard_remote_lookup(name)
         if name not in cls._decoders:
             raise ValueError(f"Unknown decoder: {name}")
         return cls._decoders[name]
@@ -256,7 +262,10 @@ class DecoderRegistry(GrpcCoexistenceMixin):
     @classmethod
     def list_all(cls) -> dict[str, type[BaseDecoder]]:
         """
-        List all registered decoders.
+        List all registered in-process decoders.
+
+        gRPC-served names have no class to return; use `list_names()` for the
+        complete view of both paths.
 
         Returns:
             Dictionary of decoder name -> decoder class.

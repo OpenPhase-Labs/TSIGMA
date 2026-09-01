@@ -290,13 +290,14 @@ occ = calculate_occupancy(det_events, t, 5.0) # 5-second occupancy window
 **Self-registering plugin system** -- same pattern as ingestion methods and background jobs:
 
 ```python
-class ReportRegistry:
+class ReportRegistry(GrpcCoexistenceMixin):
     _reports: dict[str, type[Report]] = {}
 
     @classmethod
     def register(cls, name: str):
         """Decorator to register a report plugin."""
         def wrapper(report_class):
+            cls._guard_in_process(name)
             cls._reports[name] = report_class
             return report_class
         return wrapper
@@ -306,7 +307,25 @@ class ReportRegistry:
 
     @classmethod
     def list_all(cls) -> dict[str, type[Report]]: ...
+
+    @classmethod
+    def _in_process_names(cls) -> set[str]: ...
 ```
+
+### gRPC-Served Report Names
+
+`ReportRegistry` mixes in `GrpcCoexistenceMixin`, so a report name may be served by an
+out-of-process gRPC plugin instead of an in-process `Report` subclass. See
+[ARCHITECTURE.md](ARCHITECTURE.md) section 7 for the shared rules; what they mean here:
+
+- `@ReportRegistry.register("name")` raises `RegistryConflictError` if that name is already
+  registered over gRPC, and `register_grpc()` raises the same error for a name an in-process report
+  holds.
+- `get(name)` raises `RemoteRegistrationError` for a gRPC-served name, naming the GRPC origin
+  instead of reporting the report unknown. It is a `ValueError` subclass.
+- `list_all()` carries in-process reports only -- the `/api/v1/reports/` listing reads
+  `cls.metadata` and the params schema off the class, and a gRPC name has neither.
+  `list_names()` is the complete view of both paths.
 
 ### Auto-Discovery
 

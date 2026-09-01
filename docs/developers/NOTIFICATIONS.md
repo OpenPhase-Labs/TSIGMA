@@ -59,7 +59,7 @@ Severity comparison is ordinal: `INFO < WARNING < CRITICAL`. A provider with `mi
 ### NotificationRegistry
 
 ```python
-class NotificationRegistry:
+class NotificationRegistry(GrpcCoexistenceMixin):
     @classmethod
     def register(cls, name: str):
         """Class decorator. Registers a provider under the given name."""
@@ -67,12 +67,12 @@ class NotificationRegistry:
 
     @classmethod
     def get(cls, name: str) -> type[BaseNotificationProvider]:
-        """Retrieve a registered provider class by name."""
+        """Retrieve a registered in-process provider class by name."""
         ...
 
     @classmethod
     def list_available(cls) -> list[str]:
-        """Return names of all registered providers."""
+        """Return names of all registered providers, in-process and gRPC alike."""
         ...
 ```
 
@@ -83,6 +83,24 @@ class NotificationRegistry:
 class MyServiceProvider(BaseNotificationProvider):
     ...
 ```
+
+### gRPC-Served Provider Names
+
+`NotificationRegistry` mixes in `GrpcCoexistenceMixin`, so a provider name may be served by an
+out-of-process gRPC plugin instead of an in-process class. See [ARCHITECTURE.md](ARCHITECTURE.md)
+section 7 for the shared rules; what they mean here:
+
+- `@NotificationRegistry.register("name")` raises `RegistryConflictError` if that name is already
+  registered over gRPC, and `register_grpc()` raises the same error for a name an in-process
+  provider holds.
+- `get(name)` raises `RemoteRegistrationError` for a gRPC-served name, naming the GRPC origin
+  instead of reporting the provider unknown. It is a `ValueError` subclass, so
+  `initialize_providers()` keeps its existing `except ValueError` path: the name is logged and
+  skipped, never fatal. Constructing a remote provider from its connection is later plugin-host
+  work, not something this path does yet.
+- `list_available()` reports both paths (it is `list_names()`), so a name in the
+  `notification_providers` setting that resolves over gRPC is listed rather than looking
+  unregistered. The "Available: ..." text in `get`'s not-found error is that same list.
 
 ### Provider Lifecycle
 
