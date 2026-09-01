@@ -99,10 +99,16 @@ class NotificationRegistry(GrpcCoexistenceMixin):
 
         Returns:
             Decorator function.
+
+        Raises:
+            RegistryConflictError: If the name is already registered over gRPC
+                (raised where the returned decorator is applied).
         """
+
         def wrapper(
             provider_class: type[BaseNotificationProvider],
         ) -> type[BaseNotificationProvider]:
+            cls._guard_in_process(name)
             cls._providers[name] = provider_class
             return provider_class
         return wrapper
@@ -119,10 +125,12 @@ class NotificationRegistry(GrpcCoexistenceMixin):
             Provider class.
 
         Raises:
+            RemoteRegistrationError: If the name is served over gRPC.
             ValueError: If provider not found.
         """
+        cls._guard_remote_lookup(name)
         if name not in cls._providers:
-            available = ", ".join(cls._providers.keys()) or "(none)"
+            available = ", ".join(cls.list_available()) or "(none)"
             raise ValueError(
                 f"Unknown notification provider: {name!r}. Available: {available}"
             )
@@ -131,12 +139,12 @@ class NotificationRegistry(GrpcCoexistenceMixin):
     @classmethod
     def list_available(cls) -> list[str]:
         """
-        List all registered provider names.
+        List all registered provider names, in-process and gRPC alike.
 
         Returns:
             List of provider name strings.
         """
-        return list(cls._providers.keys())
+        return list(cls.list_names())
 
     @classmethod
     def _in_process_names(cls) -> set[str]:

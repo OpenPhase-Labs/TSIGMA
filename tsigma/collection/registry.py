@@ -189,8 +189,14 @@ class IngestionMethodRegistry(GrpcCoexistenceMixin):
 
         Returns:
             Decorator function.
+
+        Raises:
+            RegistryConflictError: If the name is already registered over gRPC
+                (raised where the returned decorator is applied).
         """
+
         def wrapper(method_class: type[BaseIngestionMethod]) -> type[BaseIngestionMethod]:
+            cls._guard_in_process(name)
             cls._methods[name] = method_class
             return method_class
         return wrapper
@@ -207,8 +213,10 @@ class IngestionMethodRegistry(GrpcCoexistenceMixin):
             Ingestion method class.
 
         Raises:
+            RemoteRegistrationError: If the name is served over gRPC.
             ValueError: If method not found.
         """
+        cls._guard_remote_lookup(name)
         if name not in cls._methods:
             raise ValueError(f"Unknown ingestion method: {name}")
         return cls._methods[name]
@@ -216,12 +224,12 @@ class IngestionMethodRegistry(GrpcCoexistenceMixin):
     @classmethod
     def list_available(cls) -> list[str]:
         """
-        List all registered ingestion method names.
+        List all registered ingestion method names, in-process and gRPC alike.
 
         Returns:
             List of method names.
         """
-        return list(cls._methods.keys())
+        return list(cls.list_names())
 
     @classmethod
     def get_polling_methods(cls) -> dict[str, type[PollingIngestionMethod]]:

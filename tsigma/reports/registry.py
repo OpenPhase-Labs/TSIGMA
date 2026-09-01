@@ -174,9 +174,14 @@ class ReportRegistry(GrpcCoexistenceMixin):
             @ReportRegistry.register("approach-delay")
             class ApproachDelayReport(Report[ApproachDelayParams]):
                 ...
+
+        Raises:
+            RegistryConflictError: If the name is already registered over gRPC
+                (raised where the returned decorator is applied).
         """
 
         def wrapper(report_class: type[Report]) -> type[Report]:
+            cls._guard_in_process(name)
             cls._reports[name] = report_class
             return report_class
 
@@ -184,14 +189,24 @@ class ReportRegistry(GrpcCoexistenceMixin):
 
     @classmethod
     def get(cls, name: str) -> type[Report]:
-        """Get a registered report by name."""
+        """Get a registered report by name.
+
+        Raises:
+            RemoteRegistrationError: If the name is served over gRPC.
+            ValueError: If report not found.
+        """
+        cls._guard_remote_lookup(name)
         if name not in cls._reports:
             raise ValueError(f"Unknown report: {name}")
         return cls._reports[name]
 
     @classmethod
     def list_all(cls) -> dict[str, type[Report]]:
-        """List all registered reports."""
+        """List all registered in-process reports.
+
+        gRPC-served names have no class to return; use `list_names()` for the
+        complete view of both paths.
+        """
         return cls._reports.copy()
 
     @classmethod

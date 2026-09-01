@@ -592,7 +592,7 @@ The reactive per-file/per-event clock checks remain the backstop.
 ```python
 # tsigma/collection/decoders/base.py
 
-class DecoderRegistry:
+class DecoderRegistry(GrpcCoexistenceMixin):
     """Central registry for all decoder plugins."""
 
     _decoders: dict[str, type[BaseDecoder]] = {}
@@ -600,12 +600,14 @@ class DecoderRegistry:
     @classmethod
     def register(cls, decoder_cls: type[BaseDecoder]) -> type[BaseDecoder]:
         """Register a decoder plugin (used as bare class decorator)."""
+        cls._guard_in_process(decoder_cls.name)
         cls._decoders[decoder_cls.name] = decoder_cls
         return decoder_cls
 
     @classmethod
     def get(cls, name: str) -> type[BaseDecoder]:
         """Get a registered decoder by name."""
+        cls._guard_remote_lookup(name)
         if name not in cls._decoders:
             raise ValueError(f"Unknown decoder: {name}")
         return cls._decoders[name]
@@ -622,28 +624,52 @@ class DecoderRegistry:
 
     @classmethod
     def list_all(cls) -> dict[str, type[BaseDecoder]]:
-        """List all registered decoders."""
+        """List all registered in-process decoders."""
         return cls._decoders.copy()
+
+    @classmethod
+    def _in_process_names(cls) -> set[str]:
+        """Names served by the in-process decorator path."""
+        return set(cls._decoders)
 ```
 
 Note: `DecoderRegistry.register` is a bare class decorator (not a function call). This differs from `ReportRegistry.register("name")` and `NotificationRegistry.register("name")`, which take a name argument. The decoder's `name` attribute is read from the class itself.
+
+### gRPC-Served Decoder Names
+
+`DecoderRegistry` mixes in `GrpcCoexistenceMixin`, so a decoder name may be served by an
+out-of-process gRPC plugin instead of an in-process class. See
+[ARCHITECTURE.md](ARCHITECTURE.md) section 7 for the shared rules; what they mean here:
+
+- `@DecoderRegistry.register` raises `RegistryConflictError` if the class's `name` is already
+  registered over gRPC, and `register_grpc()` raises the same error for a name an in-process
+  decoder holds.
+- `get(name)` raises `RemoteRegistrationError` for a gRPC-served name, naming the GRPC origin. It is
+  a `ValueError` subclass, so probe loops that already skip on `ValueError` (`decoders/auto.py`)
+  skip remote names unchanged.
+- `list_all()` and `get_for_extension()` carry in-process decoders only -- a gRPC name has no class
+  and no `extensions` attribute to filter on. `list_names()` is the complete view of both paths.
 
 ### Using the Registry
 
 ```python
 from tsigma.collection.decoders import DecoderRegistry
 
-# Get decoder class by name
+# Get decoder class by name (RemoteRegistrationError if the name is served over gRPC)
 decoder_cls = DecoderRegistry.get("asc3")
 decoder = decoder_cls()
 
-# Find all decoders that support .dat files
+# Find all in-process decoders that support .dat files
 decoders = DecoderRegistry.get_for_extension(".dat")
 # Returns: [ASC3Decoder, PeekDecoder]
 
-# List all registered decoders
+# List all registered in-process decoders
 for name, decoder_cls in DecoderRegistry.list_all().items():
     print(f"{name}: {decoder_cls.description}")
+
+# Every registered name, in-process and gRPC alike
+for name, origin in DecoderRegistry.list_names().items():
+    print(f"{name}: {origin.value}")
 ```
 
 ### Auto-Discovery
@@ -749,6 +775,9 @@ d4: Fourth Dimension Traffic D4 controller CSV event log (['.d4', '.csv', '.gz']
 openphase: OpenPhase v1 Protobuf (events and batches) (['.pb', '.proto', '.bin'])
 auto: Auto-detect event log format (['.*'])
 ```
+
+`list_all()` answers for the in-process path. Use `DecoderRegistry.list_names()` when the answer has
+to include decoders served over gRPC.
 
 ---
 

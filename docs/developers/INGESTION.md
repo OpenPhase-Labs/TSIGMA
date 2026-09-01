@@ -125,13 +125,14 @@ Same self-registering pattern as ingestion methods:
 ```python
 # tsigma/collection/decoders/base.py
 
-class DecoderRegistry:
+class DecoderRegistry(GrpcCoexistenceMixin):
     """Central registry for all decoder plugins."""
     _decoders: dict[str, type[BaseDecoder]] = {}
 
     @classmethod
     def register(cls, decoder_cls: type[BaseDecoder]) -> type[BaseDecoder]:
         """Register a decoder plugin."""
+        cls._guard_in_process(decoder_cls.name)
         cls._decoders[decoder_cls.name] = decoder_cls
         return decoder_cls
 
@@ -497,6 +498,23 @@ A listener type with zero matching devices skips `start()` entirely — no orpha
 
 For the complete config-layer breakdown and per-method config matrix (TCP, UDP, gRPC, MQTT, NATS, directory_watch), see [LISTENERS.md](LISTENERS.md).
 
+### gRPC-Served Method Names
+
+`IngestionMethodRegistry` mixes in `GrpcCoexistenceMixin`, so a method name may be served by an
+out-of-process gRPC plugin instead of an in-process `BaseIngestionMethod` subclass. See
+[ARCHITECTURE.md](ARCHITECTURE.md) section 7 for the shared rules; what they mean here:
+
+- `@IngestionMethodRegistry.register("name")` raises `RegistryConflictError` if that name is already
+  registered over gRPC, and `register_grpc()` raises the same error for a name an in-process method
+  holds.
+- `get(name)` raises `RemoteRegistrationError` for a gRPC-served name, naming the GRPC origin
+  instead of reporting the method unknown. It is a `ValueError` subclass.
+- `list_available()` reports both paths (it is `list_names()`).
+- `get_polling_methods()`, `get_listener_methods()` and `get_event_driven_methods()` filter on the
+  class's `execution_mode`, so they carry in-process methods only. `ListenerService.start()` walks
+  those, which means a gRPC-served method is not booted by it; driving a remote method is later
+  plugin-host work.
+
 ## On-Demand Poll API (WCF Compatibility)
 
 ATSPM 4.x exposes a WCF `UploadControllerData` SOAP endpoint that lets external tools trigger an immediate FTP pull for a specific signal. DOTs have existing SOAP client integrations built around this call — we cannot break them.
@@ -684,13 +702,17 @@ class BaseDecoder(ABC):
     def can_decode(cls, data: bytes) -> bool: ...
 
 # Auto-detection (tsigma/collection/decoders/auto.py)
-# Probes registered decoders in priority order: asc3 → peek → maxtime → siemens → csv
-_PRIORITY = ["asc3", "peek", "maxtime", "siemens", "csv"]
+# Probes registered decoders in priority order: asc3 -> peek -> maxtime -> siemens -> d4 -> csv
+_PRIORITY = ["asc3", "peek", "maxtime", "siemens", "d4", "csv"]
 
 class AutoDecoder(BaseDecoder):
     def decode_bytes(self, data: bytes) -> list[DecodedEvent]:
         for name in _PRIORITY:
-            decoder_cls = DecoderRegistry.get(name)
+            try:
+                decoder_cls = DecoderRegistry.get(name)
+            except ValueError:
+                # Not deployed, or served over gRPC (RemoteRegistrationError).
+                continue
             if decoder_cls.can_decode(data):
                 return decoder_cls().decode_bytes(data)
         raise ValueError("No decoder found for the provided data")
