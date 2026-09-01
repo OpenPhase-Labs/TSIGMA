@@ -45,6 +45,7 @@ from .detector import Detector
 from .event import ControllerEventLog
 from .file_provenance import FileIngestProvenance
 from .ingest_review import IngestReview
+from .metric_comment import MetricComment, MetricCommentMetricType
 from .plugin_audit import PluginAudit
 from .reference import (
     Area,
@@ -96,6 +97,9 @@ __all__ = [
     "FileIngestProvenance",
     "IngestReview",
     "SignalPlan",
+    # Comments
+    "MetricComment",
+    "MetricCommentMetricType",
     # Plugins
     "PluginAudit",
     # Roadside sensors (radar / LiDAR / video)
