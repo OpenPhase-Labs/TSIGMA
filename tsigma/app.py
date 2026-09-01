@@ -26,6 +26,7 @@ from .api.v1.corridors import router as corridors_router
 from .api.v1.detectors import router as detectors_router
 from .api.v1.jurisdictions import router as jurisdictions_router
 from .api.v1.measure_defaults import router as measure_defaults_router
+from .api.v1.metric_comments import router as metric_comments_router
 from .api.v1.metric_types import router as metric_types_router
 from .api.v1.reference import router as reference_router
 from .api.v1.regions import router as regions_router
@@ -422,6 +423,11 @@ def create_app() -> FastAPI:
         app.include_router(collection_router, prefix="/api/v1", tags=["collection"])
         app.include_router(reference_router, prefix="/api/v1", tags=["reference"])
         app.include_router(metric_types_router, prefix="/api/v1/metric-types", tags=["metric-types"])
+        app.include_router(
+            metric_comments_router,
+            prefix="/api/v1/metric-comments",
+            tags=["metric-comments"],
+        )
         app.include_router(regions_router, prefix="/api/v1/regions", tags=["regions"])
         app.include_router(corridors_router, prefix="/api/v1/corridors", tags=["corridors"])
         app.include_router(areas_router, prefix="/api/v1/areas", tags=["areas"])

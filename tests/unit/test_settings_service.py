@@ -56,9 +56,9 @@ class TestConstants:
     """Tests for module-level constants."""
 
     def test_access_categories_contains_expected(self):
-        """Test all six access categories are defined."""
+        """Test all seven access categories are defined."""
         assert set(ACCESS_CATEGORIES) == {
-            "analytics", "reports", "signal_detail", "health", "management", "ui",
+            "analytics", "reports", "signal_detail", "health", "management", "ui", "comments",
         }
 
     def test_locked_categories(self):

@@ -90,6 +90,7 @@ ACCESS_CATEGORIES = (
     "health",
     "management",
     "ui",
+    "comments",
 )
 
 # Categories that are always authenticated and cannot be changed by admin.
@@ -145,6 +146,13 @@ DEFAULT_ACCESS_POLICY: list[dict[str, Any]] = [
         "value": "public",
         "category": "access_policy",
         "description": "Access level for web UI pages (public or authenticated)",
+        "editable": True,
+    },
+    {
+        "key": "access_policy.comments",
+        "value": "authenticated",
+        "category": "access_policy",
+        "description": "Access level for metric comment endpoints (public or authenticated)",
         "editable": True,
     },
 ]
@@ -224,7 +232,7 @@ async def seed_system_settings(session: AsyncSession) -> None:
 
     Two independent passes, in order:
 
-    1. ``DEFAULT_ACCESS_POLICY`` loop — seeds the 6 ``access_policy.*`` rows
+    1. ``DEFAULT_ACCESS_POLICY`` loop — seeds the 7 ``access_policy.*`` rows
        that drive the access-control middleware.
     2. Registry-iteration pass — seeds one row per ``_REGISTRY`` entry that
        lacks a DB row, at the entry's registered default. Existing rows are
