@@ -23,10 +23,9 @@ _sym_db = _symbol_database.Default()
 
 
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
-from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1dtsigma/report/v1/report.proto\x12\x10tsigma.report.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x11\n\x0f\x44\x65scribeRequest\"\x81\x02\n\x10\x44\x65scribeResponse\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x32\n\x08\x63\x61tegory\x18\x03 \x01(\x0e\x32 .tsigma.report.v1.ReportCategory\x12\x37\n\x0e\x65stimated_time\x18\x04 \x01(\x0e\x32\x1f.tsigma.report.v1.EstimatedTime\x12\x17\n\x0fsupports_export\x18\x05 \x01(\x08\x12\x16\n\x0e\x65xport_formats\x18\x06 \x03(\t\x12,\n\x06params\x18\x07 \x03(\x0b\x32\x1c.tsigma.report.v1.ParamField\"\xaa\x01\n\nParamField\x12\x0c\n\x04name\x18\x01 \x01(\t\x12)\n\x04type\x18\x02 \x01(\x0e\x32\x1b.tsigma.report.v1.ParamType\x12\x10\n\x08required\x18\x03 \x01(\x08\x12\x13\n\x0b\x64\x65scription\x18\x04 \x01(\t\x12\'\n\x07\x64\x65\x66\x61ult\x18\x05 \x01(\x0b\x32\x16.google.protobuf.Value\x12\x13\n\x0b\x65num_values\x18\x06 \x03(\t\"Q\n\x0fGenerateRequest\x12\'\n\x06params\x18\x01 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x15\n\rexport_format\x18\x02 \x01(\t\"h\n\x0eGenerateResult\x12\x31\n\nview_model\x18\x01 \x01(\x0b\x32\x1b.tsigma.report.v1.ViewModelH\x00\x12\x18\n\x0erows_arrow_ipc\x18\x02 \x01(\x0cH\x00\x42\t\n\x07payload\"J\n\tViewModel\x12\x0f\n\x07\x63olumns\x18\x01 \x03(\t\x12\r\n\x05\x65mpty\x18\x02 \x01(\x08\x12\x1d\n\x15preferred_http_status\x18\x03 \x01(\x05\"%\n\nEventBatch\x12\x17\n\x0f\x62\x61tch_arrow_ipc\x18\x01 \x01(\x0c\"\xa8\x01\n\x12\x46\x65tchEventsRequest\x12\x11\n\tsignal_id\x18\x01 \x01(\t\x12)\n\x05start\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\'\n\x03\x65nd\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x13\n\x0b\x65vent_codes\x18\x04 \x03(\x05\x12\x16\n\x0e\x65vent_param_in\x18\x05 \x03(\x05\"\xbe\x01\n\x17\x46\x65tchEventsSplitRequest\x12\x11\n\tsignal_id\x18\x01 \x01(\t\x12)\n\x05start\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\'\n\x03\x65nd\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x13\n\x0bphase_codes\x18\x04 \x03(\x05\x12\x14\n\x0c\x64\x65t_channels\x18\x05 \x03(\x05\x12\x11\n\tdet_codes\x18\x06 \x03(\x05\"T\n\x07\x41ggSpec\x12\n\n\x02op\x18\x01 \x01(\t\x12\r\n\x05\x66ield\x18\x02 \x01(\t\x12.\n\x06\x66ilter\x18\x03 \x01(\x0b\x32\x1e.tsigma.report.v1.AggPredicate\"B\n\x0c\x41ggPredicate\x12\x0e\n\x06\x63olumn\x18\x01 \x01(\t\x12\x12\n\ncomparator\x18\x02 \x01(\t\x12\x0e\n\x06values\x18\x03 \x03(\x05\"9\n\x0eSignalSelector\x12\x13\n\x0b\x61ll_signals\x18\x01 \x01(\x08\x12\x12\n\nsignal_ids\x18\x02 \x03(\t\"\xec\x02\n\x16\x41ggregateEventsRequest\x12\x31\n\x07signals\x18\x01 \x01(\x0b\x32 .tsigma.report.v1.SignalSelector\x12)\n\x05start\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\'\n\x03\x65nd\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12&\n\x03\x61gg\x18\x04 \x03(\x0b\x32\x19.tsigma.report.v1.AggSpec\x12\x10\n\x08group_by\x18\x05 \x03(\t\x12\x46\n\x07\x66ilters\x18\x06 \x03(\x0b\x32\x35.tsigma.report.v1.AggregateEventsRequest.FiltersEntry\x1aI\n\x0c\x46iltersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12(\n\x05value\x18\x02 \x01(\x0b\x32\x19.tsigma.report.v1.IntList:\x02\x38\x01\"\x19\n\x07IntList\x12\x0e\n\x06values\x18\x01 \x03(\x05\"\x8e\x01\n\x16\x43ycleBoundariesRequest\x12\x11\n\tsignal_id\x18\x01 \x01(\t\x12\r\n\x05phase\x18\x02 \x01(\x05\x12)\n\x05start\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\'\n\x03\x65nd\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"\xa7\x01\n\x14\x43ycleArrivalsRequest\x12\x11\n\tsignal_id\x18\x01 \x01(\t\x12\r\n\x05phase\x18\x02 \x01(\x05\x12)\n\x05start\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\'\n\x03\x65nd\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x19\n\x11\x64\x65tector_channels\x18\x05 \x03(\x05\"\x8b\x01\n\x13\x43ycleSummaryRequest\x12\x11\n\tsignal_id\x18\x01 \x01(\t\x12\r\n\x05phase\x18\x02 \x01(\x05\x12)\n\x05start\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\'\n\x03\x65nd\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"Q\n\x11\x43hannelMapRequest\x12\x11\n\tsignal_id\x18\x01 \x01(\t\x12)\n\x05\x61s_of\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"f\n\x17\x43hannelsForPhaseRequest\x12\x11\n\tsignal_id\x18\x01 \x01(\t\x12\r\n\x05phase\x18\x02 \x01(\x05\x12)\n\x05\x61s_of\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"v\n\tIntIntMap\x12\x39\n\x07mapping\x18\x01 \x03(\x0b\x32(.tsigma.report.v1.IntIntMap.MappingEntry\x1a.\n\x0cMappingEntry\x12\x0b\n\x03key\x18\x01 \x01(\x05\x12\r\n\x05value\x18\x02 \x01(\x05:\x02\x38\x01\"\x18\n\x06IntSet\x12\x0e\n\x06values\x18\x01 \x03(\x05\"~\n\x0c\x41pproachInfo\x12\x13\n\x0b\x61pproach_id\x18\x01 \x01(\x05\x12\x19\n\x11\x64irection_type_id\x18\x02 \x01(\x05\x12#\n\x16\x64istance_from_stop_bar\x18\x03 \x01(\x05H\x00\x88\x01\x01\x42\x19\n\x17_distance_from_stop_bar\"\xa8\x01\n\x12\x43hannelApproachMap\x12\x42\n\x07mapping\x18\x01 \x03(\x0b\x32\x31.tsigma.report.v1.ChannelApproachMap.MappingEntry\x1aN\n\x0cMappingEntry\x12\x0b\n\x03key\x18\x01 \x01(\x05\x12-\n\x05value\x18\x02 \x01(\x0b\x32\x1e.tsigma.report.v1.ApproachInfo:\x02\x38\x01\"z\n\x11\x46\x65tchPlansRequest\x12\x11\n\tsignal_id\x18\x01 \x01(\t\x12)\n\x05start\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\'\n\x03\x65nd\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"\xbc\x02\n\nSignalPlan\x12\x32\n\x0e\x65\x66\x66\x65\x63tive_from\x18\x01 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x30\n\x0c\x65\x66\x66\x65\x63tive_to\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x38\n\x06splits\x18\x03 \x03(\x0b\x32(.tsigma.report.v1.SignalPlan.SplitsEntry\x12\x13\n\x0bplan_number\x18\x04 \x01(\x05\x12\x19\n\x0c\x63ycle_length\x18\x05 \x01(\x05H\x00\x88\x01\x01\x12\x13\n\x06offset\x18\x06 \x01(\x05H\x01\x88\x01\x01\x1a-\n\x0bSplitsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01\x42\x0f\n\r_cycle_lengthB\t\n\x07_offset\"=\n\x0eSignalPlanList\x12+\n\x05plans\x18\x01 \x03(\x0b\x32\x1c.tsigma.report.v1.SignalPlan*\\\n\x0eReportCategory\x12\x1f\n\x1bREPORT_CATEGORY_UNSPECIFIED\x10\x00\x12\r\n\tDASHBOARD\x10\x01\x12\x0c\n\x08STANDARD\x10\x02\x12\x0c\n\x08\x44\x45TAILED\x10\x03*O\n\rEstimatedTime\x12\x1e\n\x1a\x45STIMATED_TIME_UNSPECIFIED\x10\x00\x12\x08\n\x04\x46\x41ST\x10\x01\x12\n\n\x06MEDIUM\x10\x02\x12\x08\n\x04SLOW\x10\x03*_\n\tParamType\x12\x1a\n\x16PARAM_TYPE_UNSPECIFIED\x10\x00\x12\n\n\x06STRING\x10\x01\x12\x07\n\x03INT\x10\x02\x12\t\n\x05\x46LOAT\x10\x03\x12\x08\n\x04\x42OOL\x10\x04\x12\x0c\n\x08\x44\x41TETIME\x10\x05\x32\xae\x01\n\x06Report\x12Q\n\x08\x44\x65scribe\x12!.tsigma.report.v1.DescribeRequest\x1a\".tsigma.report.v1.DescribeResponse\x12Q\n\x08Generate\x12!.tsigma.report.v1.GenerateRequest\x1a .tsigma.report.v1.GenerateResult0\x01\x32\xc7\x01\n\x11\x45ventQueryService\x12S\n\x0b\x46\x65tchEvents\x12$.tsigma.report.v1.FetchEventsRequest\x1a\x1c.tsigma.report.v1.EventBatch0\x01\x12]\n\x10\x46\x65tchEventsSplit\x12).tsigma.report.v1.FetchEventsSplitRequest\x1a\x1c.tsigma.report.v1.EventBatch0\x01\x32t\n\x15\x41ggregateQueryService\x12[\n\x0f\x41ggregateEvents\x12(.tsigma.report.v1.AggregateEventsRequest\x1a\x1c.tsigma.report.v1.EventBatch0\x01\x32\xb3\x02\n\x15\x43ycleAggregateService\x12`\n\x14\x46\x65tchCycleBoundaries\x12(.tsigma.report.v1.CycleBoundariesRequest\x1a\x1c.tsigma.report.v1.EventBatch0\x01\x12\\\n\x12\x46\x65tchCycleArrivals\x12&.tsigma.report.v1.CycleArrivalsRequest\x1a\x1c.tsigma.report.v1.EventBatch0\x01\x12Z\n\x11\x46\x65tchCycleSummary\x12%.tsigma.report.v1.CycleSummaryRequest\x1a\x1c.tsigma.report.v1.EventBatch0\x01\x32\xd8\x03\n\rConfigService\x12V\n\x12LoadChannelToPhase\x12#.tsigma.report.v1.ChannelMapRequest\x1a\x1b.tsigma.report.v1.IntIntMap\x12[\n\x14LoadChannelsForPhase\x12).tsigma.report.v1.ChannelsForPhaseRequest\x1a\x18.tsigma.report.v1.IntSet\x12Y\n\x15LoadChannelToPedPhase\x12#.tsigma.report.v1.ChannelMapRequest\x1a\x1b.tsigma.report.v1.IntIntMap\x12\x62\n\x15LoadChannelToApproach\x12#.tsigma.report.v1.ChannelMapRequest\x1a$.tsigma.report.v1.ChannelApproachMap\x12S\n\nFetchPlans\x12#.tsigma.report.v1.FetchPlansRequest\x1a .tsigma.report.v1.SignalPlanListBLZJgithub.com/OpenPhase-Labs/tsigma-contract/gen/go/tsigma/report/v1;reportv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1dtsigma/report/v1/report.proto\x12\x10tsigma.report.v1\x1a\x1cgoogle/protobuf/struct.proto\"\x11\n\x0f\x44\x65scribeRequest\"\x81\x02\n\x10\x44\x65scribeResponse\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x32\n\x08\x63\x61tegory\x18\x03 \x01(\x0e\x32 .tsigma.report.v1.ReportCategory\x12\x37\n\x0e\x65stimated_time\x18\x04 \x01(\x0e\x32\x1f.tsigma.report.v1.EstimatedTime\x12\x17\n\x0fsupports_export\x18\x05 \x01(\x08\x12\x16\n\x0e\x65xport_formats\x18\x06 \x03(\t\x12,\n\x06params\x18\x07 \x03(\x0b\x32\x1c.tsigma.report.v1.ParamField\"\xaa\x01\n\nParamField\x12\x0c\n\x04name\x18\x01 \x01(\t\x12)\n\x04type\x18\x02 \x01(\x0e\x32\x1b.tsigma.report.v1.ParamType\x12\x10\n\x08required\x18\x03 \x01(\x08\x12\x13\n\x0b\x64\x65scription\x18\x04 \x01(\t\x12\'\n\x07\x64\x65\x66\x61ult\x18\x05 \x01(\x0b\x32\x16.google.protobuf.Value\x12\x13\n\x0b\x65num_values\x18\x06 \x03(\t\"Q\n\x0fGenerateRequest\x12\'\n\x06params\x18\x01 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x15\n\rexport_format\x18\x02 \x01(\t\"h\n\x0eGenerateResult\x12\x31\n\nview_model\x18\x01 \x01(\x0b\x32\x1b.tsigma.report.v1.ViewModelH\x00\x12\x18\n\x0erows_arrow_ipc\x18\x02 \x01(\x0cH\x00\x42\t\n\x07payload\"J\n\tViewModel\x12\x0f\n\x07\x63olumns\x18\x01 \x03(\t\x12\r\n\x05\x65mpty\x18\x02 \x01(\x08\x12\x1d\n\x15preferred_http_status\x18\x03 \x01(\x05*\\\n\x0eReportCategory\x12\x1f\n\x1bREPORT_CATEGORY_UNSPECIFIED\x10\x00\x12\r\n\tDASHBOARD\x10\x01\x12\x0c\n\x08STANDARD\x10\x02\x12\x0c\n\x08\x44\x45TAILED\x10\x03*O\n\rEstimatedTime\x12\x1e\n\x1a\x45STIMATED_TIME_UNSPECIFIED\x10\x00\x12\x08\n\x04\x46\x41ST\x10\x01\x12\n\n\x06MEDIUM\x10\x02\x12\x08\n\x04SLOW\x10\x03*_\n\tParamType\x12\x1a\n\x16PARAM_TYPE_UNSPECIFIED\x10\x00\x12\n\n\x06STRING\x10\x01\x12\x07\n\x03INT\x10\x02\x12\t\n\x05\x46LOAT\x10\x03\x12\x08\n\x04\x42OOL\x10\x04\x12\x0c\n\x08\x44\x41TETIME\x10\x05\x32\xae\x01\n\x06Report\x12Q\n\x08\x44\x65scribe\x12!.tsigma.report.v1.DescribeRequest\x1a\".tsigma.report.v1.DescribeResponse\x12Q\n\x08Generate\x12!.tsigma.report.v1.GenerateRequest\x1a .tsigma.report.v1.GenerateResult0\x01\x42LZJgithub.com/OpenPhase-Labs/tsigma-contract/gen/go/tsigma/report/v1;reportv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,88 +33,24 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'tsigma.report.v1.report_pb2
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'ZJgithub.com/OpenPhase-Labs/tsigma-contract/gen/go/tsigma/report/v1;reportv1'
-  _globals['_AGGREGATEEVENTSREQUEST_FILTERSENTRY']._loaded_options = None
-  _globals['_AGGREGATEEVENTSREQUEST_FILTERSENTRY']._serialized_options = b'8\001'
-  _globals['_INTINTMAP_MAPPINGENTRY']._loaded_options = None
-  _globals['_INTINTMAP_MAPPINGENTRY']._serialized_options = b'8\001'
-  _globals['_CHANNELAPPROACHMAP_MAPPINGENTRY']._loaded_options = None
-  _globals['_CHANNELAPPROACHMAP_MAPPINGENTRY']._serialized_options = b'8\001'
-  _globals['_SIGNALPLAN_SPLITSENTRY']._loaded_options = None
-  _globals['_SIGNALPLAN_SPLITSENTRY']._serialized_options = b'8\001'
-  _globals['_REPORTCATEGORY']._serialized_start=3436
-  _globals['_REPORTCATEGORY']._serialized_end=3528
-  _globals['_ESTIMATEDTIME']._serialized_start=3530
-  _globals['_ESTIMATEDTIME']._serialized_end=3609
-  _globals['_PARAMTYPE']._serialized_start=3611
-  _globals['_PARAMTYPE']._serialized_end=3706
-  _globals['_DESCRIBEREQUEST']._serialized_start=114
-  _globals['_DESCRIBEREQUEST']._serialized_end=131
-  _globals['_DESCRIBERESPONSE']._serialized_start=134
-  _globals['_DESCRIBERESPONSE']._serialized_end=391
-  _globals['_PARAMFIELD']._serialized_start=394
-  _globals['_PARAMFIELD']._serialized_end=564
-  _globals['_GENERATEREQUEST']._serialized_start=566
-  _globals['_GENERATEREQUEST']._serialized_end=647
-  _globals['_GENERATERESULT']._serialized_start=649
-  _globals['_GENERATERESULT']._serialized_end=753
-  _globals['_VIEWMODEL']._serialized_start=755
-  _globals['_VIEWMODEL']._serialized_end=829
-  _globals['_EVENTBATCH']._serialized_start=831
-  _globals['_EVENTBATCH']._serialized_end=868
-  _globals['_FETCHEVENTSREQUEST']._serialized_start=871
-  _globals['_FETCHEVENTSREQUEST']._serialized_end=1039
-  _globals['_FETCHEVENTSSPLITREQUEST']._serialized_start=1042
-  _globals['_FETCHEVENTSSPLITREQUEST']._serialized_end=1232
-  _globals['_AGGSPEC']._serialized_start=1234
-  _globals['_AGGSPEC']._serialized_end=1318
-  _globals['_AGGPREDICATE']._serialized_start=1320
-  _globals['_AGGPREDICATE']._serialized_end=1386
-  _globals['_SIGNALSELECTOR']._serialized_start=1388
-  _globals['_SIGNALSELECTOR']._serialized_end=1445
-  _globals['_AGGREGATEEVENTSREQUEST']._serialized_start=1448
-  _globals['_AGGREGATEEVENTSREQUEST']._serialized_end=1812
-  _globals['_AGGREGATEEVENTSREQUEST_FILTERSENTRY']._serialized_start=1739
-  _globals['_AGGREGATEEVENTSREQUEST_FILTERSENTRY']._serialized_end=1812
-  _globals['_INTLIST']._serialized_start=1814
-  _globals['_INTLIST']._serialized_end=1839
-  _globals['_CYCLEBOUNDARIESREQUEST']._serialized_start=1842
-  _globals['_CYCLEBOUNDARIESREQUEST']._serialized_end=1984
-  _globals['_CYCLEARRIVALSREQUEST']._serialized_start=1987
-  _globals['_CYCLEARRIVALSREQUEST']._serialized_end=2154
-  _globals['_CYCLESUMMARYREQUEST']._serialized_start=2157
-  _globals['_CYCLESUMMARYREQUEST']._serialized_end=2296
-  _globals['_CHANNELMAPREQUEST']._serialized_start=2298
-  _globals['_CHANNELMAPREQUEST']._serialized_end=2379
-  _globals['_CHANNELSFORPHASEREQUEST']._serialized_start=2381
-  _globals['_CHANNELSFORPHASEREQUEST']._serialized_end=2483
-  _globals['_INTINTMAP']._serialized_start=2485
-  _globals['_INTINTMAP']._serialized_end=2603
-  _globals['_INTINTMAP_MAPPINGENTRY']._serialized_start=2557
-  _globals['_INTINTMAP_MAPPINGENTRY']._serialized_end=2603
-  _globals['_INTSET']._serialized_start=2605
-  _globals['_INTSET']._serialized_end=2629
-  _globals['_APPROACHINFO']._serialized_start=2631
-  _globals['_APPROACHINFO']._serialized_end=2757
-  _globals['_CHANNELAPPROACHMAP']._serialized_start=2760
-  _globals['_CHANNELAPPROACHMAP']._serialized_end=2928
-  _globals['_CHANNELAPPROACHMAP_MAPPINGENTRY']._serialized_start=2850
-  _globals['_CHANNELAPPROACHMAP_MAPPINGENTRY']._serialized_end=2928
-  _globals['_FETCHPLANSREQUEST']._serialized_start=2930
-  _globals['_FETCHPLANSREQUEST']._serialized_end=3052
-  _globals['_SIGNALPLAN']._serialized_start=3055
-  _globals['_SIGNALPLAN']._serialized_end=3371
-  _globals['_SIGNALPLAN_SPLITSENTRY']._serialized_start=3298
-  _globals['_SIGNALPLAN_SPLITSENTRY']._serialized_end=3343
-  _globals['_SIGNALPLANLIST']._serialized_start=3373
-  _globals['_SIGNALPLANLIST']._serialized_end=3434
-  _globals['_REPORT']._serialized_start=3709
-  _globals['_REPORT']._serialized_end=3883
-  _globals['_EVENTQUERYSERVICE']._serialized_start=3886
-  _globals['_EVENTQUERYSERVICE']._serialized_end=4085
-  _globals['_AGGREGATEQUERYSERVICE']._serialized_start=4087
-  _globals['_AGGREGATEQUERYSERVICE']._serialized_end=4203
-  _globals['_CYCLEAGGREGATESERVICE']._serialized_start=4206
-  _globals['_CYCLEAGGREGATESERVICE']._serialized_end=4513
-  _globals['_CONFIGSERVICE']._serialized_start=4516
-  _globals['_CONFIGSERVICE']._serialized_end=4988
+  _globals['_REPORTCATEGORY']._serialized_start=798
+  _globals['_REPORTCATEGORY']._serialized_end=890
+  _globals['_ESTIMATEDTIME']._serialized_start=892
+  _globals['_ESTIMATEDTIME']._serialized_end=971
+  _globals['_PARAMTYPE']._serialized_start=973
+  _globals['_PARAMTYPE']._serialized_end=1068
+  _globals['_DESCRIBEREQUEST']._serialized_start=81
+  _globals['_DESCRIBEREQUEST']._serialized_end=98
+  _globals['_DESCRIBERESPONSE']._serialized_start=101
+  _globals['_DESCRIBERESPONSE']._serialized_end=358
+  _globals['_PARAMFIELD']._serialized_start=361
+  _globals['_PARAMFIELD']._serialized_end=531
+  _globals['_GENERATEREQUEST']._serialized_start=533
+  _globals['_GENERATEREQUEST']._serialized_end=614
+  _globals['_GENERATERESULT']._serialized_start=616
+  _globals['_GENERATERESULT']._serialized_end=720
+  _globals['_VIEWMODEL']._serialized_start=722
+  _globals['_VIEWMODEL']._serialized_end=796
+  _globals['_REPORT']._serialized_start=1071
+  _globals['_REPORT']._serialized_end=1245
 # @@protoc_insertion_point(module_scope)
