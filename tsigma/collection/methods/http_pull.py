@@ -196,6 +196,9 @@ class HTTPPullMethod(PollingIngestionMethod):
         result = await target.ingest(
             data, device_id, session_factory,
             decoder_name=http_config.decoder or _DEFAULT_DECODER,
+            last_successful_poll=(
+                checkpoint.last_successful_poll if checkpoint else None
+            ),
         )
         if result.outcome is IngestOutcome.FAILURE:
             logger.error(

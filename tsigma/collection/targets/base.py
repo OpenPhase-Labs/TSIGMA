@@ -18,6 +18,7 @@ accept an ``IngestionTarget`` parameter and call through it.  That is
 what lets one transport feed either event stream without duplication.
 """
 
+from datetime import datetime
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from ...models.checkpoint import PollingCheckpoint
@@ -74,12 +75,22 @@ class IngestionTarget(Protocol):
         decoder_name: Optional[str] = None,
         filename: Optional[str] = None,
         source_label: str = "device",
+        device_type: Optional[str] = None,
+        last_successful_poll: Optional[datetime] = None,
     ) -> Any:
         """Decode, normalize, and persist raw bytes; return an ``IngestResult``.
 
         The transport-only entry point: a method hands over bytes and never
         decodes, validates, or persists itself (ADR-0034 host-owned spine).
         Supersedes calling ``resolve_decoder`` + ``persist_with_drift_check``.
+
+        ``device_type`` defaults to the target's own, so persistence routes on a
+        stated device class rather than on the element type of the batch.
+
+        ``last_successful_poll`` is the reference the backward-poison check
+        needs: without it ``is_backward_poisoned`` fails OPEN and a slow or
+        reset controller clock passes unflagged. Every caller holding a
+        checkpoint passes ``checkpoint.last_successful_poll`` here.
         """
         ...
 

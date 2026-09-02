@@ -160,15 +160,19 @@ async def persist_events_with_drift_check(
     session_factory,
     *,
     source_label: str = "signal",
+    device_type: Optional[str] = None,
 ) -> int:
     """Write decoded events to the database with clock-drift detection.
 
-    Dispatches on the element type of ``events``:
+    ``device_type`` is the caller's stated device class:
 
-    * ``DecodedEvent`` (controllers)  -> drift check + ``controller_event_log``
-    * ``SensorDetection`` (roadside)  -> no drift check in v1 (sensors
-      emit at detection time, no per-controller checkpoint to poison);
-      straight to ``roadside_event``
+    * ``"controller"`` -> drift check + ``controller_event_log``
+    * ``"sensor"``     -> no drift check in v1 (sensors emit at detection
+      time, no per-controller checkpoint to poison); straight to
+      ``roadside_event``
+
+    A caller that states nothing falls back to the element type of
+    ``events`` (``DecodedEvent`` vs ``SensorDetection``).
 
     Duplicates within a batch (re-ingested files, overlapping polls)
     are absorbed by ``ON CONFLICT DO NOTHING`` against each table's PK.
@@ -178,14 +182,20 @@ async def persist_events_with_drift_check(
     if not events:
         return 0
 
-    # Drift check only applies to controller-shaped events.  Sensor
-    # detections are stamped by the radar at detection-time and don't
-    # flow through a checkpoint, so drift capping has no home to bite.
-    if isinstance(events[0], DecodedEvent):
+    # Drift check only applies to controllers.  Sensor detections are
+    # stamped by the radar at detection-time and don't flow through a
+    # checkpoint, so drift capping has no home to bite.
+    is_controller = (
+        _ELEMENT_TYPE_BY_DEVICE_TYPE.get(device_type) is DecodedEvent if device_type
+        else isinstance(events[0], DecodedEvent)
+    )
+    if is_controller:
         await _warn_on_drift(events, signal_id, source_label=source_label)
         await _record_clock_offset(events=events, signal_id=signal_id, session_factory=session_factory)
 
-    return await _upsert_events(events, signal_id, session_factory)
+    return await _upsert_events(
+        events, signal_id, session_factory, device_type=device_type,
+    )
 
 
 async def _warn_on_drift(events, signal_id: str, *, source_label: str) -> None:
@@ -418,30 +428,62 @@ def check_temporal_integrity(
 
 
 # ---------------------------------------------------------------------------
-# Idempotent insert helper — type-dispatched
+# Idempotent insert helper — routed by stated device type
 # ---------------------------------------------------------------------------
+
+# Stated device class -> the event class that class emits.
+_ELEMENT_TYPE_BY_DEVICE_TYPE = {
+    "controller": DecodedEvent,
+    "sensor": SensorDetection,
+}
+
+
+def _element_type_for(device_type: Optional[str], first) -> type:
+    """The event class this batch must hold, from the stated device type.
+
+    A caller that states nothing falls back to reading the destination off
+    the first element, which is what routing rested on before the device
+    type crossed the ingest seam.
+    """
+    if device_type:
+        expected = _ELEMENT_TYPE_BY_DEVICE_TYPE.get(device_type)
+        if expected is None:
+            raise TypeError(
+                f"_upsert_events: unknown device_type {device_type!r}; "
+                "expected 'controller' or 'sensor'",
+            )
+        return expected
+    for element_type in _ELEMENT_TYPE_BY_DEVICE_TYPE.values():
+        if isinstance(first, element_type):
+            return element_type
+    raise TypeError(
+        f"_upsert_events: unknown event type {type(first).__name__!r}; "
+        "expected DecodedEvent or SensorDetection",
+    )
 
 
 async def _upsert_events(
     events,
     signal_id: str,
     session_factory,
+    *,
+    device_type: Optional[str] = None,
 ) -> int:
     """Bulk-insert events with ON CONFLICT DO NOTHING.
 
-    Dispatches on the element type of ``events`` — the events
-    themselves carry their destination:
+    Routes on the caller's stated ``device_type``, falling back to the
+    element type of ``events`` when nothing is stated:
 
-    * ``DecodedEvent``      -> ``controller_event_log`` (PK
-      signal_id + event_time + event_code + event_param)
-    * ``SensorDetection``   -> ``roadside_event`` (PK
+    * ``"controller"`` / ``DecodedEvent``    -> ``controller_event_log``
+      (PK signal_id + event_time + event_code + event_param)
+    * ``"sensor"`` / ``SensorDetection``     -> ``roadside_event`` (PK
       signal_id + sensor_id + event_time + event_type), with
       ``vendor_tag`` resolved to an internal ``sensor_id`` UUID via
       ``roadside_sensor_lane.vendor_lane_id`` en route
 
-    Mixing types in a single call is rejected — decoders emit one type
-    at a time, and mixed batches almost certainly indicate an upstream
-    bug worth surfacing loudly.
+    A batch that does not hold one single expected type is rejected —
+    decoders emit one type at a time, and a mixed batch almost certainly
+    indicates an upstream bug worth surfacing loudly.
 
     Args:
         events: Homogeneous list of ``DecodedEvent`` or ``SensorDetection``.
@@ -449,30 +491,28 @@ async def _upsert_events(
             path; ignored for the sensor path, which derives signal_id
             from the sensor's own config via ``roadside_sensor.signal_id``).
         session_factory: Async session factory for DB writes.
+        device_type: ``"controller"`` or ``"sensor"``, as stated at the
+            ingest seam.
     """
     if not events:
         return 0
 
-    first = events[0]
-    if isinstance(first, DecodedEvent):
-        if not all(isinstance(e, DecodedEvent) for e in events):
+    expected = _element_type_for(device_type, events[0])
+    if not all(isinstance(e, expected) for e in events):
+        if device_type:
             raise TypeError(
-                "_upsert_events: mixed event types in batch; decoders must "
-                "emit homogeneous lists (all DecodedEvent OR all SensorDetection)",
+                f"_upsert_events: batch does not match device_type "
+                f"{device_type!r}; expected every event to be "
+                f"{expected.__name__}",
             )
-        return await _upsert_controller_events(events, signal_id, session_factory)
-    elif isinstance(first, SensorDetection):
-        if not all(isinstance(e, SensorDetection) for e in events):
-            raise TypeError(
-                "_upsert_events: mixed event types in batch; decoders must "
-                "emit homogeneous lists (all DecodedEvent OR all SensorDetection)",
-            )
-        return await _upsert_sensor_detections(events, session_factory)
-    else:
         raise TypeError(
-            f"_upsert_events: unknown event type {type(first).__name__!r}; "
-            "expected DecodedEvent or SensorDetection",
+            "_upsert_events: mixed event types in batch; decoders must "
+            "emit homogeneous lists (all DecodedEvent OR all SensorDetection)",
         )
+
+    if expected is SensorDetection:
+        return await _upsert_sensor_detections(events, session_factory)
+    return await _upsert_controller_events(events, signal_id, session_factory)
 
 
 async def _upsert_controller_events(
@@ -772,16 +812,58 @@ async def decode_and_persist_message(
 # ---------------------------------------------------------------------------
 
 
-async def resolve_source_timezone(signal_id: str, session) -> str | None:
-    """Resolve the source timezone for a signal.
+# Which source answered a timezone resolution. The zone alone cannot be
+# audited: `collection.default_timezone` is seeded at every boot, so resolution
+# effectively always succeeds and a controller whose zone nobody ever set is
+# indistinguishable from one deliberately set to the same value.
+ZONE_FROM_SIGNAL = "signal"
+ZONE_FROM_DEFAULT = "deployment_default"
+ZONE_UNSET = "unset"
+
+
+async def resolve_source_timezone_with_origin(
+    signal_id: str, session,
+) -> tuple[str | None, str]:
+    """Resolve the source timezone for a signal AND say which source answered.
 
     Resolution order:
 
     1. The Signal row's non-null ``source_timezone`` (short-circuits; the
-       deployment default is NOT consulted).
+       deployment default is NOT consulted) -> ``ZONE_FROM_SIGNAL``.
     2. The ``collection.default_timezone`` deployment default, read via the
-       untyped settings cache so a missing row can resolve to ``None``.
-    3. ``None`` when neither is set.
+       untyped settings cache so a missing row can resolve to ``None``
+       -> ``ZONE_FROM_DEFAULT``.
+    3. ``None`` when neither is set -> ``ZONE_UNSET``.
+
+    The origin is what lets the host flag a controller running on the
+    deployment default (ADR-0034) instead of silently labelling its local time
+    with a zone nobody chose for it.
+
+    Args:
+        signal_id: Traffic signal identifier.
+        session: Async session used for the Signal lookup and settings read.
+
+    Returns:
+        ``(IANA timezone name or None, origin)``.
+    """
+    result = await session.execute(
+        select(Signal).where(Signal.signal_id == signal_id)
+    )
+    signal = result.scalar_one_or_none()
+    if signal is not None and signal.source_timezone is not None:
+        return signal.source_timezone, ZONE_FROM_SIGNAL
+
+    default = await settings_cache.get("collection.default_timezone", session)
+    if default is None:
+        return None, ZONE_UNSET
+    return default, ZONE_FROM_DEFAULT
+
+
+async def resolve_source_timezone(signal_id: str, session) -> str | None:
+    """Resolve the source timezone for a signal.
+
+    The zone only; callers that must distinguish a per-signal zone from the
+    deployment default use ``resolve_source_timezone_with_origin`` instead.
 
     Args:
         signal_id: Traffic signal identifier.
@@ -790,14 +872,8 @@ async def resolve_source_timezone(signal_id: str, session) -> str | None:
     Returns:
         An IANA timezone name, or ``None``.
     """
-    result = await session.execute(
-        select(Signal).where(Signal.signal_id == signal_id)
-    )
-    signal = result.scalar_one_or_none()
-    if signal is not None and signal.source_timezone is not None:
-        return signal.source_timezone
-
-    return await settings_cache.get("collection.default_timezone", session)
+    zone, _origin = await resolve_source_timezone_with_origin(signal_id, session)
+    return zone
 
 
 __all__ = [
@@ -822,4 +898,8 @@ __all__ = [
     "resolve_decoder_by_extension",
     # source-timezone resolution
     "resolve_source_timezone",
+    "resolve_source_timezone_with_origin",
+    "ZONE_FROM_SIGNAL",
+    "ZONE_FROM_DEFAULT",
+    "ZONE_UNSET",
 ]

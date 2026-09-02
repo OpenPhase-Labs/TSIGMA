@@ -10,6 +10,7 @@ so a plugin can read its cursor and report an error without touching the databas
 """
 
 import logging
+from datetime import datetime, timezone
 
 from ..collection import sdk
 from ..collection.ingest import IngestOutcome, ingest_raw
@@ -32,6 +33,38 @@ ERROR_MSG_MAX = 1000
 def device_type_of(value: int) -> str:
     """Contract DeviceType -> checkpoint device_type string (default controller)."""
     return _DEVICE_TYPE.get(value, "controller")
+
+
+def stated_device_type_of(header) -> str | None:
+    """`DecodeAndPersistHeader.device_type` as a device_type string, or None.
+
+    UNSPECIFIED is absence, not an assertion. A proto enum defaults to 0, so a
+    plugin that sets nothing reads back as 0, and answering "controller" there
+    states on its behalf something it never said. The spine then routes a sensor
+    batch to the controller table, fails the element-type check, and persists
+    nothing - losing rows on a path that worked by inference before anyone
+    stated anything. Returning None leaves the spine free to infer.
+    """
+    value = getattr(header, "device_type", 0)
+    if not value:
+        return None
+    return _DEVICE_TYPE.get(value)
+
+
+def poll_reference_of(header) -> datetime | None:
+    """`DecodeAndPersistHeader.last_successful_poll` as tz-aware UTC, or None.
+
+    `ToDatetime()` with no argument returns a NAIVE datetime, and
+    `is_backward_poisoned` compares the reference against tz-aware event
+    times: a naive one raises and silently disables the check.
+    """
+    has_field = getattr(header, "HasField", None)
+    if has_field is not None and not has_field("last_successful_poll"):
+        return None
+    value = getattr(header, "last_successful_poll", None)
+    if value is None or isinstance(value, datetime):
+        return value
+    return value.ToDatetime(tzinfo=timezone.utc)
 
 
 class CheckpointService:
@@ -105,13 +138,21 @@ class EventSinkService:
         self._session_factory = session_factory
 
     async def decode_and_persist(self, header, raw: bytes):
-        """Run one payload through `ingest_raw` and return the wire result."""
+        """Run one payload through `ingest_raw` and return the wire result.
+
+        Every field the header carries reaches the spine: an out-of-process
+        method gets the same integrity path as an in-process one, so its
+        review row names the source file and its poison check runs.
+        """
         result = await ingest_raw(
             raw,
             device_id=header.device_id,
             session_factory=self._session_factory,
             decoder_name=header.decoder_name or None,
+            filename=header.filename or None,
             source_label=header.source_label or "signal",
+            device_type=stated_device_type_of(header),
+            last_successful_poll=poll_reference_of(header),
         )
         return to_persist_response(result)
 
