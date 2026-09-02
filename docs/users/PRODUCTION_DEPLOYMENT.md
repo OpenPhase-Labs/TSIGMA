@@ -105,6 +105,10 @@ npx tailwindcss -i tsigma/static/css/tailwind.src.css \
                  --minify
 
 # 4. Run migrations
+#    PREREQUISITE: the database role must already have its search_path set --
+#      ALTER ROLE tsigma SET search_path = config, events, aggregation, identity, public;
+#    Without it the first migration fails with: relation "region" does not exist.
+#    See docs/users/DEPLOYMENT.md for role, database and schema setup.
 alembic upgrade head
 
 # 5. Start with systemd
