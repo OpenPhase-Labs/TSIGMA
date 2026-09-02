@@ -22,6 +22,9 @@ services:
       - "5432:5432"
     volumes:
       - tsigma_pgdata:/var/lib/postgresql/data
+      # Sets the role search_path the migrations resolve through. Runs only on
+      # first init of an empty volume; see the script's header for existing ones.
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tsigma -d tsigma"]
       interval: 5s
