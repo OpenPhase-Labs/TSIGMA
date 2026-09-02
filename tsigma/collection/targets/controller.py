@@ -14,10 +14,12 @@ persisted to ``controller_event_log`` via
 ``sdk.persist_events_with_drift_check``.
 """
 
+from datetime import datetime
 from typing import Any, Optional
 
 from ...models.checkpoint import PollingCheckpoint
 from .. import sdk
+from ..ingest import ingest_raw
 
 
 class ControllerTarget:
@@ -109,9 +111,10 @@ class ControllerTarget:
         decoder_name: str | None = None,
         filename: str | None = None,
         source_label: str = "device",
+        device_type: str | None = None,
+        last_successful_poll: datetime | None = None,
     ):
-        from ..ingest import ingest_raw
-
+        """Hand raw bytes to the host spine; see ``IngestionTarget.ingest``."""
         return await ingest_raw(
             raw,
             device_id=device_id,
@@ -119,4 +122,6 @@ class ControllerTarget:
             decoder_name=decoder_name,
             filename=filename,
             source_label=source_label,
+            device_type=device_type or self.device_type,
+            last_successful_poll=last_successful_poll,
         )

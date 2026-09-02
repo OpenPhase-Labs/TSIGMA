@@ -7,10 +7,11 @@ Parallel to ``ControllerTarget``: same shape, same SDK calls, but every
 checkpoint operation is scoped to ``device_type='sensor'`` and
 ``device_id`` is the stringified ``RoadsideSensor.sensor_id`` UUID.
 Events are routed to ``roadside_event`` rather than
-``controller_event_log``; the SDK's ``_upsert_events`` already dispatches
-on event element type (``SensorDetection`` vs ``DecodedEvent``), so this
-target's ``persist`` / ``persist_with_drift_check`` calls are identical
-to the controller path — the events themselves carry their destination.
+``controller_event_log``.  ``ingest`` states ``device_type='sensor'`` and
+the SDK routes on that; only the older ``persist`` /
+``persist_with_drift_check`` entry points, which state nothing, still
+fall back to the event element type (``SensorDetection`` vs
+``DecodedEvent``).
 
 Decoder resolution is unchanged from the controller path: decoders that
 emit ``SensorDetection`` are resolved the same way decoders that emit
@@ -18,10 +19,12 @@ emit ``SensorDetection`` are resolved the same way decoders that emit
 from per-device ``roadside_sensor.metadata.collection.decoder``.
 """
 
+from datetime import datetime
 from typing import Any, Optional
 
 from ...models.checkpoint import PollingCheckpoint
 from .. import sdk
+from ..ingest import ingest_raw
 
 
 class RoadsideTarget:
@@ -113,9 +116,10 @@ class RoadsideTarget:
         decoder_name: str | None = None,
         filename: str | None = None,
         source_label: str = "device",
+        device_type: str | None = None,
+        last_successful_poll: datetime | None = None,
     ):
-        from ..ingest import ingest_raw
-
+        """Hand raw bytes to the host spine; see ``IngestionTarget.ingest``."""
         return await ingest_raw(
             raw,
             device_id=device_id,
@@ -123,4 +127,6 @@ class RoadsideTarget:
             decoder_name=decoder_name,
             filename=filename,
             source_label=source_label,
+            device_type=device_type or self.device_type,
+            last_successful_poll=last_successful_poll,
         )
