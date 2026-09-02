@@ -13,8 +13,6 @@ and the checkpoint state needed to resolve a DST fold across a batch boundary.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 
@@ -74,30 +72,6 @@ def chunk_bytes(data: bytes, size: int = CHUNK_BYTES):
     """Split a payload into bounded, in-order transport chunks."""
     for start in range(0, len(data), size):
         yield data[start : start + size]
-
-
-def resolve_naive_local(instants: list[datetime], zone: str) -> list[datetime]:
-    """Convert controller-local instants to UTC, resolving the DST fall-back fold.
-
-    Hi-res logs are sequential, so a local timestamp moving BACKWARDS marks the
-    fall-back crossing; everything after it resolves as ``fold=1``. The caller
-    passes the whole ordered run, so a crossing on a batch boundary is still seen
-    - which is why this is host-side and not in the decoder.
-
-    Spring-forward gap times are NOT coerced here; they are left for the
-    validation layer to flag (ADR-0046, flag-never-block).
-    """
-    tz = ZoneInfo(zone)
-    out: list[datetime] = []
-    fold = 0
-    previous: datetime | None = None
-    for instant in instants:
-        naive = instant.replace(tzinfo=None)
-        if previous is not None and naive < previous:
-            fold = 1
-        previous = naive
-        out.append(naive.replace(tzinfo=tz, fold=fold).astimezone(ZoneInfo("UTC")))
-    return out
 
 
 def arrow_batch_to_events(blob: bytes) -> list[DecodedEvent]:

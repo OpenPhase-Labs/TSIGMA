@@ -37,3 +37,20 @@ def make_mock_session() -> AsyncMock:
     mock_session.in_nested_transaction = MagicMock()
     mock_session.is_modified = MagicMock()
     return mock_session
+
+
+def make_mock_session_factory():
+    """Return ``(session_factory, session)`` for the ``async with`` pattern.
+
+    Every call to the factory yields the SAME session, so a test can inspect
+    every row a multi-session code path added - `ingest_raw` opens a fresh
+    session per stage.
+
+    Returns:
+        A 2-tuple of the factory and the session it yields.
+    """
+    session = make_mock_session()
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=None)
+    return MagicMock(return_value=context), session
