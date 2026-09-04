@@ -62,6 +62,31 @@ class GRPCServerConfig(BaseModel):
     max_message_size: int = _DEFAULT_MAX_MSG_BYTES
 
 
+PARTIAL_ACK_DETAIL = "partial ingest: some rows in this payload were not read"
+
+
+def _ack_for(result) -> "ingestion_pb2.PublishAck":
+    """Acknowledge what was PERSISTED, and never call a partial a success.
+
+    ``events_accepted`` is what a publisher may treat as durable, so it reports
+    ``events_inserted``. ``events_decoded`` counts rows the decoder produced,
+    which overstates acceptance every time ON CONFLICT absorbs a duplicate.
+
+    ``PublishAck`` carries only these two fields - there is no outcome enum and
+    no dropped count - so ``error`` is the sole channel a PARTIAL has. Leaving
+    it empty would tell the publisher its whole payload landed, and it would
+    drop the buffer holding the rows the host could not read.
+    """
+    if result.outcome is IngestOutcome.FAILURE:
+        return ingestion_pb2.PublishAck(events_accepted=0, error=result.error)
+    if result.outcome is IngestOutcome.PARTIAL:
+        return ingestion_pb2.PublishAck(
+            events_accepted=result.events_inserted,
+            error=result.error or PARTIAL_ACK_DETAIL,
+        )
+    return ingestion_pb2.PublishAck(events_accepted=result.events_inserted)
+
+
 class _IngestionServicer(ingestion_pb2_grpc.IngestionServiceServicer):
     """
     Implements the OpenPhase ``IngestionService`` gRPC contract.
@@ -112,16 +137,13 @@ class _IngestionServicer(ingestion_pb2_grpc.IngestionServiceServicer):
             decoder_name=self._decoder_name,
             source_label=self._target.device_type,
         )
-        if result.outcome is IngestOutcome.FAILURE:
+        if result.outcome is not IngestOutcome.SUCCESS:
             logger.error(
-                "gRPC PublishUpdate ingest failed for %s %s: %s",
-                self._target.device_type, device_id, result.error,
+                "gRPC PublishUpdate ingest did not complete for %s %s (%s): %s",
+                self._target.device_type, device_id,
+                result.outcome.value, result.error,
             )
-            return ingestion_pb2.PublishAck(
-                events_accepted=0, error=result.error,
-            )
-
-        return ingestion_pb2.PublishAck(events_accepted=result.events_decoded)
+        return _ack_for(result)
 
     async def PublishBatch(self, request, context):
         device_id = request.intersection_id
@@ -136,19 +158,17 @@ class _IngestionServicer(ingestion_pb2_grpc.IngestionServiceServicer):
             decoder_name=self._decoder_name,
             source_label=self._target.device_type,
         )
-        if result.outcome is IngestOutcome.FAILURE:
+        if result.outcome is not IngestOutcome.SUCCESS:
             logger.error(
-                "gRPC PublishBatch ingest failed for %s %s: %s",
-                self._target.device_type, device_id, result.error,
+                "gRPC PublishBatch ingest did not complete for %s %s (%s): %s",
+                self._target.device_type, device_id,
+                result.outcome.value, result.error,
             )
-            return ingestion_pb2.PublishAck(
-                events_accepted=0, error=result.error,
-            )
-
-        return ingestion_pb2.PublishAck(events_accepted=result.events_decoded)
+        return _ack_for(result)
 
     async def StreamBatches(self, request_iterator, context):
         total_accepted = 0
+        incomplete: list[str] = []
         try:
             async for batch in request_iterator:
                 device_id = batch.intersection_id
@@ -164,19 +184,31 @@ class _IngestionServicer(ingestion_pb2_grpc.IngestionServiceServicer):
                     decoder_name=self._decoder_name,
                     source_label=self._target.device_type,
                 )
-                if result.outcome is IngestOutcome.FAILURE:
+                if result.outcome is not IngestOutcome.SUCCESS:
                     logger.error(
-                        "gRPC StreamBatches ingest failed for %s %s: %s",
-                        self._target.device_type, device_id, result.error,
+                        "gRPC StreamBatches ingest did not complete for %s %s "
+                        "(%s): %s",
+                        self._target.device_type, device_id,
+                        result.outcome.value, result.error,
                     )
-                    continue   # keep accepting subsequent batches
-                total_accepted += result.events_decoded
+                    incomplete.append(result.error or result.outcome.value)
+                # A PARTIAL still persisted rows, so they count as accepted;
+                # what it did NOT persist is reported in the terminal error.
+                total_accepted += result.events_inserted
         except Exception as exc:
             logger.exception("gRPC StreamBatches stream error")
             return ingestion_pb2.PublishAck(
                 events_accepted=total_accepted, error=str(exc),
             )
 
+        if incomplete:
+            # The stream is one ack, so a batch dropped mid-stream is only
+            # visible here. Silence would tell the publisher every batch landed.
+            return ingestion_pb2.PublishAck(
+                events_accepted=total_accepted,
+                error=f"{len(incomplete)} batch(es) did not complete: "
+                      + "; ".join(incomplete[:3]),
+            )
         return ingestion_pb2.PublishAck(events_accepted=total_accepted)
 
 
