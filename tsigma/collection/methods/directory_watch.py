@@ -40,8 +40,12 @@ from pydantic import BaseModel, Field
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from ..advancement import (
+    Advancement,
+    alert_repeated_failures,
+    decide_advancement,
+)
 from ..decoders.base import DecoderRegistry
-from ..ingest import IngestOutcome
 from ..registry import EventDrivenIngestionMethod, IngestionMethodRegistry
 from ..targets import ControllerTarget, IngestionTarget
 
@@ -266,18 +270,55 @@ class DirectoryWatchMethod(EventDrivenIngestionMethod):
             self._move_to_error(fp, watch_dir)
             return
 
+        # Resolving the decoder happens while building an ARGUMENT to ingest,
+        # so it is pre-seam and the spine never runs: no review row is written
+        # and the failure is this method's to handle.  Uncaught it aborted the
+        # whole startup scan, and on the watchdog path it vanished into a
+        # discarded future, leaving the file to be retried forever.
+        try:
+            decoder_name = self._decoder_name(filename, device_id)
+        except ValueError as exc:
+            logger.error(
+                "No decoder for %s (%s %s): %s - moving to the error "
+                "directory; the remaining files still process",
+                filename, self._target.device_type, device_id, exc,
+            )
+            await self._record_error(device_id, str(exc))
+            self._move_to_error(fp, watch_dir)
+            return
+
+        prior_errors = await self._consecutive_errors(device_id)
+
         # Transport-only: hand the bytes to the host and let it decode,
         # normalize, run the integrity spine, and persist (ADR-0034).
         result = await self._target.ingest(
             data, device_id, self._session_factory,
-            decoder_name=self._decoder_name(filename, device_id),
+            decoder_name=decoder_name,
             source_label=self._target.device_type,
         )
-        if result.outcome is IngestOutcome.FAILURE:
+        decision = decide_advancement(result, consecutive_errors=prior_errors)
+
+        # The watcher keeps no checkpoint: the file's disposition IS its
+        # checkpoint, which makes this a file-identity caller, and for one of
+        # those the policy holds on any PARTIAL.  Only a full advance files a
+        # file as clean; anything less goes to the error directory, where the
+        # bytes stay recoverable and the open review stays visible.
+        if decision.action is not Advancement.ADVANCE:
+            error = decision.error or result.error
             logger.error(
-                "Failed to ingest %s for %s %s: %s",
-                filename, self._target.device_type, device_id, result.error,
+                "Ingest of %s for %s %s did not complete (%s): %s",
+                filename, self._target.device_type, device_id,
+                result.outcome.value, error,
             )
+            await self._record_error(device_id, error)
+            if decision.alert:
+                await alert_repeated_failures(
+                    device_type=self._target.device_type,
+                    device_id=device_id,
+                    method=self.name,
+                    consecutive_errors=prior_errors + 1,
+                    error=error,
+                )
             self._move_to_error(fp, watch_dir)
             return
 
@@ -289,6 +330,24 @@ class DirectoryWatchMethod(EventDrivenIngestionMethod):
 
         if self._cfg.move_after_processing:
             self._move_to_processed(fp, watch_dir)
+
+    async def _consecutive_errors(self, device_id: str) -> int:
+        """Failure count from before this file, for the advancement policy.
+
+        The watcher holds no checkpoint of its own, so the row exists only once
+        ``record_error`` has created one: a device that has never failed reads
+        zero.
+        """
+        checkpoint = await self._target.load_checkpoint(
+            self.name, device_id, self._session_factory,
+        )
+        return (checkpoint.consecutive_errors or 0) if checkpoint else 0
+
+    async def _record_error(self, device_id: str, error_msg: str) -> None:
+        """Record a per-device failure so repeated trouble can escalate."""
+        await self._target.record_error(
+            self.name, device_id, self._session_factory, error_msg,
+        )
 
     def _resolve_device_id(self, filename: str) -> Optional[str]:
         """Filename convention: everything before the first underscore.

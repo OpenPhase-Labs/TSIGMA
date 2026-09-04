@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+from ..notifications.registry import CRITICAL, notify
 from .ingest import IngestOutcome, IngestResult
 
 logger = logging.getLogger(__name__)
@@ -89,4 +90,45 @@ def _hold(result: IngestResult, consecutive_errors: int, alert_after: int
         Advancement.HOLD,
         error=result.error or "ingest failed",
         alert=failures >= alert_after,
+    )
+
+
+async def alert_repeated_failures(
+    *,
+    device_type: str,
+    device_id: str,
+    method: str,
+    consecutive_errors: int,
+    error: str,
+) -> None:
+    """Escalate a device whose ingests keep failing.
+
+    The delivery half of `AdvancementDecision.alert`, kept beside the policy so
+    the three pull methods raise one alert rather than three near-copies.
+    Best-effort: `notify` never raises, so an unreachable notification channel
+    cannot abort the poll cycle that found the trouble.
+    """
+    logger.error(
+        "%s %s (%s): %d consecutive ingest failures - %s",
+        device_type, device_id, method, consecutive_errors, error,
+    )
+    await notify(
+        subject=f"Repeated ingest failures: {device_type} {device_id}",
+        message=(
+            f"{device_type.capitalize()} {device_id} ({method}) has failed to "
+            f"ingest {consecutive_errors} consecutive times.\n\n"
+            f"Latest error: {error}\n\n"
+            f"The checkpoint has NOT advanced, so the unread data is still on "
+            f"the device and every cycle re-attempts it. Nothing has been "
+            f"discarded."
+        ),
+        severity=CRITICAL,
+        metadata={
+            "device_type": device_type,
+            "device_id": device_id,
+            "method": method,
+            "consecutive_errors": consecutive_errors,
+            "error": error,
+            "alert_type": "repeated_ingest_failure",
+        },
     )

@@ -114,7 +114,11 @@ async def record_error(
             )
             session.add(checkpoint)
 
-        checkpoint.consecutive_errors += 1
+        # `default=0` on the column is an INSERT-time default, so a row this
+        # call just constructed still carries None here.  Without the guard a
+        # device's first-ever failure raises TypeError and is never recorded,
+        # which is what keeps the repeated-failure alert from ever firing.
+        checkpoint.consecutive_errors = (checkpoint.consecutive_errors or 0) + 1
         checkpoint.last_error = error_msg[:1000]
         checkpoint.last_error_time = now
         checkpoint.updated_at = now
