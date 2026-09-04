@@ -26,7 +26,11 @@ from typing import Any, Optional
 import aiohttp
 from pydantic import BaseModel
 
-from ..ingest import IngestOutcome
+from ..advancement import (
+    Advancement,
+    alert_repeated_failures,
+    decide_advancement,
+)
 from ..registry import IngestionMethodRegistry, PollingIngestionMethod
 from ..targets import ControllerTarget, IngestionTarget
 
@@ -200,24 +204,57 @@ class HTTPPullMethod(PollingIngestionMethod):
                 checkpoint.last_successful_poll if checkpoint else None
             ),
         )
-        if result.outcome is IngestOutcome.FAILURE:
+        # The checkpoint action is the host's policy call, not a branch on the
+        # outcome here.  `consecutive_errors` is the count from BEFORE this
+        # ingest, so the alert fires on the cycle that reaches the threshold.
+        prior_errors = (
+            (checkpoint.consecutive_errors or 0) if checkpoint else 0
+        )
+        decision = decide_advancement(result, consecutive_errors=prior_errors)
+
+        if not decision.advances:
             logger.error(
                 "Failed to ingest response from %s for device %s: %s",
-                http_config.host, device_id, result.error,
+                http_config.host, device_id, decision.error,
             )
             await target.record_error(
-                self.name, device_id, session_factory, result.error,
+                self.name, device_id, session_factory, decision.error,
             )
+            if decision.alert:
+                await alert_repeated_failures(
+                    device_type=target.device_type,
+                    device_id=device_id,
+                    method=self.name,
+                    consecutive_errors=prior_errors + 1,
+                    error=decision.error,
+                )
             return
 
+        if decision.action is Advancement.ADVANCE_TO_LAST_GOOD:
+            # Event-time checkpoint: the watermark moves only as far as the
+            # rows that actually landed, so the undecoded tail is re-requested
+            # next cycle instead of being skipped.
+            logger.warning(
+                "Partial ingest from %s for device %s - advancing only to "
+                "%s, remainder flagged for review: %s",
+                http_config.host, device_id,
+                decision.last_event_timestamp.isoformat(),
+                decision.error,
+            )
+
         if result.events_decoded:
+            checkpoint_fields = {
+                "events_ingested": result.events_inserted,
+                "duplicates_absorbed": result.duplicates_absorbed,
+            }
+            # Omitted rather than passed as None: save_checkpoint caps whatever
+            # it is handed under this key and would raise on None.
+            if decision.last_event_timestamp is not None:
+                checkpoint_fields["last_event_timestamp"] = (
+                    decision.last_event_timestamp
+                )
             await target.save_checkpoint(
-                self.name,
-                device_id,
-                session_factory,
-                last_event_timestamp=result.max_event_time,
-                events_ingested=result.events_inserted,
-                duplicates_absorbed=result.duplicates_absorbed,
+                self.name, device_id, session_factory, **checkpoint_fields,
             )
             logger.info(
                 "Collected %d events from %s for device %s",

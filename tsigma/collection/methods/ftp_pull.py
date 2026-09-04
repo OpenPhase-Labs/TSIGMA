@@ -51,7 +51,11 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from ...models.checkpoint import PollingCheckpoint
-from ..ingest import IngestOutcome
+from ..advancement import (
+    Advancement,
+    alert_repeated_failures,
+    decide_advancement,
+)
 from ..registry import IngestionMethodRegistry, PollingIngestionMethod
 from ..targets import ControllerTarget, IngestionTarget
 
@@ -674,17 +678,25 @@ class FTPPullMethod(PollingIngestionMethod):
         ``polling_checkpoint`` scoped to the target's ``device_type``
         without the FTP pull caring which kind of device it just
         polled.
+
+        A ``None`` file-identity field is OMITTED rather than written.  These
+        three are what make a file look already-read; passing None writes NULL
+        over the stored marker, and the caller needs a way to say "this cycle
+        records nothing here" when a file is still outstanding.
         """
+        identity = {
+            "last_filename": last_filename,
+            "last_file_mtime": last_file_mtime,
+            "files_hash": files_hash,
+        }
         await target.save_checkpoint(
             self.name,
             device_id,
             session_factory,
-            last_filename=last_filename,
-            last_file_mtime=last_file_mtime,
-            files_hash=files_hash,
             events_ingested=new_events,
             duplicates_absorbed=new_absorbed,
             files_ingested=new_files,
+            **{key: value for key, value in identity.items() if value is not None},
         )
 
     def _filter_new_files(
@@ -742,53 +754,91 @@ class FTPPullMethod(PollingIngestionMethod):
         prior_mtime: Optional[datetime],
         target: IngestionTarget,
         last_successful_poll: Optional[datetime] = None,
-    ) -> tuple[int, int, Optional[str], Optional[datetime], int]:
+        consecutive_errors: int = 0,
+    ) -> tuple[int, int, Optional[str], Optional[datetime], int, bool]:
         """
         Download, decode, and persist a list of remote files via
         ``target``.
 
+        Every file's verdict comes from ``decide_advancement``.  Passive mode
+        keeps a FILE-IDENTITY checkpoint, so only a full ADVANCE counts a file
+        as read: a PARTIAL holds, because the identity markers cannot express
+        "half of this file" and moving them would skip the rest of it.
+
+        ``consecutive_errors`` is the count from before this cycle; it rises
+        locally as files hold, so a run of bad files escalates on the file that
+        reaches the threshold rather than one cycle later.
+
         Returns:
             Tuple of (total_inserted, total_files, newest_filename,
-            newest_mtime, total_absorbed).
+            newest_mtime, total_absorbed, all_advanced).  ``all_advanced`` is
+            False when any file is still outstanding.
         """
         total_inserted = 0
         total_files = 0
         newest_filename = None
         newest_mtime = prior_mtime
         total_absorbed = 0
+        all_advanced = True
+        errors = consecutive_errors
 
         for rf in new_files:
             file_path = PurePosixPath(ftp_config.remote_dir) / rf.name
             try:
                 data = await client.download(str(file_path))
-                # Transport-only: the host decodes, normalizes, runs the
-                # integrity spine, and persists.
-                ingest = await target.ingest(
-                    data, device_id, session_factory,
-                    decoder_name=ftp_config.decoder or None,
-                    filename=None if ftp_config.decoder else rf.name,
-                    last_successful_poll=last_successful_poll,
-                )
-                if ingest.outcome is IngestOutcome.FAILURE:
-                    logger.error(
-                        "Failed to ingest %s for %s: %s",
-                        rf.name, device_id, ingest.error,
-                    )
-                    continue
-
-                total_inserted += ingest.events_inserted
-                total_absorbed += ingest.duplicates_absorbed
-                total_files += 1
-                newest_filename = rf.name
-                if rf.mtime and (newest_mtime is None or rf.mtime > newest_mtime):
-                    newest_mtime = rf.mtime
-
-                logger.info(
-                    "Processed %s: %d events for %s",
-                    rf.name, ingest.events_decoded, device_id,
-                )
             except Exception:
-                logger.exception("Failed to process %s for %s", rf.name, device_id)
+                logger.exception(
+                    "Failed to download %s for %s - will retry next cycle",
+                    rf.name, device_id,
+                )
+                all_advanced = False
+                continue
+
+            # Transport-only: the host decodes, normalizes, runs the integrity
+            # spine, and persists.  No guard around the seam - `ingest_raw` is
+            # total and returns an outcome naming the stage that failed, so a
+            # broad except here would only hide a real defect.
+            ingest = await target.ingest(
+                data, device_id, session_factory,
+                decoder_name=ftp_config.decoder or None,
+                filename=None if ftp_config.decoder else rf.name,
+                last_successful_poll=last_successful_poll,
+            )
+            decision = decide_advancement(ingest, consecutive_errors=errors)
+
+            if decision.action is not Advancement.ADVANCE:
+                error = decision.error or ingest.error
+                logger.error(
+                    "Ingest of %s for %s did not complete (%s) - checkpoint "
+                    "held, will retry next cycle: %s",
+                    rf.name, device_id, ingest.outcome.value, error,
+                )
+                all_advanced = False
+                errors += 1
+                await target.record_error(
+                    self.name, device_id, session_factory, error,
+                )
+                if decision.alert:
+                    await alert_repeated_failures(
+                        device_type=target.device_type,
+                        device_id=device_id,
+                        method=self.name,
+                        consecutive_errors=errors,
+                        error=error,
+                    )
+                continue
+
+            total_inserted += ingest.events_inserted
+            total_absorbed += ingest.duplicates_absorbed
+            total_files += 1
+            newest_filename = rf.name
+            if rf.mtime and (newest_mtime is None or rf.mtime > newest_mtime):
+                newest_mtime = rf.mtime
+
+            logger.info(
+                "Processed %s: %d events for %s",
+                rf.name, ingest.events_decoded, device_id,
+            )
 
         return (
             total_inserted,
@@ -796,6 +846,7 @@ class FTPPullMethod(PollingIngestionMethod):
             newest_filename,
             newest_mtime,
             total_absorbed,
+            all_advanced,
         )
 
     # -------------------------------------------------------------------
@@ -945,6 +996,9 @@ class FTPPullMethod(PollingIngestionMethod):
         last_successful_poll = (
             checkpoint.last_successful_poll if checkpoint else None
         )
+        # Rises as files hold within this cycle, so a run of bad files
+        # escalates on the one that reaches the threshold.
+        errors = (checkpoint.consecutive_errors or 0) if checkpoint else 0
 
         # Phase 1: Ingest leftovers from previous crashed cycles
         all_files = await client.list_dir(
@@ -958,10 +1012,12 @@ class FTPPullMethod(PollingIngestionMethod):
             if self._is_tsigma_renamed(rf.name)
         ]
         for rf in leftovers:
-            await self._ingest_and_delete(
+            advanced = await self._ingest_and_delete(
                 client, rf.name, ftp_config, device_id, session_factory, target,
-                last_successful_poll,
+                last_successful_poll, errors,
             )
+            if not advanced:
+                errors += 1
 
         # Phase 2: Rename all active files with UTC timestamp
         all_files = await client.list_dir(
@@ -1011,10 +1067,12 @@ class FTPPullMethod(PollingIngestionMethod):
 
         # Phase 4: Download, ingest, delete each renamed file
         for dst_name in renamed:
-            await self._ingest_and_delete(
+            advanced = await self._ingest_and_delete(
                 client, dst_name, ftp_config, device_id, session_factory, target,
-                last_successful_poll,
+                last_successful_poll, errors,
             )
+            if not advanced:
+                errors += 1
 
     async def _ingest_and_delete(
         self,
@@ -1025,8 +1083,13 @@ class FTPPullMethod(PollingIngestionMethod):
         session_factory,
         target: IngestionTarget,
         last_successful_poll: Optional[datetime] = None,
-    ) -> None:
-        """Download, decode, persist, then delete a remote file."""
+        consecutive_errors: int = 0,
+    ) -> bool:
+        """Download, decode, persist, then delete a remote file.
+
+        Returns True when the ingest fully advanced and the remote file was
+        therefore eligible for deletion; False when it was left in place.
+        """
         file_path = str(PurePosixPath(ftp_config.remote_dir) / filename)
 
         # Strip TSIGMA rename tag to get the original name for decoder lookup
@@ -1036,35 +1099,51 @@ class FTPPullMethod(PollingIngestionMethod):
             data = await client.download(file_path)
         except Exception:
             logger.exception(
-                "Failed to download %s for device %s — "
+                "Failed to download %s for device %s - "
                 "will retry next cycle",
                 filename, device_id,
             )
-            return
+            return False
 
-        try:
-            # Transport-only: the host owns decode -> spine -> persist.
-            ingest = await target.ingest(
-                data, device_id, session_factory,
-                decoder_name=ftp_config.decoder or None,
-                filename=None if ftp_config.decoder else original_name,
-                last_successful_poll=last_successful_poll,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to ingest %s for device %s", filename, device_id,
-            )
-            return
+        # Transport-only: the host owns decode -> spine -> persist.  No guard
+        # around the seam - `ingest_raw` is total, so a broad except here would
+        # swallow a genuine defect while reporting nothing.
+        ingest = await target.ingest(
+            data, device_id, session_factory,
+            decoder_name=ftp_config.decoder or None,
+            filename=None if ftp_config.decoder else original_name,
+            last_successful_poll=last_successful_poll,
+        )
+        decision = decide_advancement(
+            ingest, consecutive_errors=consecutive_errors,
+        )
 
-        if ingest.outcome is IngestOutcome.FAILURE:
+        # Rotate mode is holding the controller's ONLY copy.  Deletion needs a
+        # full ADVANCE: on a PARTIAL the spine has just opened a review that
+        # says some of this file was not read, and correct-later is impossible
+        # once the bytes are gone (ADR-0034).  The file keeps its `.tsigma.`
+        # name and is re-offered as a leftover next cycle.
+        if decision.action is not Advancement.ADVANCE:
+            error = decision.error or ingest.error
             logger.error(
-                "Failed to ingest %s for device %s — file NOT deleted, "
-                "will retry next cycle: %s",
-                filename, device_id, ingest.error,
+                "Ingest of %s for device %s did not complete (%s) - file NOT "
+                "deleted, will retry next cycle: %s",
+                filename, device_id, ingest.outcome.value, error,
             )
-            return
+            await target.record_error(
+                self.name, device_id, session_factory, error,
+            )
+            if decision.alert:
+                await alert_repeated_failures(
+                    device_type=target.device_type,
+                    device_id=device_id,
+                    method=self.name,
+                    consecutive_errors=consecutive_errors + 1,
+                    error=error,
+                )
+            return False
 
-        # Only delete after successful ingest
+        # Only delete after a fully advanced ingest
         try:
             await client.delete(file_path)
         except Exception:
@@ -1088,6 +1167,7 @@ class FTPPullMethod(PollingIngestionMethod):
             new_absorbed=ingest.duplicates_absorbed,
             new_files=1,
         )
+        return True
 
     # -------------------------------------------------------------------
     # Poll dispatch
@@ -1202,21 +1282,31 @@ class FTPPullMethod(PollingIngestionMethod):
             newest_filename,
             newest_mtime,
             total_absorbed,
+            all_advanced,
         ) = await self._download_and_ingest(
             client, new_files, ftp_config,
             device_id, session_factory, prior_mtime, target,
             checkpoint.last_successful_poll if checkpoint else None,
+            (checkpoint.consecutive_errors or 0) if checkpoint else 0,
         )
 
-        # Update checkpoint after successful ingest
+        # Update checkpoint after successful ingest.
+        #
+        # While ANY file is still outstanding both file-identity markers are
+        # withheld, and this is the whole of the stranding fix.  `files_hash`
+        # covers the entire listing, so storing it after a partial cycle makes
+        # the next poll match on the hash and return before it looks at any
+        # file; `last_file_mtime`, advanced to a later sibling's mtime, strands
+        # the same file a second way through the mtime filter.  Either one, on
+        # its own, is a success quietly burying an earlier failure.
         if total_files > 0:
             await self._save_checkpoint(
                 target,
                 device_id,
                 session_factory,
                 last_filename=newest_filename,
-                last_file_mtime=newest_mtime,
-                files_hash=current_hash,
+                last_file_mtime=newest_mtime if all_advanced else None,
+                files_hash=current_hash if all_advanced else None,
                 new_events=total_inserted,
                 new_absorbed=total_absorbed,
                 new_files=total_files,
