@@ -13,6 +13,7 @@ and the checkpoint state needed to resolve a DST fold across a batch boundary.
 
 import logging
 from dataclasses import dataclass
+from datetime import timezone
 
 import pyarrow as pa
 
@@ -74,14 +75,68 @@ def chunk_bytes(data: bytes, size: int = CHUNK_BYTES):
         yield data[start : start + size]
 
 
-def arrow_batch_to_events(blob: bytes) -> list[DecodedEvent]:
-    """One Arrow batch -> DecodedEvent list, in wire order."""
+TIME_SEMANTICS_KEY = b"tsigma.time_semantics"
+TIME_SEMANTICS_UTC = b"utc"
+TIME_SEMANTICS_NAIVE_LOCAL = b"naive_local"
+
+
+class MissingTimeSemantics(RemoteDecodeError):
+    """A batch arrived without the schema-metadata key that anchors its clock."""
+
+
+# DescribeResponse.time_semantics -> the wire spelling TYPES.md pins.
+_DECLARED_SEMANTICS = {1: TIME_SEMANTICS_UTC, 2: TIME_SEMANTICS_NAIVE_LOCAL}
+
+
+def batch_time_semantics(table) -> bytes:
+    """The batch's declared anchoring, or raise.
+
+    TYPES.md pins `tsigma.time_semantics` as Arrow schema metadata on EVERY
+    emitted batch, and says a missing or unspecified key is a contract
+    violation the host flags - it never silently assumes UTC. Assuming would
+    label a controller's local wall-clock as absolute time and bake a whole
+    timezone offset into the record.
+    """
+    meta = table.schema.metadata or {}
+    declared = meta.get(TIME_SEMANTICS_KEY)
+    if declared in (TIME_SEMANTICS_UTC, TIME_SEMANTICS_NAIVE_LOCAL):
+        return declared
+    raise MissingTimeSemantics(
+        f"batch declares {declared!r} for {TIME_SEMANTICS_KEY.decode()}; "
+        f"expected 'utc' or 'naive_local' (TYPES.md)",
+    )
+
+
+def arrow_batch_to_events(
+    blob: bytes, *, declared: bytes | None = None,
+) -> list[DecodedEvent]:
+    """One Arrow batch -> DecodedEvent list, in wire order.
+
+    The wire column is a bare `timestamp[us]`, so pyarrow hands back naive
+    datetimes whatever the decoder meant. The batch's declared semantics is what
+    distinguishes them: `utc` instants are made tz-aware here, and `naive_local`
+    ones stay naive so the spine converts them with the signal's own zone. Get
+    this wrong in either direction and every timestamp moves by an offset.
+    """
     with pa.ipc.open_stream(pa.BufferReader(blob)) as reader:
         table = reader.read_all()
+    on_the_wire = batch_time_semantics(table)
+    if declared is not None and declared != on_the_wire:
+        # Describe said one thing and the batch says another. Believing either
+        # silently moves every timestamp by a whole offset, so neither is
+        # assumed: the decoder is contradicting itself and the host says so.
+        raise MissingTimeSemantics(
+            f"decoder declared {declared.decode()} at Describe but this batch "
+            f"is marked {on_the_wire.decode()}",
+        )
+    anchored_utc = on_the_wire == TIME_SEMANTICS_UTC
     rows = table.to_pylist()
     return [
         DecodedEvent(
-            timestamp=row["timestamp"],
+            timestamp=(
+                row["event_time"].replace(tzinfo=timezone.utc)
+                if anchored_utc else row["event_time"]
+            ),
             event_code=row["event_code"],
             event_param=row["event_param"],
         )
@@ -89,15 +144,25 @@ def arrow_batch_to_events(blob: bytes) -> list[DecodedEvent]:
     ]
 
 
-def events_to_arrow_batch(events: list[DecodedEvent]) -> bytes:
-    """DecodedEvent list -> one Arrow IPC batch. Used by decoder plugins."""
+def events_to_arrow_batch(
+    events: list[DecodedEvent], *, time_semantics: bytes = TIME_SEMANTICS_UTC,
+) -> bytes:
+    """DecodedEvent list -> one Arrow IPC batch. Used by decoder plugins.
+
+    Field names are the canonical `DecodedEvent` schema (TYPES.md); the
+    anchoring rides in schema metadata rather than in the column type, because
+    a tz-typed column would make a naive local instant come back as UTC.
+    """
     table = pa.table(
         {
-            "timestamp": pa.array([e.timestamp for e in events], type=pa.timestamp("us")),
+            "event_time": pa.array(
+                [e.timestamp.replace(tzinfo=None) for e in events],
+                type=pa.timestamp("us"),
+            ),
             "event_code": pa.array([e.event_code for e in events], type=pa.int32()),
             "event_param": pa.array([e.event_param for e in events], type=pa.int32()),
         }
-    )
+    ).replace_schema_metadata({TIME_SEMANTICS_KEY: time_semantics})
     sink = pa.BufferOutputStream()
     with pa.ipc.new_stream(sink, table.schema) as writer:
         writer.write_table(table)
@@ -172,7 +237,12 @@ class RemoteDecoder(BaseDecoder):
             elif kind == "events_arrow_ipc":
                 if status is not None:
                     raise RemoteDecodeError(f"{self.name}: batch after the terminal status")
-                events.extend(arrow_batch_to_events(item.events_arrow_ipc))
+                events.extend(
+                    arrow_batch_to_events(
+                        item.events_arrow_ipc,
+                        declared=_DECLARED_SEMANTICS.get(self.time_semantics),
+                    )
+                )
             elif kind == "status":
                 if status is not None:
                     raise RemoteDecodeError(f"{self.name}: more than one terminal status")
