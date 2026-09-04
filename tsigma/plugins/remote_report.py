@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..reports.registry import Report, ReportMetadata
 from .connection import PluginConnection
+from .credentials import credential_metadata, plugin_credential
 
 logger = logging.getLogger(__name__)
 
@@ -110,20 +111,28 @@ class RemoteReport(Report):
 
         view_model = None
         batches: list[bytes] = []
-        async for result in self._stub().Generate(request):
-            kind = result.WhichOneof("payload")
-            if kind == "view_model":
-                if view_model is not None:
-                    raise RemoteReportError(
-                        f"{self.metadata.name}: more than one ViewModel in the stream"
-                    )
-                view_model = result.view_model
-            elif kind == "rows_arrow_ipc":
-                if view_model is None:
-                    raise RemoteReportError(
-                        f"{self.metadata.name}: Arrow batch before the ViewModel"
-                    )
-                batches.append(result.rows_arrow_ipc)
+        # The plugin reads host data through the host's own API, under a
+        # credential minted as THIS request's user and revoked when the stream
+        # ends - so it reaches exactly what that user reaches, for exactly this
+        # invocation (contract ADR-0006, amended).
+        async with plugin_credential() as token:
+            stream = self._stub().Generate(
+                request, metadata=credential_metadata(token),
+            )
+            async for result in stream:
+                kind = result.WhichOneof("payload")
+                if kind == "view_model":
+                    if view_model is not None:
+                        raise RemoteReportError(
+                            f"{self.metadata.name}: more than one ViewModel in the stream"
+                        )
+                    view_model = result.view_model
+                elif kind == "rows_arrow_ipc":
+                    if view_model is None:
+                        raise RemoteReportError(
+                            f"{self.metadata.name}: Arrow batch before the ViewModel"
+                        )
+                    batches.append(result.rows_arrow_ipc)
 
         if view_model is None:
             raise RemoteReportError(f"{self.metadata.name}: stream ended with no ViewModel")

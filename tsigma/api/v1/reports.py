@@ -8,15 +8,25 @@ import json
 import logging
 import typing
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.dependencies import require_access
+from ...auth.sessions import SessionData
 from ...dependencies import get_session
 from ...models import MeasureDefault
+from ...plugins.credentials import set_invocation_caller
 from ...reports.registry import ReportRegistry, ReportResourceNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -210,6 +220,7 @@ async def report_schema(
 async def run_report(
     report_name: str,
     params: dict,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     _access=Depends(require_access("reports")),
 ):
@@ -237,6 +248,14 @@ async def run_report(
     # a 500.
     params = await _resolve_and_validate_params(
         report_cls, report_name, params, session
+    )
+
+    # Lend this request's identity to a plugin, if the report turns out to be
+    # one. An in-process report ignores it; a RemoteReport mints a credential
+    # from it and revokes it when the stream ends.
+    set_invocation_caller(
+        _access if isinstance(_access, SessionData) else None,
+        getattr(request.app.state, "session_store", None),
     )
 
     try:
