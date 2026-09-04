@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -738,3 +739,107 @@ class TestAnchorTimestampCorrection:
         assert result["anchor_event_time"] is not None
         assert result["anchor_actual_time"] is not None
         mock_session.commit.assert_awaited_once()
+
+
+class TestAdvanceCheckpoint:
+    """POST /checkpoints/{...}/advance - the operator escape hatch.
+
+    The host holds a checkpoint on FAILURE precisely so a bad file is retried
+    rather than skipped, and it cannot tell "transient" from "will never parse".
+    Only a person can, so stepping over data is manual, admin-only, and reasoned.
+    """
+
+    @staticmethod
+    def _checkpoint(**over):
+        cp = MagicMock()
+        cp.device_type = "controller"
+        cp.device_id = "SIG-001"
+        cp.method = "ftp_pull"
+        cp.last_filename = "poison.dat"
+        cp.last_file_mtime = None
+        cp.last_event_timestamp = None
+        cp.last_successful_poll = None
+        cp.events_ingested = 100
+        cp.files_ingested = 5
+        cp.consecutive_errors = 9
+        cp.last_error = "decode failed"
+        cp.last_error_time = None
+        for k, v in over.items():
+            setattr(cp, k, v)
+        return cp
+
+    def _call(self, checkpoint, **payload_kw):
+        import asyncio
+
+        from tsigma.api.v1.collection import (
+            AdvanceCheckpointRequest,
+            advance_checkpoint,
+        )
+
+        session = make_mock_session()
+        result = MagicMock()
+        result.scalar_one_or_none = MagicMock(return_value=checkpoint)
+        session.execute = AsyncMock(return_value=result)
+        session.commit = AsyncMock()
+
+        user = SessionData(
+            user_id=uuid4(), username="opsjim", role="admin",
+            created_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        payload = AdvanceCheckpointRequest(
+            reason=payload_kw.pop("reason", "file is corrupt, vendor notified"),
+            **payload_kw,
+        )
+        out = asyncio.run(advance_checkpoint(
+            device_type="controller", device_id="SIG-001", method="ftp_pull",
+            payload=payload, session=session, user=user,
+        ))
+        return out, session
+
+    def test_advancing_clears_the_error_counter(self):
+        cp = self._checkpoint()
+        self._call(cp)
+        assert cp.consecutive_errors == 0, (
+            "the alert must stop firing for a condition an operator answered"
+        )
+
+    def test_the_reason_and_the_operator_are_recorded(self):
+        cp = self._checkpoint()
+        self._call(cp, reason="vendor confirmed the file is truncated")
+        assert "opsjim" in cp.last_error
+        assert "vendor confirmed the file is truncated" in cp.last_error
+
+    def test_a_new_cursor_is_applied_when_given(self):
+        cp = self._checkpoint()
+        moved_to = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        self._call(cp, last_filename="next.dat", last_event_timestamp=moved_to)
+        assert cp.last_filename == "next.dat"
+        assert cp.last_event_timestamp == moved_to
+
+    def test_the_cursor_is_left_alone_when_not_given(self):
+        # Clearing the counter without moving the cursor is a legitimate use:
+        # the operator has fixed the cause and wants the retry to resume.
+        cp = self._checkpoint()
+        self._call(cp)
+        assert cp.last_filename == "poison.dat"
+
+    def test_the_change_is_committed(self):
+        cp = self._checkpoint()
+        _, session = self._call(cp)
+        session.commit.assert_awaited()
+
+    def test_a_missing_checkpoint_is_a_404_not_a_silent_create(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            self._call(None)
+        assert exc.value.status_code == 404
+
+    def test_a_reason_is_required(self):
+        from pydantic import ValidationError
+
+        from tsigma.api.v1.collection import AdvanceCheckpointRequest
+
+        with pytest.raises(ValidationError):
+            AdvanceCheckpointRequest(reason="")

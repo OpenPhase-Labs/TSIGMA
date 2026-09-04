@@ -502,6 +502,71 @@ async def list_checkpoints(
     return [_to_checkpoint_dict(cp) for cp in rows]
 
 
+class AdvanceCheckpointRequest(BaseModel):
+    """Why an operator is skipping past a cursor the host will not skip itself."""
+
+    reason: str = Field(min_length=1, max_length=500)
+    last_filename: Optional[str] = None
+    last_event_timestamp: Optional[datetime] = None
+
+
+@router.post("/checkpoints/{device_type}/{device_id}/{method}/advance")
+async def advance_checkpoint(
+    device_type: str,
+    device_id: str,
+    method: str,
+    payload: AdvanceCheckpointRequest,
+    session: AsyncSession = Depends(get_session),
+    user: SessionData = Depends(require_admin),
+):
+    """Move a stuck cursor past the artifact it keeps failing on.
+
+    The host deliberately will not do this by itself: a FAILURE or a file-identity
+    PARTIAL holds the checkpoint precisely so a bad file is retried rather than
+    skipped, and nothing the host can observe distinguishes "transient" from
+    "this file will never parse". Only a person can decide the second, so this is
+    the escape hatch ADR-0034 leaves open - the data is not lost, it is left
+    behind deliberately, by someone who said why.
+
+    Clears `consecutive_errors` so the repeated-failure alert stops firing for a
+    condition an operator has already answered.
+    """
+    result = await session.execute(
+        select(PollingCheckpoint).where(
+            PollingCheckpoint.device_type == device_type,
+            PollingCheckpoint.device_id == device_id,
+            PollingCheckpoint.method == method,
+        )
+    )
+    checkpoint = result.scalar_one_or_none()
+    if checkpoint is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"no checkpoint for {device_type}/{device_id}/{method}"
+            ),
+        )
+
+    skipped_from = checkpoint.last_filename
+    if payload.last_filename is not None:
+        checkpoint.last_filename = payload.last_filename
+    if payload.last_event_timestamp is not None:
+        checkpoint.last_event_timestamp = payload.last_event_timestamp
+    checkpoint.consecutive_errors = 0
+    checkpoint.last_error = f"manually advanced by {user.username}: {payload.reason}"
+    checkpoint.last_error_time = datetime.now(timezone.utc)
+    await session.commit()
+
+    # An operator stepping over data is exactly the kind of thing that has to be
+    # findable afterwards, so it is a log line at warning, not a silent update.
+    logger.warning(
+        "checkpoint %s/%s/%s manually advanced by %s (was at %s): %s",
+        device_type, device_id, method, user.username, skipped_from,
+        payload.reason,
+    )
+    return _to_checkpoint_dict(checkpoint)
+
+
 @router.get("/checkpoints/{signal_id}")
 async def get_signal_checkpoints(
     signal_id: str,
