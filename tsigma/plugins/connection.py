@@ -17,6 +17,7 @@ from typing import Protocol, runtime_checkable
 from grpc import aio
 
 from .protocol import HandshakeConfig, PluginProcess, check_health, validate_handshake
+from .transport import TLSConfig, require_transport_security
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +115,19 @@ class DiscoveredConnection:
 
     process_model = ProcessModel.EXTERNAL
 
-    def __init__(self, name: str, handshake: HandshakeConfig):
+    def __init__(
+        self,
+        name: str,
+        handshake: HandshakeConfig,
+        tls: TLSConfig | None = None,
+    ):
         self.name = name
         self._handshake = validate_handshake(handshake)
+        self._tls = tls
+        # Refused here, not at dial time: a deployment that forgot TLS fails at
+        # startup naming the address, rather than carrying ingestion data and a
+        # broker callback across a cluster in the clear.
+        require_transport_security(self._handshake.target, tls)
         self.channel: aio.Channel | None = None
 
     @property
@@ -134,7 +145,16 @@ class DiscoveredConnection:
 
     async def connect(self) -> HandshakeConfig:
         if self.channel is None:
-            self.channel = aio.insecure_channel(self._handshake.target)
+            target = self._handshake.target
+            self.channel = (
+                aio.secure_channel(
+                    target,
+                    self._tls.credentials(),
+                    options=self._tls.channel_options(),
+                )
+                if self._tls is not None
+                else aio.insecure_channel(target)
+            )
         return self._handshake
 
     async def is_healthy(self, timeout: float = 2.0) -> bool:

@@ -39,6 +39,7 @@ from .connection import ProcessModel
 from .constants import GENERATED_SUBSYSTEMS
 from .protocol import HandshakeConfig, validate_handshake
 from .supervisor import PluginSpec, PluginSpecError
+from .transport import TLSConfig, TransportSecurityError
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,16 @@ def spec_from_manifest(data: dict, *, source: str) -> PluginSpec:
     if "handshake" in data:
         handshake = _handshake_from(name, data["handshake"])
 
+    tls = None
+    if "tls" in data:
+        raw = data["tls"]
+        if "ca" not in raw:
+            raise ManifestError(f"{name}: [tls] needs at least a 'ca'")
+        tls = TLSConfig(
+            ca=raw["ca"], cert=raw.get("cert"), key=raw.get("key"),
+            server_name=raw.get("server_name"),
+        )
+
     command = data.get("command")
     if command is not None and not isinstance(command, list):
         raise ManifestError(f"{name}: 'command' must be a list of argv strings")
@@ -107,8 +118,11 @@ def spec_from_manifest(data: dict, *, source: str) -> PluginSpec:
             command=command,
             handshake=handshake,
             subsystems=subsystems,
+            tls=tls,
         )
-    except PluginSpecError as exc:
+    except (PluginSpecError, TransportSecurityError) as exc:
+        # A networked plugin with no credentials is refused by name here, so one
+        # misconfigured manifest is reported and skipped rather than dialled.
         raise ManifestError(str(exc)) from exc
 
 

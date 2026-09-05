@@ -28,7 +28,7 @@ EXTERNAL = {
     "subsystems": ["report"],
     "handshake": {
         "core_version": 1, "app_version": 1,
-        "network": "tcp", "address": "10.0.0.9:7001",
+        "network": "tcp", "address": "127.0.0.1:7001",
     },
 }
 
@@ -46,9 +46,11 @@ class TestAManifestBecomesASpec:
         assert spec.subsystems == ("decoder",)
 
     def test_an_externally_orchestrated_plugin_declares_where_to_dial(self):
+        # On loopback here; a networked address additionally needs TLS, which is
+        # covered in test_plugin_transport.py.
         spec = spec_from_manifest(EXTERNAL, source="fleet.toml")
         assert spec.process_model is ProcessModel.EXTERNAL
-        assert spec.handshake.address == "10.0.0.9:7001"
+        assert spec.handshake.address == "127.0.0.1:7001"
 
     def test_the_spec_can_build_its_connection(self):
         # The whole point: a manifest produces something the supervisor drives.
