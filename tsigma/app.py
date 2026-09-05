@@ -277,7 +277,37 @@ async def lifespan(app: FastAPI):
         await validation_svc.start()
         app.state.validation_service = validation_svc
 
+    if settings.plugins_enabled:
+        # The front door. Without this the plugin host is unreachable code: a
+        # plugin in its own repository has no import for the core to fall back
+        # on, so a manifest here is the only way one can be loaded at all.
+        from .plugins.manifest import load_manifests
+        from .plugins.supervisor import PluginSupervisor
+
+        supervisor = PluginSupervisor()
+        specs = load_manifests(settings.plugins_dir)
+        for spec in specs:
+            try:
+                supervisor.add(spec)
+            except Exception:
+                logger.exception("plugin %s could not be registered", spec.name)
+        if specs:
+            started = await supervisor.start_all()
+            live = [name for name, ok in started.items() if ok]
+            logger.info(
+                "Plugin host: %d of %d started (%s)",
+                len(live), len(specs), ", ".join(live) or "none",
+            )
+        else:
+            logger.info("Plugin host: no manifests in %s", settings.plugins_dir)
+        app.state.plugin_supervisor = supervisor
+
     yield
+
+    # Shutdown — plugins first: they hold subprocesses and channels, and a
+    # plugin still serving while the collector tears down is a lost batch.
+    if hasattr(app.state, "plugin_supervisor"):
+        await app.state.plugin_supervisor.shutdown_all()
 
     # Shutdown — validation stops first
     if settings.validation_enabled and hasattr(app.state, "validation_service"):
