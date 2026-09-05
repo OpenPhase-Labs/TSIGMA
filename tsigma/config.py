@@ -253,6 +253,11 @@ class Settings(BaseSettings):
     # MS Teams notification settings
     teams_webhook_url: str = ""
 
+    # gRPC plugin host (ADR-0018). A plugin lives in its own repository
+    # (ADR-0082), so a manifest in this directory is its only way in.
+    plugins_enabled: bool = True
+    plugins_dir: str = "plugins"
+
     # Validation pipeline
     validation_enabled: bool = True          # Master toggle
     validation_layer1_enabled: bool = True   # Schema/range (always recommended)
