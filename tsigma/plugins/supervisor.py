@@ -42,6 +42,7 @@ from .connection import (
     ScheduledConnection,
 )
 from .protocol import HandshakeConfig
+from .transport import TLSConfig, require_transport_security
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ class PluginSpec:
     command: list[str] | None = None
     handshake: HandshakeConfig | None = None
     subsystems: tuple[str, ...] = ()
+    tls: TLSConfig | None = None
 
     def __post_init__(self):
         if self.process_model in (ProcessModel.CHILD, ProcessModel.CRON):
@@ -106,13 +108,19 @@ class PluginSpec:
                 raise PluginSpecError(
                     f"{self.name}: external requires a handshake from the manifest"
                 )
+            # Checked on the SPEC, not just on the connection it builds, so a
+            # manifest declaring a networked plugin with no credentials is
+            # refused by name while the reader can still skip it and load the
+            # rest. Deferring to build() turns one bad manifest into a startup
+            # crash.
+            require_transport_security(self.handshake.target, self.tls)
 
     def build(self) -> PluginConnection:
         if self.process_model is ProcessModel.CHILD:
             return LaunchedConnection(self.name, self.command)
         if self.process_model is ProcessModel.CRON:
             return ScheduledConnection(self.name, self.command)
-        return DiscoveredConnection(self.name, self.handshake)
+        return DiscoveredConnection(self.name, self.handshake, self.tls)
 
 
 @dataclass
